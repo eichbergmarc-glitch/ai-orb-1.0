@@ -1,0 +1,33 @@
+AI-ORB - STIMM-PATCH (Thorsten, kostenlos, natuerlicher)
+=========================================================
+
+Was dieser Patch aendert:
+
+  1. Die Stimme steht auf "de_DE-thorsten-high" - die natuerlichste
+     kostenlose deutsche Stimme, die lokal laeuft. Nichts verlaesst deinen
+     Rechner, keine Cloud, kein Schluessel.
+
+  2. Thorsten klingt jetzt lebendiger statt monoton. Zwei Regler, die
+     vorher ungenutzt waren, sind gesetzt:
+       - noise_w   (0.9)  gibt der Sprache Rhythmus statt Gleichtakt
+       - noise_scale (0.72) gibt ihr Ausdruck, nimmt das Blecherne
+     Diese Werte stehen in config.yaml unter voice.output.piper und lassen
+     sich nachjustieren: hoeher = lebendiger, zu hoch = unruhig.
+
+Zwei Dateien:
+
+  backend/tts/piper_engine.py   <- wertet die neuen Regler aus
+  config.yaml                    <- Stimme + Reglerwerte
+
+So einspielen:
+
+  Beide Dateien in deinen Projektordner kopieren und die vorhandenen
+  ersetzen:
+    ...\AI-Orb\AI-Orb\backend\tts\piper_engine.py
+    ...\AI-Orb\AI-Orb\config.yaml
+
+  Danach den Orb neu starten (ORB-STARTEN.bat).
+
+Hinweis: Beim ersten Sprechen mit "high" laedt Thorsten einmalig sein
+groesseres Modell nach (paar Sekunden, einmalig). Ist dir das zu langsam,
+setze in config.yaml voice.output.piper.voice auf "de_DE-thorsten-medium".

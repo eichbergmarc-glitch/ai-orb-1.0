@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ES2020",
+    "moduleResolution": "bundler",
+    "lib": ["ES2021", "DOM"],
+    "outDir": "desktop/electron/dist",
+    "rootDir": "desktop",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "declaration": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["desktop/renderer/**/*.ts", "desktop/ui/**/*.ts"],
+  "exclude": ["node_modules", "desktop/electron/dist"]
+}

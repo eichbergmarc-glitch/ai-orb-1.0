@@ -1,0 +1,108 @@
+{
+  "name": "ai-orb",
+  "version": "0.4.0",
+  "description": "AI-Orb – ein lokaler, intelligenter Desktop-Agent mit schwebendem Orb-Interface.",
+  "main": "desktop/electron/dist/electron/main.js",
+  "author": "AI-Orb Project",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "esbuild desktop/renderer/main.ts --bundle --format=iife --target=es2020 --loader:.glsl=text --outfile=desktop/electron/dist/renderer/renderer.js",
+    "build:assets": "node scripts/copy-assets.js",
+    "build": "npm run build:main && npm run build:renderer && npm run build:assets",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "dist": "npm run build && electron-builder --win --publish never"
+  },
+  "devDependencies": {
+    "@types/three": "^0.169.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "build": {
+    "appId": "org.ai-orb.desktop",
+    "productName": "AI-Orb",
+    "copyright": "Copyright © 2026 AI-Orb Project",
+    "artifactName": "AI-Orb-Setup.exe",
+    "directories": {
+      "output": "dist-installer",
+      "buildResources": "build"
+    },
+    "files": [
+      "desktop/electron/dist/**/*",
+      "node_modules/**/*",
+      "package.json",
+      "!node_modules/.cache",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "app/backend",
+        "filter": ["**/*.py", "!**/__pycache__/**"]
+      },
+      {
+        "from": "runtime",
+        "to": "app/runtime",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "plugins",
+        "to": "app/plugins",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "skills",
+        "to": "app/skills",
+        "filter": ["**/*"]
+      },
+      { "from": "config.yaml", "to": "app/config.yaml" },
+      { "from": ".env.example", "to": "app/.env.example" },
+      { "from": "requirements.txt", "to": "app/requirements.txt" },
+      { "from": "requirements-voice.txt", "to": "app/requirements-voice.txt" },
+      { "from": "requirements-vision.txt", "to": "app/requirements-vision.txt" },
+      { "from": "upgrade.py", "to": "app/upgrade.py" },
+      { "from": "README.md", "to": "app/README.md" },
+      { "from": "LICENSE", "to": "app/LICENSE" }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "publisherName": "AI-Orb Project"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI-Orb",
+      "menuCategory": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "include": "build/installer.nsh",
+      "language": "1031",
+      "uninstallDisplayName": "AI-Orb ${version}"
+    },
+    "compression": "maximum",
+    "removePackageScripts": true,
+    "asar": true,
+    "asarUnpack": ["**/*.node"]
+  }
+}

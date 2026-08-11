@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Electron
+node_modules/
+desktop/electron/dist/
+npm-debug.log*
+
+# AI-Orb Laufzeitdaten
+logs/*.log
+data/*.json
+!data/.gitkeep
+models/*
+!models/.gitkeep
+
+# Umgebungsvariablen
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+.env
+.env.*
+runtime/
+node_modules/
+models/
+logs/
+audio/
+build/
+dist/
+__pycache__/
+*.pyc
+data/

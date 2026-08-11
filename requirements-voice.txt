@@ -1,0 +1,48 @@
+# =============================================================================
+# AI-Orb - Pakete fuer die Sprachsteuerung
+# =============================================================================
+# Der Kern von AI-Orb kommt mit der Python-Standardbibliothek aus. Nur fuer
+# Sprache werden Pakete gebraucht, und auch die nicht alle:
+#
+#   - Ohne diese Pakete laeuft AI-Orb, spricht aber nicht und hoert nicht zu.
+#   - Die Windows-Sprachausgabe (SAPI) braucht ueberhaupt nichts davon; sie
+#     ist Bestandteil von Windows. AI-Orb kann also auch ohne Installation
+#     sprechen, nur weniger natuerlich.
+#
+# Installieren:
+#     .venv\Scripts\python.exe -m pip install -r requirements-voice.txt
+#
+# Das dauert einige Minuten und laedt etwa 500 MB. Beim ersten Sprechen und
+# Zuhoeren kommen die Modelldaten dazu (Piper etwa 60 MB, Whisper "small"
+# etwa 490 MB).
+# =============================================================================
+
+# --- Mikrofon und Lautsprecher ------------------------------------------------
+# Nimmt auf und spielt ab. Ohne dieses Paket weicht AI-Orb unter Windows auf
+# winsound aus - das kann abspielen, aber nicht aufnehmen.
+sounddevice>=0.4.6
+
+# --- Spracherkennung ----------------------------------------------------------
+# Whisper in einer deutlich schnelleren Umsetzung. Laeuft auf der CPU in
+# brauchbarer Geschwindigkeit; mit CUDA deutlich schneller.
+faster-whisper>=1.0.0
+
+# --- Sprachausgabe: Piper (Voreinstellung fuer Deutsch) -----------------------
+# Neuronal, auf Deutsch trainiert, laeuft lokal. Die Modelldatei laedt
+# AI-Orb beim ersten Sprechen selbst herunter.
+piper-tts>=1.2.0
+
+# --- Sprachausgabe: Kokoro (optional) ----------------------------------------
+# Sehr natuerlich klingend, beherrscht aber KEIN Deutsch. Nur sinnvoll, wenn
+# du AI-Orb auf Englisch betreibst.
+#
+# Die beiden Zeilen sind bewusst auskommentiert: Kokoro zieht PyTorch nach
+# (mehrere Gigabyte). Wer es will, entfernt die Rautezeichen.
+#
+# kokoro>=0.9.0
+# soundfile>=0.12.1
+
+# --- Grundlage ----------------------------------------------------------------
+# Wird von faster-whisper und Piper ohnehin verlangt; hier nur, damit eine
+# passende Fassung sicher vorhanden ist.
+numpy>=1.24.0

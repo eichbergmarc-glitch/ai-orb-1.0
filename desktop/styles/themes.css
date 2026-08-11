@@ -1,0 +1,58 @@
+/* =============================================================================
+   themes.css – Farbthemen des Orb
+   =============================================================================
+   Die sechs vorbereiteten Themen. Die eigentlichen Farben des Orb werden im
+   WebGL-Renderer gesetzt (siehe desktop/renderer/states.ts); diese Datei
+   hält dieselben Werte als CSS-Variablen bereit, damit künftige
+   HTML-Oberflächen (z. B. ein Einstellungsfenster) dieselbe Farbgebung
+   verwenden können.
+
+   Das aktive Thema wird über das Attribut `data-theme` am <body> gesetzt und
+   stammt aus config.yaml (orb.theme).
+   ============================================================================= */
+
+:root {
+  --orb-base: #4aa3ff;
+  --orb-accent: #bfe4ff;
+  --orb-deep: #0d3a72;
+  --orb-error: #ff4a4a;
+  --orb-surface: rgba(12, 18, 28, 0.82);
+  --orb-text: #e8f1ff;
+}
+
+body[data-theme="blue"] {
+  --orb-base: #4aa3ff;
+  --orb-accent: #bfe4ff;
+  --orb-deep: #0d3a72;
+}
+
+body[data-theme="purple"] {
+  --orb-base: #a46bff;
+  --orb-accent: #e2ccff;
+  --orb-deep: #3a1a6b;
+}
+
+body[data-theme="green"] {
+  --orb-base: #3fdd90;
+  --orb-accent: #c6ffe6;
+  --orb-deep: #0c4a30;
+}
+
+body[data-theme="red"] {
+  --orb-base: #ff5f6d;
+  --orb-accent: #ffc9cd;
+  --orb-deep: #6b1218;
+}
+
+body[data-theme="white"] {
+  --orb-base: #dfe9f5;
+  --orb-accent: #ffffff;
+  --orb-deep: #6d7d90;
+  --orb-text: #16202c;
+}
+
+body[data-theme="cyber"] {
+  --orb-base: #00ffc8;
+  --orb-accent: #ff2fd0;
+  --orb-deep: #081b2a;
+}

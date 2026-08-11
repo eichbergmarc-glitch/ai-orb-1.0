@@ -1,0 +1,65 @@
+/* =============================================================================
+   orb.css – Grundlayout der Orb-Oberfläche
+   =============================================================================
+   Die Oberfläche besteht ausschließlich aus einem bildschirmfüllenden
+   Canvas. Es gibt keinen sichtbaren Hintergrund, keine Ränder, keine
+   Bildlaufleisten und keine Bedienelemente – der Orb soll wie ein freies
+   Objekt auf dem Desktop wirken.
+   ============================================================================= */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+
+  /* Vollständig transparent: weder Schwarz noch Weiß. */
+  background: transparent;
+
+  /* Die Textauswahl würde beim Ziehen des Orb stören. */
+  user-select: none;
+  -webkit-user-select: none;
+
+  /* Der Fensterbereich außerhalb des Orb bleibt klickdurchlässig; der
+     Hauptprozess schaltet das je nach Zeigerposition um. */
+  cursor: default;
+}
+
+body {
+  /* Verhindert, dass ein versehentliches Wischen das Fenster verschiebt. */
+  -webkit-app-region: no-drag;
+}
+
+#orb-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+
+  /* Weicher Zeiger über dem Orb, damit erkennbar ist, dass er anfassbar ist. */
+  cursor: grab;
+}
+
+#orb-canvas:active {
+  cursor: grabbing;
+}
+
+/* Bildlaufleisten sind in dieser Oberfläche niemals erwünscht. */
+::-webkit-scrollbar {
+  display: none;
+}
+
+/* Respektiert die Systemeinstellung für reduzierte Bewegung: In diesem Fall
+   bleibt der Orb ruhiger, hört aber nicht vollständig auf, sich zu bewegen –
+   sonst wirkte er leblos. */
+@media (prefers-reduced-motion: reduce) {
+  #orb-canvas {
+    opacity: 0.95;
+  }
+}

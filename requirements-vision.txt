@@ -1,0 +1,29 @@
+# =============================================================================
+# AI-Orb - Pakete fuer das Bildverstehen
+# =============================================================================
+# Nur noetig, wenn AI-Orb den Bildschirm ansehen koennen soll. Ohne diese
+# Pakete laeuft alles andere unveraendert weiter.
+#
+# Installieren:
+#     .venv\Scripts\python.exe -m pip install -r requirements-vision.txt
+#
+# Fuer die Texterkennung wird zusaetzlich das Programm Tesseract gebraucht.
+# Es ist kein Python-Paket und muss getrennt installiert werden:
+#
+#     winget install UB-Mannheim.TesseractOCR
+#
+# Bei der Installation die deutschen Sprachdaten mit auswaehlen, sonst liest
+# AI-Orb deutschen Text nur mit englischem Modell - und das geht schief.
+# =============================================================================
+
+# --- Bildschirmaufnahme -------------------------------------------------------
+# Schnelles Abgreifen des Bildschirminhalts, auch bei mehreren Monitoren.
+mss>=9.0.1
+
+# --- Bildbearbeitung ----------------------------------------------------------
+# Verkleinern, Schwaerzen von Bereichen, Speichern als PNG.
+Pillow>=10.0.0
+
+# --- Texterkennung ------------------------------------------------------------
+# Anbindung an Tesseract. Das Programm selbst siehe oben.
+pytesseract>=0.3.10

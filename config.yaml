@@ -1,0 +1,1567 @@
+# =============================================================================
+# AI-Orb – zentrale Konfiguration
+# =============================================================================
+# Alle Einstellungen werden ausschließlich aus dieser Datei gelesen.
+# Es gibt keine hartkodierten Werte im Quellcode (Backend oder Desktop).
+#
+# Geheimnisse gehören NICHT hierher, sondern in die Datei .env. Hier steht
+# lediglich der Name der Umgebungsvariablen, aus der ein Schlüssel gelesen
+# wird. Eine Erklärung jeder einzelnen Option findest du in docs/CONFIG.md.
+# =============================================================================
+
+app:
+  # Anzeigename der Anwendung.
+  name: "AI-Orb"
+  # Aktuelle Version der Anwendung (Semantic Versioning).
+  #
+  # MUSS mit backend/__init__.py uebereinstimmen. Diese Zahl steht im Menue
+  # des Orb, jene im Ladebildschirm - liefen sie auseinander, zeigte das
+  # Programm zwei verschiedene Fassungen an, und niemand wusste mehr,
+  # welche davon wirklich laeuft. Genau das war passiert.
+  version: "0.26.4"
+  # Umgebung: development | production
+  environment: "development"
+  # Sprache der Oberfläche und von Systemmeldungen.
+  language: "de"
+
+logging:
+  # Log-Level: DEBUG | INFO | WARNING | ERROR | CRITICAL
+  level: "INFO"
+  # Verzeichnis, in dem Log-Dateien abgelegt werden (relativ zum Projekt-Root).
+  directory: "logs"
+  # Maximale Größe einer einzelnen Log-Datei in Megabyte, bevor rotiert wird.
+  max_file_size_mb: 5
+  # Anzahl der aufbewahrten rotierten Log-Dateien pro Modul.
+  backup_count: 5
+  # Zusätzlich zur Datei auch auf der Konsole ausgeben.
+  console_output: true
+
+# =============================================================================
+# Start
+# =============================================================================
+startup:
+  # Begruesst dich, sobald AI-Orb wirklich einsatzfaehig ist - also erst,
+  # wenn alle Module geladen sind, die Startpruefung bestanden ist und die
+  # Dienstueberwachung laeuft. Nicht vorher.
+  greeting_enabled: true
+  # Eigener Begruessungstext. Leer lassen fuer die Vorgabe, die sich nach der
+  # Tageszeit richtet ("Guten Morgen. Ich bin bereit." usw.).
+  greeting_text: ""
+
+backend:
+  # Host, auf dem der lokale REST-/WebSocket-Server lauscht.
+  host: "127.0.0.1"
+  # Port des lokalen REST-/WebSocket-Servers.
+  port: 8756
+  # Pfad des Ereigniskanals (Server-Sent Events), über den das Backend
+  # Ereignisse an die Oberfläche sendet.
+  events_path: "/events"
+  # Erlaubt Cross-Origin-Anfragen nur von der lokalen Electron-Anwendung.
+  allowed_origins:
+    - "http://localhost"
+    - "file://"
+
+window:
+  # Fenster erscheint ohne Rahmen und Titelleiste.
+  frameless: true
+  # Fenster ist transparent (kein schwarzer/weißer Hintergrund).
+  transparent: true
+  # Fenster bleibt immer im Vordergrund.
+  always_on_top: true
+  # Fenster erscheint nicht in der Windows-Taskleiste.
+  skip_taskbar: true
+  # Fenster wirft keinen Schatten.
+  has_shadow: false
+  # Fenster kann per Drag verschoben werden.
+  movable: true
+  # Fenster kann durch den Benutzer in der Größe verändert werden.
+  resizable: false
+  # Breite/Höhe des Fensters in Pixel.
+  #
+  # Wichtig: Das ist NICHT die Größe des Orb, sondern sein Bewegungsraum.
+  # Das Fenster ist unsichtbar und klickdurchlässig; der Orb bewegt sich
+  # darin über die Grafikkarte, was flüssig läuft. Ein größeres Fenster
+  # bedeutet mehr ruckelfreien Ausweichweg, kostet aber etwas Speicher.
+  width: 520
+  height: 520
+  # Startposition: "remembered" nutzt die zuletzt gespeicherte Position,
+  # "center" zentriert auf dem primären Monitor.
+  start_position: "remembered"
+  # GPU-Beschleunigung aktivieren.
+  gpu_acceleration: true
+
+orb:
+  # Sichtbare Größe des Orb, gemessen am Fenster (0.05 bis 1.0).
+  #
+  # Der Orb soll ein Symbol sein, kein Fenster – er darf nicht stören.
+  # Anhaltswerte bei einem Fenster von 520 Pixeln:
+  #
+  #   0.14  ->  etwa  44 px  (klein wie ein Taskleistensymbol)
+  #   0.20  ->  etwa  63 px  (Voreinstellung, wie ein Desktopsymbol)
+  #   0.30  ->  etwa  94 px  (deutlich präsenter)
+  #   0.42  ->  etwa 132 px  (sehr groß)
+  #
+  # Die Zustände skalieren diesen Wert zusätzlich (siehe Abschnitt states):
+  # im Schlaf 0.62-fach, beim Zuhören 1.14-fach.
+  # Deutlich groesser als zuvor (war 0.20).
+  #
+  # Der Benutzer will die zwei Punkte in echter Zentimeter-Groesse: jeder
+  # etwa 1 cm, verschmolzen etwa 2,5 cm. Bei 0.20 war ein Punkt nur ~11
+  # Bildpunkte gross (~0,3 cm). 0.65 bringt ihn auf ~38 Bildpunkte, also
+  # rund 1 cm bei ueblicher Bildschirmaufloesung (96 dpi). Weicht deine
+  # Anzeige davon ab, ist der Wert die eine Stellschraube dafuer.
+  scale: 0.65
+
+  # ---------------------------------------------------------------------------
+  # Die Animation – vom Orb selbst veränderbar
+  # ---------------------------------------------------------------------------
+  # Der Benutzer will die Animation künftig dem Orb per Sprache erklären,
+  # statt Werte von Hand zu ändern. Diese Werte sind der sichere Weg dafür:
+  # Der Orb schreibt sie um und lädt die Anzeige neu – kein Neubau, nichts
+  # kann kaputtgehen. Für größere Umbauten ("pulsier wie ein Herzschlag")
+  # schreibt der Orb zusätzlich den Code selbst um (siehe Werkzeug
+  # 'animation_umbauen'), das ist der mächtigere, riskantere Weg.
+  #
+  # Jeder Wert hat eine natürliche Sprache dahinter:
+  animation:
+    # "grösser/kleiner" ist orb.scale oben. Diese hier feiner:
+    # "weiter auseinander / enger" – Abstand der zwei Punkte.
+    abstand: 0.68
+    # "dickere / dünnere Punkte" – Grösse der Punkte, ohne den Abstand.
+    punkt_groesse: 1.0
+    # "stärker / schwächer verschmelzen" – wie gross der Nebel beim
+    # Verschmelzen wird (1.0 = wie ein Punkt, 2.15 = aktuell ~2,5 cm).
+    verschmelzen: 1.15
+    # "längere / kürzere Fäden" – wie weit die Spur zurückreicht.
+    schweif_laenge: 26
+    # "schneller / langsamer" – Grundtempo der Umkreisung.
+    tempo: 1.0
+    # "heller / dunkler" – Leuchtkraft.
+    helligkeit: 1.0
+    # "andere Farben" – die zwei Farbtöne (0..1 im Farbkreis, oder ein
+    # Name wie rot/blau/grün, den das Werkzeug übersetzt). Rot ist 1.0,
+    # damit der Übergang beim Verschmelzen über Violett läuft, nicht Grün.
+    farbe_a: 1.0
+    farbe_b: 0.62
+
+  # Aktives Farbthema: blue | purple | green | red | white | cyber | sand
+  #                     | neural | neon
+  #
+  # "neural" gehoert zum atmenden Nervenkern: blaugruen innen, violett im
+  # Uebergang, warmes Weiss auf den Wellenkaemmen. Die Arbeitszustaende
+  # bleiben davon unberuehrt - Zuhoeren und Nachdenken sind weiter rot,
+  # weil das eine Auskunft ist und keine Geschmacksfrage. Der Verlauf des
+  # Kerns wird dann zu einem Purpur, bleibt also ein Verlauf.
+  theme: "neon"
+  # Zielbildrate der Orb-Animation.
+  target_fps: 60
+  # Automatische Qualitätsanpassung bei geringer Leistung.
+  adaptive_quality: true
+  # Intensität des Bloom-Postprocessing-Effekts (0.0 – 3.0).
+  bloom_strength: 1.35
+  bloom_radius: 0.55
+  bloom_threshold: 0.15
+  # Der gerechnete Kristallhaufen im Inneren.
+  #
+  # Er wird nicht als Geometrie gebaut, sondern fuer jeden Bildpunkt
+  # ausgerechnet. Je nach Grafiktreiber kann die Uebersetzung eines solchen
+  # Shaders scheitern - unter Windows laeuft sie ueber ANGLE nach Direct3D,
+  # und dessen Uebersetzer hat eine Obergrenze an Befehlen.
+  #
+  # Scheitert sie, wird nichts gezeichnet und der Orb hat gar keinen Kern
+  # mehr - und wo er erscheint, ist er der mit Abstand teuerste Teil des
+  # ganzen Bildes. Genau das ist passiert: Er erschien nie.
+  #
+  # Auf false laeuft stattdessen der Neon-Wuerfel: leuchtende Kanten,
+  # gewoehnliche Geometrie, kein eigener Shader - also nichts, was ein
+  # Grafiktreiber ablehnen koennte. Weniger kunstvoll, aber es kommt an,
+  # und ein Effekt, den niemand sieht, ist kein Effekt.
+  cluster: false
+
+  # Aktiviert die Partikel-Aura um den Orb-Kern.
+  particles_enabled: true
+  particle_count: 260
+  # Aktiviert leichte Eigenbewegung (Atmung, Mikrobewegungen), damit der
+  # Orb niemals vollkommen still steht.
+  presence_motion: true
+
+states:
+  # Jeder Zustand definiert Primärfarbe, Sekundärfarbe (Glow), relative
+  # Animationsgeschwindigkeit und Partikelintensität. Die Basisfarben
+  # werden mit dem aktiven Theme kombiniert (siehe desktop/styles/themes.css
+  # und desktop/renderer/states.ts).
+  idle:
+    speed: 1.0
+    particle_intensity: 0.4
+    light_intensity: 1.0
+    # Ruhezustand: Der Orb zieht sich zusammen und fällt weniger auf.
+    scale: 0.88
+  listening:
+    speed: 1.35
+    particle_intensity: 0.75
+    light_intensity: 1.25
+    # Zuhören: Der Orb richtet sich auf und wirkt aufmerksam.
+    scale: 1.14
+  thinking:
+    speed: 1.6
+    particle_intensity: 0.9
+    light_intensity: 1.1
+    scale: 1.04
+  speaking:
+    speed: 1.5
+    particle_intensity: 1.0
+    light_intensity: 1.4
+    scale: 1.08
+  busy:
+    speed: 1.2
+    particle_intensity: 0.6
+    light_intensity: 1.0
+    scale: 0.98
+  error:
+    speed: 0.8
+    particle_intensity: 0.5
+    light_intensity: 0.9
+    scale: 0.95
+  sleep:
+    speed: 0.25
+    particle_intensity: 0.1
+    light_intensity: 0.35
+    # Schlaf: deutlich kleiner, damit er kaum stört.
+    scale: 0.62
+
+interaction:
+  # Aktion bei Doppelklick auf den Orb: "open_settings" | "toggle_listen" | "none"
+  double_click_action: "open_settings"
+  # Abstand in Pixel, ab dem Hover-Glow-Verstärkung einsetzt.
+  hover_glow_radius: 40
+
+# =============================================================================
+# KI-Provider (v2 Phase 4)
+# =============================================================================
+# Modellnamen stehen ausschließlich hier und niemals im Quellcode.
+ai:
+  # "auto" wählt automatisch zwischen primary und fallback.
+  # Alternativ kann hier fest ein Provider eingetragen werden:
+  # "claude_code", "claude", "ollama" oder "hermes".
+  provider: "auto"
+
+  # ---------------------------------------------------------------------------
+  # Primäres Modell: Claude über dein Abonnement
+  # ---------------------------------------------------------------------------
+  # Nutzt die lokal installierte Claude-Code-Befehlszeile und damit dein
+  # Pro- oder Max-Abonnement. Es wird KEIN API-Schlüssel benötigt.
+  #
+  # Voraussetzung: Claude Code ist installiert und du hast dich einmalig
+  # angemeldet – dazu im Terminal "claude" eingeben und der Anmeldung
+  # mit deinem Abo folgen.
+  primary:
+    engine: "claude_code"
+    # Kurznamen bleiben auch bei neuen Modellversionen gültig:
+    # "sonnet" (ausgewogen), "opus" (stärkster), "haiku" (schnellster).
+    model: "sonnet"
+    # Pfad zur Befehlszeile, falls sie nicht im PATH liegt. Leer lassen,
+    # dann sucht AI-Orb sie selbst.
+    executable: ""
+    # Zusätzliche Argumente für die Befehlszeile (normalerweise leer).
+    extra_args: []
+    timeout: 180
+
+    # Sperrfrist (Minuten), nachdem Claudes Nutzungsgrenze erreicht wurde.
+    #
+    # Ist das Kontingent erschoepft, wechselt der Orb ohnehin auf das lokale
+    # Modell. Damit er in dieser Zeit nicht bei JEDER Frage erst wieder in
+    # Claudes Limit laeuft, gilt Claude so lange als nicht verfuegbar und der
+    # Orb bleibt ohne Umweg beim lokalen Modell. Nach Ablauf probiert er
+    # Claude wieder. 0 schaltet die Sperre ab (dann wird bei jeder Anfrage
+    # neu versucht). Anthropics Abo-Grenzen setzen sich rollierend zurueck;
+    # 30 Minuten sind ein guter Mittelwert zwischen "zu frueh wieder
+    # anklopfen" und "unnoetig lange lokal bleiben".
+    limit_cooldown_minutes: 30
+
+    # --- Antwortzeit ---------------------------------------------------------
+    #
+    # Die drei folgenden Einstellungen waren zusammen der Unterschied
+    # zwischen "er antwortet nach vierzehn Sekunden" und "nach fuenf".
+
+    # Haelt einen Claude-Code-Prozess bereit, der auf die naechste Frage
+    # wartet.
+    #
+    # Das Starten der Befehlszeile kostet unter Windows mehrere Sekunden -
+    # und zwar bei JEDER Frage aufs Neue. Es war der groesste einzelne Posten
+    # der Wartezeit und dabei reine Anlaufzeit: Zum Zeitpunkt der Frage war
+    # noch kein Wort gedacht.
+    #
+    # Nach jeder Antwort wird der Prozess verabschiedet und im Hintergrund
+    # ein frischer gestartet - der Anlauf faellt so in die Zeit, in der der
+    # Orb ohnehin gerade spricht. Auf false stellen, falls der wartende
+    # Prozess stoert (er belegt Arbeitsspeicher).
+    # VORERST AUS.
+    #
+    # Der wartende Prozess drittelt die Antwortzeit, wenn er laeuft - und
+    # legt den Orb lahm, wenn er haengt. Genau das ist passiert: Der Orb
+    # antwortete gar nicht mehr. Der Rueckfall auf den alten Weg ist
+    # inzwischen eingebaut (siehe warm_timeout), aber bis das im Betrieb
+    # bestaetigt ist, gilt: Ein langsamer Orb ist brauchbar, ein stummer
+    # nicht.
+    #
+    # Auf true stellen, wenn du die kurzen Antwortzeiten zurueck willst.
+    warm_process: true
+
+    # Wie lange auf ein Lebenszeichen des wartenden Prozesses gewartet wird,
+    # bevor er als haengend gilt (Sekunden).
+    #
+    # Deutlich kuerzer als 'timeout': Jenes ist fuer einen frisch
+    # gestarteten Prozess gedacht, der noch laedt. Ein wartender Prozess,
+    # der nach einer Minute kein Zeichen von sich gegeben hat, laedt nicht -
+    # er haengt. Danach wird er verworfen und die Frage auf dem alten Weg
+    # neu gestellt.
+    warm_timeout: 75
+
+    # Laesst beim Start alles weg, was fuer eine gesprochene Antwort nichts
+    # beitraegt: fremde MCP-Server, Einstellungsdateien, Skills, das Ablegen
+    # der Sitzung.
+    lean_start: true
+
+    # Welche eingebauten Werkzeuge die Befehlszeile benutzen darf.
+    #
+    # "Read" braucht der Blick auf den Bildschirm, um ein Bildschirmfoto
+    # selbst zu oeffnen. Mehr waere schaedlich: Die Befehlszeile faenge an,
+    # auf eigene Faust zu suchen und zu lesen, und jede dieser Runden kostet
+    # Sekunden. Fuer Werkzeuge hat AI-Orb sein eigenes System.
+    # Leer ("") schaltet alle ab.
+    tools: "Read"
+
+    # Wie lange das Modell nachdenkt, bevor es antwortet:
+    # low | medium | high | xhigh | max.
+    #
+    # Gemessen an einer historischen Frage: mit der Vorgabe kam das erste
+    # Wort nach 3,0 Sekunden und die ganze Antwort nach 7,4; mit "low" nach
+    # 0,7 bzw. 4,8 - beim selben Modell und ohne erkennbaren Qualitaets-
+    # verlust bei Gespraechsfragen. Wer lieber gruendlicher gedacht haben
+    # moechte, stellt "medium" ein.
+    effort: "low"
+
+  fallback:
+    engine: "ollama"
+    # Das lokale Offline-Modell.
+    #
+    # llama3.1:8b, weil es AUF DIESEM RECHNER SCHON INSTALLIERT IST. Das
+    # Protokoll zeigte den Grund, hier genau zu sein: Der Orb war auf
+    # qwen2.5:7b-instruct eingestellt, das aber gar nicht geladen war
+    # ("Ollama laeuft, aber Modell 'qwen2.5:7b-instruct' ist nicht
+    # installiert. Verfuegbar: llama3.1:8b, llama3.2:3b"). Damit sprang
+    # offline nichts ein - die beste Wahl nuetzt nichts, wenn sie fehlt.
+    #
+    # llama3.1 8B ist stark im Deutschen und im Werkzeug-Einsatz und laeuft
+    # fluessig auf 16 GB RAM ohne Grafikkarte. Es ist ab sofort da, ohne
+    # dass noch etwas geladen werden muss. Wer lieber qwen2.5:7b-instruct
+    # haette, holt es mit OFFLINE-EINRICHTEN.bat und traegt es hier ein.
+    model: "llama3.1:8b"
+    base_url: "http://127.0.0.1:11434"
+    timeout: 120
+    # Das Modell nach der ersten Nutzung im Arbeitsspeicher halten, damit
+    # die naechste Offline-Antwort nicht wieder auf das Laden wartet.
+    keep_alive: "30m"
+    # Etwas nuechterner als die Vorgabe - ein kleineres Modell schweift
+    # sonst eher ab und vergisst das Werkzeugformat.
+    temperature: 0.4
+
+  # ---------------------------------------------------------------------------
+  # Weitere Anbieter (mit dem Master-Prompt ergaenzt)
+  # ---------------------------------------------------------------------------
+  # AI-Orb kann mehrere Anbieter nebeneinander nutzen und den passenden je
+  # Aufgabe waehlen (siehe Abschnitt "routing"). Ein Anbieter zaehlt als
+  # verfuegbar, sobald seine Voraussetzungen erfuellt sind - sonst wird er
+  # stillschweigend uebergangen.
+  #
+  # WICHTIG zu Schluesseln: Hier steht NIE ein Schluessel, nur der NAME der
+  # Umgebungsvariablen. Den Wert traegst du in die .env ein. Ein Schluessel
+  # in dieser Datei gilt als kompromittiert.
+  #
+  # OpenAI (Cloud, Schluessel noetig):
+  #   engine: "openai"
+  #   preset: "openai"
+  #   model: "gpt-4o"              # frei waehlbar, nicht fest verdrahtet
+  #   api_key_env: "OPENAI_API_KEY"
+  #   timeout: 120
+  #
+  # Ollama Cloud (Cloud, Schluessel noetig):
+  #   engine: "ollama_cloud"
+  #   preset: "ollama_cloud"
+  #   model: "llama3.1:70b"
+  #   api_key_env: "OLLAMA_API_KEY"
+  #   timeout: 120
+  #
+  # LM Studio (lokal, kein Schluessel):
+  #   engine: "lmstudio"
+  #   preset: "lmstudio"
+  #   model: "lokales-modell"
+  #   timeout: 120
+  #
+  # llama.cpp (lokal, kein Schluessel):
+  #   engine: "llamacpp"
+  #   preset: "llamacpp"
+  #   model: "lokales-modell"
+  #   timeout: 120
+
+# =============================================================================
+# Modellwahl (Master-Prompt Abschnitte 13-21, 56, 65)
+# =============================================================================
+# Der ModelRouter waehlt je Aufgabe den passenden Anbieter. Leitregel:
+# lokal und kostenlos, wann immer es reicht; Cloud, wenn noetig; Claude oder
+# OpenAI fuer anspruchsvolles Denken.
+routing:
+  # auto | privacy | quality | speed | offline | cheapest
+  # "auto" folgt der Leitregel. "privacy" haelt alles lokal. "offline" nimmt
+  # nur lokale Modelle. "quality" nimmt immer das staerkste.
+  mode: "auto"
+
+  # Ein lokales Modell darf eine Aufgabe beginnen. Reicht die Qualitaet
+  # nicht, uebernimmt ein staerkeres (Eskalation, Abschnitt 15).
+  escalation_enabled: true
+
+  # Eigenschaften der Anbieter fuer die Routing-Entscheidung. Nur noetig,
+  # wenn du die Vorgaben aendern willst - sonst gelten sinnvolle Standards.
+  # Modelle aendern sich; diese Werte auch, ohne dass Code angefasst wird.
+  #
+  # providers:
+  #   openai:
+  #     reasoning: 0.9      # 0.0 schwach bis 1.0 stark
+  #     cost: 0.65          # 0.0 gratis bis 1.0 teuer
+  #     speed: 0.7
+
+  # ---------------------------------------------------------------------------
+  # Alternative: Claude über die API (getrennte Abrechnung)
+  # ---------------------------------------------------------------------------
+  # Nur nötig, wenn du statt des Abonnements einen API-Schlüssel nutzen
+  # willst. Ein Pro-/Max-Abo genügt dafür NICHT – API-Guthaben wird separat
+  # auf console.anthropic.com abgerechnet.
+  #
+  # Zum Verwenden: den folgenden Block einkommentieren und ihn oben als
+  # "primary" eintragen.
+  #
+  # primary:
+  #   engine: "claude"
+  #   # "auto" wählt selbstständig das neueste passende Modell.
+  #   model: "auto"
+  #   base_url: "https://api.anthropic.com"
+  #   api_key_env: "ANTHROPIC_API_KEY"
+  #   max_tokens: 4096
+  #   timeout: 120
+
+  # ---------------------------------------------------------------------------
+  # Alternative: OpenAI-kompatibler Dienst (z. B. OpenRouter)
+  # ---------------------------------------------------------------------------
+  # primary:
+  #   engine: "hermes"
+  #   model: "ling-3.0-flash:free"
+  #   base_url: "https://openrouter.ai/api/v1"
+  #   api_key_env: "HERMES_API_KEY"
+  #   app_title: "AI-Orb"
+  #   timeout: 60
+
+  # Automatisch zum primären Provider zurückwechseln, sobald er wieder
+  # erreichbar ist.
+  auto_switch: true
+  # true = sofort wechseln, false = erst nach Ende der Unterhaltung.
+  switch_immediately: false
+  # Kontext bleibt beim Providerwechsel vollständig erhalten.
+  preserve_context: true
+  # Abstand der Verfügbarkeitsprüfungen in Sekunden.
+  # Grundabstand der Erreichbarkeitspruefung, in Sekunden.
+  #
+  # Das ist ein AUSGANGSWERT, kein fester Takt. Zwei Dinge kommen hinzu:
+  #
+  # Wer gerade geantwortet hat, wird gar nicht erst gefragt - eine gelungene
+  # Antwort ist selbst der Beweis, dass der Anbieter erreichbar ist. Und
+  # solange alles laeuft, waechst der Abstand bis auf eine Viertelstunde;
+  # beim ersten Fehlschlag faellt er sofort hierher zurueck.
+  #
+  # Der Grund: Die Pruefung startet bei Claude Code einen eigenen Prozess,
+  # und der kostet auf Windows Sekunden. Im Protokoll standen 271 solcher
+  # Pruefungen - und faellt eine davon mit einer Frage zusammen, wartest du
+  # laenger, ohne dass es dafuer einen Grund gibt.
+  health_check_interval: 60
+
+conversation:
+  # Systemprompt, der jeder Modellanfrage vorangestellt wird.
+  # Wie der Orb spricht.
+  #
+  # Der Benutzer wollte, dass es mehr nach einem Menschen klingt. Das
+  # erreicht man nicht mit "sei menschlich" - eine solche Anweisung
+  # erzeugt Anbiederung: uebertriebene Begeisterung, Rueckfragen, die
+  # niemand gestellt hat, und Floskeln wie "Gerne!" vor jeder Antwort.
+  # Das klingt nach Kundendienst, nicht nach einem Menschen.
+  #
+  # Was den Unterschied wirklich macht, sind ein paar konkrete Dinge:
+  # gerade heraus antworten statt die Frage erst zu wiederholen; sagen,
+  # was man nicht weiss, statt es zu umschreiben; unterschiedlich lange
+  # Saetze; und die Bereitschaft zu widersprechen. Ein Gegenueber, das
+  # allem zustimmt, wirkt nie menschlich, sondern gefaellig.
+  system_prompt: >-
+    Du bist AI-Orb. Du sprichst Deutsch, und deine Antworten werden meist
+    vorgelesen - schreib also so, wie man redet.
+
+    Fang mit der Antwort an, nicht mit einer Einleitung. Kein "Gerne",
+    kein "Das ist eine gute Frage", keine Wiederholung der Frage. Wenn
+    jemand fragt, wie spaet es ist, sagst du die Uhrzeit.
+
+    Sprich in ungleich langen Saetzen. Ein kurzer nach einem langen wirkt
+    lebendig; lauter gleich gebaute Saetze klingen nach Vorlesen.
+
+    Sag, was du nicht weisst, und sag es gerade heraus. "Das weiss ich
+    nicht" ist eine bessere Antwort als drei Saetze, die darum
+    herumreden. Wenn du unsicher bist, sag warum.
+
+    Widersprich, wenn du anderer Meinung bist, und begruende es kurz. Ein
+    Gegenueber, das allem zustimmt, ist keine Hilfe.
+
+    Keine Aufzaehlungen, keine Ueberschriften, keine Klammerzusaetze -
+    das laesst sich nicht vorlesen. Keine Emojis.
+
+    Trenne Wissen von Vermutung. Erfinde niemals eine Quelle, eine Zahl
+    oder ein Datum. Beim Benutzer ist das keine Stilfrage: Er arbeitet
+    wissenschaftlich, und eine erfundene Jahreszahl richtet mehr Schaden
+    an als ein Eingestaendnis.
+  # Ab wie vielen Nachrichten der Verlauf verdichtet wird.
+  max_messages: 30
+  # Ab welcher geschätzten Kontextlänge (Tokens) verdichtet wird.
+  # Von 3000 heraufgesetzt.
+  #
+  # Dreitausend Token waren weniger, als die Werkzeugliste allein braucht:
+  # Sie misst gut vierzehntausend Zeichen, also etwa dreitausendsechshundert
+  # Token. Bei jeder Anfrage kam damit der ganze Gespraechsverlauf unter
+  # Druck - und daher kommt sehr wahrscheinlich auch, dass der Orb bei
+  # Anschlussfragen den Zusammenhang verlor: Verdichtet wird, sobald diese
+  # Grenze ueberschritten ist, und sie war praktisch immer ueberschritten.
+  max_context_tokens: 12000
+  # Wie viele der jüngsten Nachrichten unverändert erhalten bleiben.
+  keep_recent_messages: 8
+
+# =============================================================================
+# Memory Engine (v2 Phase 5)
+# =============================================================================
+memory:
+  # Kürzere Aussagen werden nicht dauerhaft gespeichert.
+  min_content_length: 12
+  # Unwichtige Informationen verlieren über die Zeit an Gewicht.
+  forgetting_enabled: true
+  # Nach wie vielen Tagen sich das Gewicht eines Eintrags halbiert.
+  forget_half_life_days: 90
+  # Ab welchem Restgewicht ein nie abgerufener Eintrag entfernt wird.
+  forget_threshold: 0.15
+
+# =============================================================================
+# Desktop-Steuerung
+# =============================================================================
+# AI-Orb startet ausschließlich Programme, die hier eingetragen sind.
+# Freie Kommandozeilen aus Benutzereingaben werden niemals ausgeführt.
+desktop:
+  # Neu geöffnete Fenster in den Vordergrund holen.
+  #
+  # Der Benutzer sah Fenster im Hintergrund erscheinen. Ein losgelöst
+  # gestartetes Programm bekommt von Windows nicht automatisch den
+  # Vordergrund - das wird jetzt nachgeholt (nur Windows). Auf false,
+  # wenn der Orb etwas im Hintergrund vorbereiten soll, ohne dass das
+  # Fenster vor die laufende Arbeit springt.
+  fenster_in_vordergrund: true
+
+  applications:
+    browser:
+      command: "msedge.exe"
+      aliases: ["edge", "webbrowser"]
+    firefox:
+      command: "firefox.exe"
+      aliases: ["mozilla"]
+    chrome:
+      command: "chrome.exe"
+      aliases: ["google chrome"]
+    terminal:
+      command: "wt.exe"
+      aliases: ["windows terminal", "konsole"]
+    powershell:
+      command: "powershell.exe"
+      aliases: ["ps"]
+    explorer:
+      command: "explorer.exe"
+      aliases: ["dateimanager", "datei-explorer"]
+    notepad:
+      command: "notepad.exe"
+      aliases: ["editor"]
+    vscode:
+      command: "code.cmd"
+      aliases: ["vs code", "visual studio code"]
+
+  # Das Beenden fremder Programme ist standardmäßig deaktiviert und
+  # erfordert zusätzlich eine ausdrückliche Bestätigung.
+  allow_process_termination: false
+
+  # Verzeichnisse, in denen AI-Orb nach Dateien suchen darf.
+  # Außerhalb dieser Pfade findet keine Suche statt.
+  # Ordner, in denen der Orb Dateien sucht und liest.
+  #
+  # Im offenen Modus (security.mode) ohne Bedeutung - dort gilt jeder Pfad.
+  # Die Liste bleibt trotzdem gepflegt: Wer spaeter auf "geschuetzt"
+  # zurueckschaltet, will nicht bei null anfangen.
+  file_search_roots:
+    - "C:/"
+    - "D:/"
+    - "~/Desktop"
+    - "~/Documents"
+    - "~/Downloads"
+
+# =============================================================================
+# Smart Desktop Engine (v2 Phase 3)
+# =============================================================================
+smart_desktop:
+  # Automatische Platzierung des Orb aktivieren.
+  enabled: true
+  # Der Maus ausweichen, wenn sie dem Orb nahe kommt.
+  avoid_mouse: true
+  # Aktive Fenster und deren Bedienelemente meiden.
+  avoid_active_window: true
+  # Aus dem Verhalten lernen (bevorzugte Positionen).
+  learn_behavior: true
+  # Bewegungsgeschwindigkeit: slow | medium | fast
+  movement_speed: "medium"
+  # Mehrere Monitore unterstützen.
+  monitor_support: true
+  # Bei Vollbildanwendungen ausblenden und schlafen legen.
+  fullscreen_sleep: true
+
+  # Ecken meiden.
+  #
+  # Randnähe war früher pauschal belohnt - "dort stört er am wenigsten".
+  # Nur ist eine Ecke an zwei Rändern zugleich und gewinnt deshalb immer.
+  # Der Orb parkte oben rechts, wo man ihn kaum wahrnimmt. Ein Assistent,
+  # den man suchen muss, ist keiner.
+  avoid_corners: true
+
+  # In Sichtweite des aktiven Fensters bleiben.
+  #
+  # Das aktive Fenster wurde bisher nur gemieden. Gemieden heisst aber
+  # nicht "moeglichst weit weg": Wer links schreibt, will den Orb nicht am
+  # rechten Rand suchen. Er setzt sich jetzt daneben - nicht darauf.
+  stay_near_work: true
+  # Bis zu welchem Abstand in Pixeln das als "in Sichtweite" gilt.
+  work_reach: 900
+
+  # Wie deutlich eine neue Position besser sein muss, damit gewechselt
+  # wird (0.0 bis 1.0). Kleiner heisst beweglicher.
+  switch_threshold: 0.08
+  # Wie oft neu bewertet wird (Millisekunden).
+  evaluation_interval_ms: 1500
+
+# =============================================================================
+# Arbeitszustände (v3 Phase 3)
+# =============================================================================
+workspace:
+  # Browser-Tabs werden nur erfasst, wenn du dies hier ausdrücklich erlaubst.
+  track_browser_tabs: false
+  # Beim Öffnen eines Projekts nachfragen, ob der letzte Arbeitszustand
+  # wiederhergestellt werden soll.
+  restore_on_open: false
+
+# =============================================================================
+# Reflexion (v3 Phase 1/2)
+# =============================================================================
+reflection:
+  # Sachliche, aufgabenbezogene Erkenntnisse langfristig speichern.
+  # Personenbezogene Schlussfolgerungen werden niemals gespeichert.
+  store_insights: true
+  # Wie viele Nachbetrachtungen aufbewahrt werden.
+  max_history: 200
+
+# =============================================================================
+# Cognitive Core (v3 Phase 1)
+# =============================================================================
+cognitive:
+  # Lebensdauer eines Eintrags im Arbeitsgedächtnis in Sekunden.
+  working_memory_ttl: 3600
+  # Obergrenze je Kategorie des Arbeitsgedächtnisses.
+  working_memory_max_items: 50
+  # Automatische Projekterkennung beim Start aktivieren.
+  auto_detect_projects: false
+
+# =============================================================================
+# Reasoning (v3 Phase 2)
+# =============================================================================
+reasoning:
+  # Ab dieser Komplexität wird ein vollständiger Plan erstellt.
+  # Einfache Aufgaben werden bewusst nicht verkompliziert.
+  plan_from_complexity: "mittel"
+  # Bei niedriger Sicherheit wird die Unsicherheit klar kommuniziert.
+  communicate_uncertainty: true
+  # Vor riskanten Aktionen wird eine Bestätigung verlangt.
+  confirm_risky_actions: true
+
+# =============================================================================
+# Multi-Agent-System (v3 Phase 5)
+# =============================================================================
+agents:
+  # Agenten werden nur bei Bedarf gestartet.
+  lazy_start: true
+  # Höchstzahl parallel arbeitender Agenten.
+  max_parallel: 4
+  # Zeitlimit je Agent in Sekunden.
+  timeout: 120
+
+# =============================================================================
+# Skill-/Plugin-System (v3 Phase 6)
+# =============================================================================
+skills:
+  # Verzeichnis, aus dem Skills geladen werden (relativ zum Projekt-Root).
+  directory: "skills"
+  # Skills werden erst nach ausdrücklicher Bestätigung installiert.
+  require_confirmation: true
+  # Berechtigungen, die ohne Rückfrage niemals gewährt werden.
+  restricted_permissions:
+    - "system_commands"
+    - "camera"
+    - "microphone"
+
+# =============================================================================
+# Evolution Engine (v3 Phase 4)
+# =============================================================================
+evolution:
+  # Die produktive Codebasis wird niemals automatisch verändert.
+  # Änderungen entstehen ausschließlich in einer isolierten Umgebung.
+  workspace_directory: "data/evolution"
+  # Änderungen werden erst nach Bestätigung übernommen.
+  require_user_approval: true
+  # Abhängigkeiten werden niemals automatisch installiert.
+  auto_install_dependencies: false
+  # Quellcode wird nicht an externe Dienste übertragen.
+  allow_external_code_transfer: false
+  # Schwellwerte der Codeanalyse.
+  max_function_lines: 60
+  max_module_lines: 500
+  max_complexity: 12
+
+# =============================================================================
+# System: der Weg zurueck nach einem Neustart
+# =============================================================================
+system:
+  # Womit AI-Orb sich selbst neu startet.
+  #
+  # Noetig wird das, sobald der Orb etwas an seinem eigenen Code aendert:
+  # Python liest eine Moduldatei genau einmal, beim Import - ohne Neustart
+  # haette er eine Datei geaendert, aber kein Programm.
+  #
+  # Leer lassen (Vorgabe): Der Startweg wird selbst gesucht. Bei der
+  # installierten Fassung ist das "AI-Orb.exe" zwei Ebenen ueber dem
+  # Programmordner, bei der Arbeitsfassung "ORB-STARTEN.bat" daneben.
+  #
+  # Nur eintragen, wer seine Installation eigenhaendig zurechtgelegt hat -
+  # dann weiss der Eintrag besser als jede Suche, womit sie startet.
+  # Findet AI-Orb keinen Weg, startet er sich NICHT neu: Lieber laufen
+  # bleiben als nicht wiederkommen.
+  restart_command: ""
+
+# =============================================================================
+# Sicherheitsschicht (Phase 8)
+# =============================================================================
+# Jede heikle Aktion laeuft hierueber. Was hier gesperrt ist, wird auch mit
+# Zustimmung nicht ausgefuehrt.
+security:
+  # ---------------------------------------------------------------------------
+  # Betriebsmodus
+  # ---------------------------------------------------------------------------
+  #   geschuetzt  Fragen, sperren, protokollieren. Die Vorgabe.
+  #   offen       Alles erlaubt, nichts gefragt, keine Pfadsperren.
+  #
+  # "offen" ist eine ausdrueckliche Entscheidung, keine Bequemlichkeit. Der
+  # Orb darf dann jede Datei auf jedem Laufwerk lesen und schreiben, seinen
+  # eigenen Code aendern und Systembefehle ausfuehren - ohne dass du gefragt
+  # wirst.
+  #
+  # Zwei Dinge bleiben auch dann bestehen, und zwar mit Absicht:
+  #
+  #   1. Das Pruefprotokoll unter data/security/audit.jsonl. Es kostet
+  #      nichts, stoert nicht und ist hinterher das Einzige, was noch sagen
+  #      kann, was geschehen ist.
+  #   2. Die Sicherung vor Selbstaenderungen (siehe evolution). Ein Orb, der
+  #      sich beim Umbau selbst zerlegt, kann sich nicht mehr reparieren -
+  #      er laeuft ja nicht mehr.
+  #
+  # Beides laesst sich abschalten (audit_enabled, evolution.require_backup),
+  # aber du solltest wissen, dass du es tust.
+  mode: "offen"
+
+  # Wie lange auf eine Antwort im Zustimmungsdialog gewartet wird.
+  # Kommt keine, gilt das als Nein - Schweigen ist keine Zustimmung.
+  # Im offenen Modus ohne Bedeutung, da nicht gefragt wird.
+  consent_timeout_seconds: 120
+
+  # Protokollieren, was der Orb tut. Auch im offenen Modus.
+  audit_enabled: true
+
+  # Berechtigungen, die niemals gewaehrt werden, auch nicht auf Nachfrage.
+  # Im offenen Modus wird diese Liste nicht beachtet.
+  never_allow: []
+
+  # Berechtigungen, die ohne Rueckfrage gelten. Trage hier nur ein, was du
+  # dauerhaft erlauben willst - jeder Eintrag ist eine Frage weniger, die
+  # du siehst.
+  # Im offenen Modus ohne Bedeutung. Fuer den geschuetzten Modus koennen
+  # hier Berechtigungen stehen, die ohne Frage gelten.
+  pre_approved:
+    - "read_files"
+    - "write_files"
+    - "system_commands"
+    - "screen_capture"
+    - "microphone"
+    - "internet"
+
+  # Wie viele Zeilen das Pruefprotokoll hoechstens fuehrt.
+  audit_max_entries: 5000
+
+# =============================================================================
+# Sprachsteuerung (Phasen 2, 4, 15)
+# =============================================================================
+voice:
+  # Gesamtschalter der Sprachsteuerung.
+  enabled: true
+  # Beim Start selbsttaetig zuhoeren. Es wird vorher nach dem Mikrofon gefragt.
+  autostart: true
+  # Wie lange der Orb nach einer Antwort noch ohne Weckwort zuhoert.
+  follow_up_seconds: 25
+  # Aufhoeren zu sprechen, sobald der Benutzer beginnt (akustisch).
+  #
+  # Standardmaessig AUS. Grund: Der Lautsprecher spielt die Stimme des Orb
+  # ab, das Mikrofon hoert sie mit, und ohne Echo-Unterdrueckung haelt der
+  # Orb die eigene Stimme fuer ein Dazwischenreden - er unterbricht sich
+  # selbst. Zum Unterbrechen dient stattdessen die Enter-Taste (siehe
+  # interrupt_key), die dieses Problem nicht hat.
+  #
+  # Wer ein Headset benutzt (kein Echo zum Mikrofon), kann dies auf true
+  # setzen und das akustische Dazwischenreden zusaetzlich nutzen.
+  barge_in: false
+  # Wie lange durchgehend gesprochen werden muss, damit es als
+  # Unterbrechung gilt (Millisekunden). Nur wirksam bei barge_in: true.
+  barge_in_hold_ms: 270
+  # Gesprochene Woerter, die die Sprachausgabe abbrechen.
+  #
+  # Der Orb hoert waehrend des Sprechens darauf - sagst du "stop", haelt er
+  # sofort an und hoert dir zu. Bewusst kurze, markante Woerter, damit der
+  # Orb sie in seiner eigenen Antwort nicht versehentlich ausloest.
+  stop_words:
+    - "stop"
+    - "stopp"
+    - "halt"
+
+  # Wie lang ein Hoerfenster ist, in dem der Orb waehrend des eigenen
+  # Sprechens nach dem Stop-Wort horcht (Millisekunden).
+  #
+  # Die Fenster ueberlappen sich um die Haelfte. Kuerzer heisst schneller,
+  # aber ein Wort passt dann womoeglich nicht mehr ganz hinein.
+  stop_window_ms: 1200
+
+  # Welches Whisper-Modell nur fuer das Stop-Wort zustaendig ist.
+  #
+  # Absichtlich ein anderes als voice.input.model_size: Das grosse Modell
+  # braucht fuer ein Fenster ein bis drei Sekunden, die Fenster kommen aber
+  # alle 600 Millisekunden. Es kaeme nie hinterher, und in den Luecken ginge
+  # genau das "stop" verloren. Hier wird kein Satz verstanden, sondern auf
+  # drei kurze Woerter gehorcht - dafuer genuegt "base".
+  #
+  # Faellt dieses Modell aus, uebernimmt das grosse. Dann kommt das "stop"
+  # spaet, aber es kommt.
+  stop_model_size: "base"
+
+  # Taste, mit der die Sprachausgabe zusaetzlich unterbrochen wird.
+  #
+  # Leer = aus (Vorgabe): Zum Unterbrechen sagst du "stop". Wer lieber eine
+  # Taste haette, traegt hier z. B. "Enter", "Escape" oder "Space" ein - sie
+  # wird dann nur waehrend des Sprechens abgefangen.
+  interrupt_key: ""
+  # Der abkuerzende Fluss-Weg. Standardmaessig AUS - und du brauchst ihn
+  # nicht mehr.
+  #
+  # Er redete direkt mit dem Sprachmodell und liess dabei die Denkschicht
+  # aus: kein Geschichtsprofessor, keine Werkzeuge, kein Einordnen der
+  # Absicht. Das war der Preis dafuer, frueh zu sprechen.
+  #
+  # Seit Fassung 0.5.0 ist dieser Preis nicht mehr faellig: Der gewoehnliche
+  # Weg spricht jeden Satz, sobald er gedacht ist, UND behaelt die ganze
+  # Denkschicht. Werkzeugaufrufe werden dabei zurueckgehalten - sie stehen
+  # als eingezaeunter Block mitten in der Antwort und duerfen nie vorgelesen
+  # werden.
+  #
+  # Dieser Schalter bleibt nur als Rueckfallebene bestehen. Wer ihn
+  # einschaltet, bekommt wieder den abkuerzenden Weg - also weniger.
+  stream_speech: false
+
+  # ---------------------------------------------------------------------------
+  # Auf wen der Orb hoert
+  # ---------------------------------------------------------------------------
+  # Das Mikrofon hoert alles: den Fernseher, ein Gespraech nebenan, eine
+  # Videokonferenz. Ohne diese Pruefung ist dem Orb jede Stimme gleich viel
+  # wert, und er nimmt Saetze als Anweisung entgegen, die niemand an ihn
+  # gerichtet hat.
+  #
+  # Wirksam wird das erst, wenn eine Stimme hinterlegt ist. Sag dem Orb
+  # "lern dir meine Stimme", dann fragt er ein paar Saetze ab. Mit
+  # "vergiss meine Stimme" hoert er wieder auf jeden.
+  #
+  # Was das leistet und was nicht: Es erkennt zuverlaessig, dass eine
+  # deutlich andere Stimme spricht. Es ist kein Stimmschloss - eine sehr
+  # aehnliche Stimme oder eine starke Erkaeltung koennen es taeuschen.
+  speaker:
+    # Ob ueberhaupt geprueft wird. Ohne hinterlegte Stimme wirkungslos.
+    enabled: true
+
+    # Wie viele Saetze zum Lernen abgefragt werden.
+    #
+    # Mehrere sind noetig, nicht bloss nett: Aus einer einzigen Aufnahme
+    # liesse sich nicht abschaetzen, wie sehr die eigene Stimme von Mal zu
+    # Mal schwankt - und genau daraus entsteht die Erkennungsschwelle.
+    enrollment_utterances: 3
+
+    # Die Untergrenze der Erkennungsschwelle (0 bis 1).
+    #
+    # Hoeher = strenger, aber auch anfaelliger dafuer, die eigene Stimme
+    # nicht mehr zu erkennen. Reagiert der Orb noch auf den Fernseher,
+    # erhoehe diesen Wert in kleinen Schritten (0.60, 0.65 ...).
+    min_similarity: 0.55
+
+    # Die Obergrenze der Erkennungsschwelle.
+    #
+    # Klangen die Lernaufnahmen einander sehr aehnlich - etwa, weil sie
+    # kurz nacheinander im selben Ton entstanden -, ergaebe die Rechnung
+    # eine Schwelle, an der spaeter die eigene Stimme scheitert, sobald sie
+    # muede, erkaeltet oder weiter weg ist. Dies ist die Decke der Strenge.
+    #
+    # Von 0.80 auf 0.55 gesenkt: Das Protokoll zeigte, dass der Orb die
+    # eigene Stimme des Benutzers abwies ("Fremde Stimme ueberhoert",
+    # Aehnlichkeit 0.62-0.79 gegen Schwelle 0.80). Die Lernaufnahmen waren
+    # zu gleichfoermig, die Schwelle stand deshalb an der Decke - und die
+    # Alltagsstimme kam nicht mehr durch. 0.55 laesst den Benutzer sicher
+    # durch (er lag stets darueber) und weist eine wirklich fremde Stimme,
+    # die meist deutlich tiefer liegt, weiter ab. Wer es strenger will,
+    # lernt die Stimme mit "Stimme lernen" neu ein (mit etwas Abstand
+    # zwischen den Proben) und hebt diesen Wert wieder an.
+    max_threshold: 0.55
+
+    # Wie viel Nachsicht unter der Aehnlichkeit der Lernaufnahmen bleibt.
+    #
+    # Groesser = nachsichtiger. Wer haeufig faelschlich ueberhoert wird,
+    # erhoeht diesen Wert (0.10, 0.15).
+    margin: 0.06
+
+  # Klaenge, die den Zustand hoerbar machen.
+  #
+  # Der Orb zeigte bisher nur, dass er nachdenkt: rot, wirbelnder Nebel.
+  # Wer gerade nicht hinsieht - und das ist bei einem Sprachassistenten die
+  # Regel, sonst braeuchte man ihn nicht -, hoerte nach der Frage bloss
+  # Stille und wusste nicht, ob sie angekommen ist.
+  #
+  # Ein kurzer Klang beantwortet das, ohne ein Wort zu kosten.
+  sounds_enabled: true
+
+  # Dazwischenreden beendet die Sprachausgabe.
+  #
+  # Sprichst du, waehrend der Orb spricht, hoert er auf - ganz gleich, was
+  # du sagst. Du musst also nicht mehr "stop" rufen, sondern kannst einfach
+  # anfangen zu reden, wie bei einem Menschen.
+  #
+  # Moeglich wird das erst durch die hinterlegte Stimme, und zwar aus einem
+  # Grund, der vorher unueberwindbar war: Das Mikrofon hoert waehrend des
+  # Sprechens vor allem den Orb selbst. Ohne zu wissen, WESSEN Stimme da
+  # liegt, haette jede Silbe seiner eigenen Antwort ihn unterbrochen.
+  #
+  # Ohne hinterlegte Stimme bleibt es beim Stop-Wort.
+  interrupt_on_speech: true
+
+  # Wie viele Hoerfenster nacheinander fremde Worte enthalten muessen,
+  # bevor der Wortvergleich die Antwort abbricht.
+  #
+  # Das ist die Einstellung gegen "der Orb unterbricht sich selbst".
+  #
+  # Der Wortvergleich arbeitet nicht auf sauberer Sprache, sondern auf dem,
+  # was die Erkennung aus dem Echo der eigenen Stimme macht - und das ist
+  # ein Text mit verhoerten und erfundenen Woertern. Ein einzelnes solches
+  # Fenster genuegte, um mitten im Satz abzubrechen.
+  #
+  # Wer wirklich dazwischenredet, tut das laenger als ein Fenster (gut eine
+  # Sekunde). Ein Verhoerer ist ein einmaliger Ausrutscher und im naechsten
+  # Fenster wieder weg. Zwei Fenster trennen die beiden Faelle und kosten
+  # dafuer knapp eine Sekunde.
+  #
+  #   1  ->  reagiert sofort, unterbricht sich aber gelegentlich selbst
+  #   2  ->  Voreinstellung
+  #   3  ->  sehr ruhig, aber traege beim Dazwischenreden
+  #
+  # Die Stimmerkennung bleibt davon unberuehrt: Erkennt sie deine Stimme,
+  # bricht sie weiterhin sofort ab.
+  interrupt_windows: 2
+
+  # Wie sicher die Erkennung sein muss, damit ihr Text ueberhaupt als
+  # Zwischenruf zaehlt (0.0 bis 1.0).
+  #
+  # Ein Hoerfenster mit dem Echo der eigenen Stimme wird schlecht erkannt,
+  # weil es kein sauberes Sprachsignal ist. Genau dort erfindet die
+  # Erkennung Woerter - und genau die sahen wie fremde Rede aus.
+  interrupt_min_confidence: 0.45
+
+  # Nach dem Weckwort kurz bestaetigen, dass zugehoert wird.
+  acknowledge_wake: true
+  acknowledge_text: "Ja?"
+  # Wie viele Gespraechsdurchgaenge im Verlauf bleiben.
+  max_history: 50
+
+  wake_word:
+    # Die Saetze, die den Orb wecken. Mehrere sind moeglich.
+    #
+    # "Orb" allein steht mit dabei, weil der Benutzer den Orb genau so
+    # anspricht ("Orb, oeffne YouTube") - im Protokoll wurde jeder solche
+    # Satz verstanden, aber nie ausgefuehrt, weil das Weckwort "Hallo Orb"
+    # darin nicht vorkam. Und weil die Spracherkennung "Hallo Orb" haeufig
+    # zu "ein weiter Orb" oder "weisser Orb" verhoert, in denen "Orb" aber
+    # sauber steht, faengt "Orb" diese Faelle gleich mit. Dass davor bis zu
+    # drei Woerter stehen duerfen (max_leading_words), verhindert, dass ein
+    # "Orb" mitten im Satz weckt.
+    phrases:
+      - "Hallo Orb"
+      - "Hey Orb"
+      - "Orb"
+    # Dauerhaft auf das Weckwort hoeren. Solange es nicht faellt, wird
+    # nichts weitergegeben und nichts gespeichert.
+    always_on: true
+    # Ab welcher Aehnlichkeit ein Treffer gilt (0.0 bis 1.0). Hoehere Werte
+    # bedeuten strengere Erkennung.
+    threshold: 0.78
+    # Wie viele Woerter vor dem Weckwort stehen duerfen.
+    max_leading_words: 3
+
+  input:
+    # Whisper-Modellgroesse: tiny | base | small | medium | large-v3
+    # "small" ist fuer Deutsch der brauchbare Kompromiss - "base" verhoert
+    # sich auf Deutsch deutlich oefter. Die Erkennung dauert mit "small"
+    # einen Wimpernschlag laenger; verstanden zu werden ist das wert.
+    # Wer eine schnelle Maschine hat und noch genauer verstanden werden
+    # will, traegt "medium" ein (1,5 GB, spuerbar langsamer).
+    model_size: "small"
+    language: "de"
+    # cpu | cuda | auto
+    device: "auto"
+    compute_type: "int8"
+    # 2 statt 1: Whisper wagt einen zweiten Deutungsversuch je Wort.
+    # Merklich genauer bei Dialekt und Nebengeraeuschen, kaum langsamer.
+    # Wie viele Moeglichkeiten gleichzeitig verfolgt werden.
+    #
+    # Hoeher heisst genauer und langsamer. Von 2 auf 5 kostet je Aeusserung
+    # einige Zehntelsekunden und faengt genau die Faelle ab, in denen die
+    # erste Vermutung knapp danebenliegt - also die, bei denen man denkt,
+    # er habe nicht zugehoert.
+    beam_size: 5
+
+    # Der Anfangshinweis fuer die Spracherkennung.
+    #
+    # Das ist der billigste Hebel, den es hier gibt, und er kostet keine
+    # Rechenzeit. Whisper bedingt seine Ausgabe auf diesen Text, als waere
+    # er das, was unmittelbar davor gesagt wurde. Ohne ihn raet es
+    # Fachbegriffe und Eigennamen nach dem, was im Deutschen allgemein
+    # haeufig ist: "Hallo Orb" wird zu "Hallo Robert", "Historiografie" zu
+    # "Historio Grafie".
+    #
+    # Hier gehoeren die Woerter hinein, die DU oft sagst und die selten
+    # sind: dein Weckwort, deine Fachbegriffe, Namen. Ausgegeben wird der
+    # Text nie.
+    initial_prompt: >-
+      Ein Gespraech mit AI-Orb, einem deutschsprachigen Assistenten.
+      Haeufige Woerter: Hallo Orb, Hey Orb, stopp, Bildschirm, Datei,
+      Ordner, Browser, Programm starten, Mail, Termin, Notiz.
+      Fachgebiete: Geschichtswissenschaft, Historiografie, Quellenkritik,
+      Politikwissenschaft, Voelkerrecht, Diplomatie, Archivarbeit,
+      Sekundaerliteratur, militaerische Konflikte, Geopolitik.
+      Kuenstliche Intelligenz, Sprachmodell, Algorithmus, Datensatz,
+      Regulierung. Volkswirtschaft, Inflation, Leitzins, Lieferkette,
+      Bruttoinlandsprodukt, Ungleichheit.
+    # Mikrofon; leer lassen fuer das Standardgeraet.
+    microphone: null
+    # Wie viel vor dem erkannten Sprachbeginn mitgespeichert wird.
+    preroll_ms: 400
+    # Wie lange Stille eine Aeusserung beendet.
+    silence_ms: 900
+    # Empfindlichkeit der Sprachaktivitaetserkennung.
+    threshold_factor: 3.0
+    minimum_speech_ms: 350
+    max_utterance_seconds: 20
+    # Unter dieser Verlaesslichkeit wird nachgefragt statt geraten.
+    min_confidence: 0.35
+
+    min_characters: 2
+
+    # Unter dieser Sicherheit fragt der Orb nach, statt zu antworten.
+    #
+    # Der Anlass steht im Protokoll: Von vierzehn erkannten Aeusserungen
+    # lagen acht unter 0.90, und mehrere waren Kauderwelsch - "Forte Forte,
+    # Dein Landtort", "Kommst du die Suche der Politen irgendwie?".
+    #
+    # Das Schlimme daran ist nicht die Fehlerkennung. Es ist, dass der Orb
+    # DARAUF ANTWORTET: Er bekommt einen Satz, den nie jemand gesagt hat,
+    # denkt darueber nach und redet - und du haeltst IHN fuer kaputt.
+    #
+    # Ein Mensch fragt in so einem Fall nach. Kurze Aeusserungen und das
+    # Stop-Wort sind ausgenommen: Sie werden oft unsicher erkannt, und dort
+    # ist der Schaden klein.
+    #
+    #   0.70  ->  fragt selten nach, laesst mehr Unsinn durch
+    #   0.78  ->  Voreinstellung
+    #   0.85  ->  fragt oft nach; nur sinnvoll bei schwierigem Mikrofon
+    rueckfrage_unter: 0.78
+    rueckfrage_text: "Das habe ich nicht sicher verstanden. Sagst du es noch einmal?"
+
+  output:
+    # Der Klang, der beim Nachdenken erklingt.
+    #
+    # Absichtlich LEER. Er kam vor jeder Antwort und damit oefter als jeder
+    # andere Klang - und ein Ton, den man bei jeder Frage hoert, ist nach
+    # einem Tag keine Auskunft mehr, sondern Geraeusch. Dass der Orb
+    # nachdenkt, zeigt ohnehin die Farbe.
+    #
+    # Wer ihn zurueckwill, traegt hier wieder "audio/denken.wav" ein; die
+    # Datei liegt weiterhin bei. Der Pfad wird zuerst im Datenordner
+    # gesucht und dann im Programmordner.
+    thinking_sound: ""
+
+    # Der Klang, der ertoent, sobald der Orb zuzuhoeren beginnt - also nach
+    # dem Weckwort. Er ist die hoerbare Antwort darauf: Ohne ihn beginnt man
+    # zu sprechen und weiss erst hinterher, ob ueberhaupt jemand zugehoert
+    # hat.
+    listening_sound: "audio/zuhoeren.wav"
+
+    # Der Klang, wenn der Orb etwas TUT statt sagt: ein Programm starten,
+    # eine Seite oeffnen, etwas installieren, eine Datei schreiben.
+    #
+    # Er gilt nicht fuer jedes Werkzeug. Die Uhrzeit abzulesen oder zu
+    # rechnen gehoert zur Antwort; da waere ein Ton bald nur noch Laerm.
+    # Er ertoent bei den Berechtigungen launch_application,
+    # install_dependencies, system_commands, write_files und
+    # modify_own_code - also ueberall dort, wo sich der Rechner aendert
+    # und nicht bloss das Gespraech.
+    action_sound: "audio/aktion.wav"
+
+    # Der Klang beim Hochfahren: "Ich bin da."
+    #
+    # Er kommt, wenn der Kern wirklich bereit ist, nicht wenn das Fenster
+    # erscheint. Ein Klang, der zu frueh ertoent, verspricht etwas, was
+    # noch nicht gilt.
+    startup_sound: "audio/start.wav"
+    enabled: true
+    # Reihenfolge der Verfahren. Das erste verfuegbare wird benutzt, bei
+    # einem Fehler das naechste.
+    #
+    #   piper  - neuronal, auf Deutsch trainiert, laeuft lokal. Empfohlen.
+    #   sapi   - Windows-Sprachausgabe. Immer da, keine Installation noetig.
+    #   kokoro - sehr natuerlich, beherrscht aber KEIN Deutsch.
+    engines:
+      # elevenlabs zuerst: die authentische Stimme, solange Schluessel und
+      # Guthaben da sind. Faellt sie aus - kein Netz, Guthaben leer,
+      # Schluessel abgelaufen -, uebernimmt Thorsten lautlos. Der Orb
+      # verstummt dadurch nie.
+      - "elevenlabs"
+      - "piper"
+      - "sapi"
+      - "kokoro"
+    # Sprechgeschwindigkeit und Lautstaerke (1.0 ist normal).
+    # 0.92 laesst Thorsten eine Spur langsamer und damit deutlicher
+    # sprechen - bei 1.0 wirkte er teils gehetzt und schwer verstaendlich.
+    speed: 0.92
+    volume: 1.0
+    # Atempause zwischen zwei Saetzen. Ohne sie kleben die Saetze
+    # aneinander und die Rede wirkt gehetzt.
+    sentence_pause_ms: 180
+    # Gefuehlslage der Stimme aus Zustand und Text ableiten.
+    emotions_enabled: true
+    # Erzeugte Sprache wiederverwenden, statt sie neu zu berechnen.
+    cache_enabled: true
+    # Ab welcher Laenge eine Antwort in Abschnitte zerlegt wird.
+    max_characters: 1200
+    # Was beim Vorwaermen gesprochen wird.
+    warmup_text: "Bereit."
+
+    piper:
+      # Deutsche Stimmen, von fluessig nach genuegsam:
+      #
+      #   de_DE-thorsten-high      groesstes Modell, deutlich weicher und
+      #                            weniger blechern. Voreinstellung.
+      #   de_DE-thorsten-medium    schneller, hoerbar kaerger
+      #   de_DE-thorsten-low       nur fuer schwache Rechner
+      #   de_DE-eva_k-x_low, de_DE-kerstin-low, de_DE-ramona-low  (weiblich)
+      #   de_DE-karlsson-low
+      #
+      # "high" ist die natuerlichste lokale deutsche Stimme. Sie braucht
+      # etwas mehr Rechenzeit je Satz, aber die Luecken zwischen den Saetzen
+      # sind ohnehin verschwunden (der naechste Satz wird vorbereitet,
+      # waehrend der aktuelle laeuft). Wer einen sehr langsamen Rechner hat,
+      # nimmt "de_DE-thorsten-medium".
+      #
+      # Wirklich natuerlich (wie ein Mensch) wird es nur mit einer
+      # Cloud-Stimme - siehe den Abschnitt speechgen weiter unten.
+      voice: "de_DE-thorsten-high"
+      models_directory: "models/piper"
+      # Lebendigkeit der Stimme. Hoehere Werte klingen weniger monoton,
+      # aber zu hoch wird die Aussprache hastig und undeutlich.
+      # noise_w gibt Rhythmus (Schwankung der Lautlaengen), noise_scale gibt
+      # Ausdruck (Schwankung im Klang). 0.8 / 0.667 sind die Werte, mit
+      # denen Thorsten-high trainiert wurde - dort spricht er am klarsten.
+      noise_w: 0.8
+      noise_scale: 0.667
+
+    sapi:
+      # Leer lassen: AI-Orb waehlt dann die erste deutsche Windows-Stimme.
+      voice: ""
+      timeout: 60
+
+    kokoro:
+      voice: "af_heart"
+      language: "en"
+
+    # Die authentische Stimme ueber ElevenLabs (Netz, Schluessel noetig).
+    #
+    # Deutlich natuerlicher als die lokalen Stimmen UND schneller als das
+    # grosse Piper-Modell, weil im Netz erzeugt. Der Preis: Der zu
+    # sprechende Text geht an einen fremden Server - eine bewusste Wahl,
+    # keine Voreinstellung.
+    #
+    # So schaltest du sie ein:
+    #   1. ELEVENLABS_API_KEY in die .env eintragen
+    #   2. hier eine voice_id setzen (z. B. die von "Miles" aus deinem
+    #      ElevenLabs-Konto)
+    #   3. "elevenlabs" oben in voice.output.engines an die erste Stelle
+    #      setzen
+    # Ohne Schluessel bleibt sie still und Piper uebernimmt.
+    elevenlabs:
+      # Die gewaehlte Stimme des Benutzers.
+      #
+      # Steht hier eine Kennung, wird die Stimmenliste gar nicht erst
+      # abgefragt - das spart einen Netzaufruf je Sitzung und funktioniert
+      # auch mit einem Schluessel, der nur sprechen, aber nichts lesen darf.
+      # Leer lassen heisst: selbst suchen (siehe elevenlabs_engine.py).
+      # Zurueck auf die Stimme, die nachweislich funktioniert hat.
+      #
+      # Die zwischenzeitlich eingetragene Kennung lieferte kein Audio - und
+      # weil der Orb eine stumme Ausgabe faelschlich fuer erledigt hielt,
+      # schwieg er ganz. Eine Stimmkennung, die das Konto nicht kennt, ist
+      # kein Schoenheitsfehler, sondern ein stummer Assistent.
+      voice_id: "TVGn2JVJHeMuzxos8a3h"
+      # eleven_turbo_v2_5 ist die preiswerte Wahl: halber Zeichenpreis
+      # gegenueber eleven_multilingual_v2, beherrscht Deutsch und klingt
+      # sehr nah am grossen Modell - und antwortet schneller.
+      # Wer die letzte Nuance will: "eleven_multilingual_v2" (doppelt so
+      # teuer). Wer noch schneller will: "eleven_flash_v2_5" (gleicher
+      # Preis wie turbo, etwas weniger Ausdruck).
+      model: "eleven_turbo_v2_5"
+      api_key_env: "ELEVENLABS_API_KEY"
+
+    # SpeechGen.io - fluessige, natuerliche Cloud-Stimme (Schluessel noetig).
+    #
+    # So schaltest du sie ein:
+    #   1. SPEECHGEN_TOKEN und SPEECHGEN_EMAIL in die .env eintragen
+    #      (aus deinem SpeechGen-Konto unter "API")
+    #   2. hier den Namen der gewuenschten deutschen Stimme setzen, z. B.
+    #      eine der deutschen Stimmen aus der SpeechGen-Stimmenliste
+    #   3. "speechgen" oben in voice.output.engines an die erste Stelle
+    #      setzen
+    # Ohne Zugangsdaten bleibt sie still und Piper uebernimmt. Der Text geht
+    # dabei an SpeechGens Server.
+    speechgen:
+      voice: ""
+      token_env: "SPEECHGEN_TOKEN"
+      email_env: "SPEECHGEN_EMAIL"
+
+    # Eigener TTS-Server (z. B. CSM-1B auf einer GPU) - die "Miles"-Stimme.
+    #
+    # CSM-1B ist auf einem gewoehnlichen Rechner zu langsam. Deshalb laeuft
+    # das Modell auf einer GPU (Colab oder gemieteter Server), und AI-Orb
+    # ruft es uebers Netz. Wie man den Server startet, steht in
+    # docs/STIMME_CSM.md und unter server/.
+    #
+    # endpoint: die Adresse deines Servers (z. B. eine Colab-Tunnel-URL).
+    #           Leer = aus, dann uebernimmt Piper.
+    # Ein optionaler Zugangstoken kommt in die .env (REMOTE_TTS_TOKEN).
+    remote:
+      endpoint: ""
+      token_env: "REMOTE_TTS_TOKEN"
+      speaker: 0
+      timeout: 30
+
+# =============================================================================
+# Werkzeuge (Phase 9)
+# =============================================================================
+# =============================================================================
+# Recherche: mehrere Quellen statt eines besten Treffers
+# =============================================================================
+# Der Benutzer fragte, ob der Orb auch andere Berichterstattung einbezieht -
+# Al Jazeera etwa. Vorher: nein. Nicht weil etwas gesperrt gewesen waere,
+# sondern weil niemand danach fragte. Der Orb las, was in der Trefferliste
+# oben stand, und das ist bei deutschsprachigen Fragen fast immer
+# tagesschau oder zdfheute.
+#
+# Wer wissen will, wie ueber einen Konflikt BERICHTET wird, braucht nicht
+# den besten Treffer, sondern mehrere Darstellungen nebeneinander - und den
+# Hinweis, wo sie auseinandergehen. Der beste Treffer leistet das nicht: Er
+# ist eine Sicht, die sich als die Sache ausgibt.
+recherche:
+  # Mehrere Haeuser parallel befragen, wenn es um Aktuelles geht.
+  mehrquellen: true
+
+  # Wie viele Treffer je Haus. Drei genuegen, um die Stossrichtung zu
+  # erkennen; mehr blaehen nur den Kontext auf.
+  treffer_je_quelle: 3
+
+  # Wie viele Anfragen gleichzeitig laufen duerfen.
+  #
+  # Nicht hochsetzen. Acht Anfragen im selben Augenblick haelt jede
+  # Suchmaschine fuer einen Angriff - dann kommt gar nichts zurueck.
+  gleichzeitig: 4
+
+  # Die Haeuser. Bewusst ueber Sprachraeume verteilt: Eine Nachricht aus
+  # Doha ist anders gerahmt als dieselbe aus London oder Zuerich, und
+  # genau dieser Unterschied ist die Auskunft.
+  #
+  # 'einschraenkung' geht als site:-Zusatz in die Suchanfrage. Wer eine
+  # Quelle herausnehmen will, loescht die Zeile; wer eine hinzufuegen
+  # will, braucht Name und Domaene.
+  quellen:
+    - {name: "tagesschau (DE)",    einschraenkung: "site:tagesschau.de"}
+    - {name: "NZZ (CH)",           einschraenkung: "site:nzz.ch"}
+    - {name: "BBC (UK)",           einschraenkung: "site:bbc.com"}
+    - {name: "Al Jazeera (QA)",    einschraenkung: "site:aljazeera.com"}
+    - {name: "Le Monde (FR)",      einschraenkung: "site:lemonde.fr"}
+    - {name: "Reuters",            einschraenkung: "site:reuters.com"}
+
+  # --- Die eigenen Favoriten als Rechercheziel ------------------------------
+  #
+  # Die Favoritenleiste eines Wissenschaftlers ist seine ueber Jahre
+  # gesammelte Quellensammlung. Bisher konnte der Orb darin nur die
+  # LESEZEICHEN durchsuchen - Titel, Adresse, Ordnername. Was auf diesen
+  # Seiten steht, blieb ihm verschlossen: Aus einem Archivportal in der
+  # Leiste wurde ein Link, keine durchsuchbare Quelle.
+  #
+  # Jetzt zieht er die Domaenen aus den Favoriten und sucht gezielt DARIN.
+  favoriten:
+    # Bei Fachfragen zuerst in den eigenen Quellen suchen.
+    nutzen: true
+    # Nur Favoriten aus diesem Ordner (leer = alle).
+    #
+    # Empfohlen: einen Ordner anlegen und die wissenschaftlichen Quellen
+    # hineinlegen. Sonst landen auch der Onlineshop und das Kochrezept in
+    # der Recherche.
+    ordner: ""
+    # Wie viele verschiedene Domaenen hoechstens befragt werden.
+    max_domaenen: 4
+    # Wie viele Treffer je Domaene.
+    treffer_je_domaene: 3
+
+tools:
+  enabled: true
+  # Wie oft das Modell hoechstens ein Werkzeug aufrufen darf, bevor es
+  # abschliessend antworten muss. Verhindert Endlosschleifen.
+  max_rounds: 4
+  # Wie viel Werkzeugausgabe hoechstens an das Modell zurueckgeht.
+  max_output_characters: 4000
+
+# =============================================================================
+# Browsersteuerung
+# =============================================================================
+# Der Orb bedient ein echtes Browserfenster - scrollen, klicken, tippen,
+# Formulare. Getragen von Playwright. Einmalig einzurichten mit
+# BROWSER-EINRICHTEN.bat (installiert Playwright und den Browser). Erst dann
+# steht das Werkzeug 'browser_bedienen' wirklich zur Verfuegung; vorher meldet
+# es ruhig, dass die Einrichtung fehlt.
+browser:
+  enabled: true
+
+  # Ein EIGENES, dauerhaftes Profil. Wer sich darin einmal irgendwo anmeldet,
+  # ist beim naechsten Mal noch angemeldet - wie in einem normalen Browser.
+  # Der Orb sieht dabei nie ein Passwort; es bleibt im Profil des Browsers.
+  # Leer lassen = Vorgabe (models/browser-profil im Projektordner).
+  profil_pfad: ""
+
+  # Das Fenster sichtbar zeigen (true) oder unsichtbar im Hintergrund (false).
+  # Sichtbar ist ehrlicher: Man sieht, was der Orb tut, und kann eingreifen.
+  sichtbar: true
+
+  # Welcher Browser. "chrome" nimmt das installierte Google Chrome (mit deinen
+  # gewohnten Anmeldungen erreichbar, sobald du dich im Orb-Profil anmeldest).
+  # Leer = der von Playwright mitgelieferte Chromium.
+  kanal: "chrome"
+
+  # Statt eines eigenen Profils an ein SCHON LAUFENDES Chrome anhaengen, das
+  # mit --remote-debugging-port gestartet wurde. Fuer Fortgeschrittene; leer
+  # lassen, dann nimmt der Orb sein eigenes Profil.
+  cdp_url: ""
+
+  # Wie lange (in Millisekunden) auf ein Element gewartet wird, bevor eine
+  # Aktion als gescheitert gilt.
+  zeitlimit_ms: 15000
+
+# =============================================================================
+# Plugins (Phase 6)
+# =============================================================================
+plugins:
+  directory: "plugins"
+  # Vor dem Laden fragen. Ein Plugin ist fremder Programmcode.
+  require_confirmation: true
+  # Plugins mit "enabled: true" beim Start laden. Standardmaessig aus.
+  auto_load: false
+
+# =============================================================================
+# Arbeitsablaeufe (Phase 19)
+# =============================================================================
+workflows:
+  enabled: true
+  max_steps: 25
+
+# =============================================================================
+# Bildverstehen (Phase 9/16)
+# =============================================================================
+vision:
+  enabled: true
+  # Bildschirmbilder an das Sprachmodell uebertragen duerfen. Auf false
+  # bleibt alles lokal; der Text laesst sich trotzdem auslesen.
+  allow_image_to_model: true
+  # Aufnahmen nach der Auswertung behalten. Standardmaessig aus.
+  keep_after_analysis: false
+  # Nach wie vielen Minuten eine Aufnahme geloescht wird.
+  keep_minutes: 10
+  # Laengste Bildkante. Groessere Aufnahmen werden verkleinert.
+  max_edge: 1600
+  # Sprachen fuer die Texterkennung.
+  ocr_languages: "deu+eng"
+
+# =============================================================================
+# Antwortpipeline (Phase 17)
+# =============================================================================
+pipeline:
+  timeout_seconds: 180
+  retries_per_stage: 1
+  minimum_answer_characters: 1
+  last_resort_message: >-
+    Ich kann gerade nicht antworten. Das Sprachmodell ist nicht erreichbar -
+    pruefe die Internetverbindung oder starte AI-Orb neu. Die Einzelheiten
+    stehen im Protokoll.
+
+# =============================================================================
+# Lernen aus der Nutzung (Phase 12)
+# =============================================================================
+learning:
+  enabled: true
+
+  # Ob der Orb an offenen Fragen weiterarbeitet, wenn gerade nichts zu tun ist.
+  #
+  # Er nimmt sich dabei je Durchgang GENAU EINE Frage vor, und zwar aus dem
+  # Thema, an dem am laengsten nicht gearbeitet wurde. Nicht aus Sparsamkeit:
+  # Eine Recherche, die sich selbst weitertreibt, ergibt nach einer Nacht ein
+  # Thema mit dreihundert Aussagen, die niemand mehr durchsieht.
+  #
+  # Er sagt dabei nichts von sich aus. Das Ergebnis steht im Protokoll und im
+  # Ereigniskanal - wer wissen will, was dazugekommen ist, fragt "was weisst
+  # du ueber X". Ein Assistent, der unaufgefordert zu reden beginnt, weil er
+  # gerade etwas gelesen hat, waere eine Zumutung.
+  #
+  # Auf false arbeitet er nur, wenn du ihn darum bittest.
+  autonomous: true
+
+  # Ob der Lehrplan beim Start angelegt wird.
+  #
+  # Er traegt Fragen zu Geschichtswissenschaft, den Epochen von der Antike
+  # bis zur Neuesten Geschichte, globaler Politik und globalen Konflikten
+  # ein - siehe backend/learning/lehrplan.py. Der Orb arbeitet sie mit der
+  # Zeit ab, eine je Wartungsdurchgang.
+  #
+  # Bestehende Themen werden dabei ERGAENZT und nie ueberschrieben: Was du
+  # ihm selbst erklaert hast, bleibt stehen.
+  curriculum: true
+
+  # Ab wie vielen Beobachtungen eine Vorliebe als belegt gilt.
+  minimum_observations: 8
+
+# =============================================================================
+# Wissensbasis (Phase 7/11)
+# =============================================================================
+knowledge:
+  enabled: true
+  # Zeichen je Abschnitt beim Zerlegen eines Dokuments.
+  passage_characters: 900
+  max_document_mb: 10
+  # Ab welcher Aehnlichkeit ein Abschnitt als Treffer gilt.
+  minimum_score: 0.06
+
+# =============================================================================
+# Praesenz und Persoenlichkeit (Phase 8/14)
+# =============================================================================
+presence:
+  # Grundstimmung, zu der der Orb zurueckkehrt.
+  baseline_valence: 0.15
+  baseline_arousal: 0.3
+  # Wie stark Ereignisse auf die Stimmung wirken. 0 schaltet sie ab.
+  emotion_intensity: 1.0
+  # Ruhezeit: gedaempft, keine Hinweise von sich aus.
+  quiet_hours: [22, 7]
+  night_brightness: 0.55
+  # Nach wie vielen Stunden ohne Kontakt wieder begruesst wird.
+  greeting_gap_hours: 6
+  # Von sich aus sprechen duerfen. Standardmaessig aus.
+  proactive_enabled: false
+  proactive_gap_minutes: 45
+
+personality:
+  name: "AI-Orb"
+  # Alle Werte von 0.0 bis 1.0. Mittlere Werte wirken sich nicht aus -
+  # nur deutliche Auspraegungen aendern den Ton.
+  waerme: 0.6
+  ausfuehrlichkeit: 0.4
+  foermlichkeit: 0.3
+  humor: 0.25
+  eigeninitiative: 0.4
+  vorsicht: 0.7
+
+# =============================================================================
+# Launcher und Installation (Phasen 45, 52, 55, 58, 59)
+# =============================================================================
+# Diese Einstellungen betreffen den Start der installierten Fassung. Im
+# Quellbetrieb wirken die meisten davon nicht.
+launcher:
+  # Beim Start jeden Dienst pruefen und den Bericht ins Protokoll schreiben.
+  health_check: true
+
+  # Abstand der Ueberwachungspruefungen in Sekunden. Kleinere Werte erkennen
+  # einen Ausfall frueher und kosten etwas mehr Leerlauf.
+  supervision_interval: 5
+
+  # Wie oft ein ausgefallener Dienst hoechstens neu gestartet wird.
+  # Danach wird aufgegeben und im Klartext gesagt, was fehlt.
+  max_restarts: 3
+
+  # Ladebildschirm waehrend des Starts zeigen.
+  splash_screen: true
+
+  # Ollama beim Start mitstarten, falls es installiert ist.
+  start_ollama: true
+
+  # Das Offline-Modell ungefragt herunterladen. Standardmaessig aus:
+  # llama3.1:8b sind rund fuenf Gigabyte, und die laedt man nicht nebenbei.
+  download_offline_model: false
+
+# =============================================================================
+# Aktualisierung (Phase 56)
+# =============================================================================
+update:
+  # Beim Start nach einer neuen Fassung sehen. Es wird nichts installiert,
+  # nur gemeldet.
+  check_on_start: false
+
+  # Ein Update fasst diese Dinge niemals an - unabhaengig von allem anderen.
+  # Die Liste steht hier, damit sie nachlesbar ist, nicht damit sie
+  # geaendert wird.
+  never_touch:
+    - "Gedaechtnis"
+    - "Benutzereinstellungen"
+    - "Projekte"
+    - "Wissensnetz"
+    - "Positionsdaten"
+    - "Zugangsdaten"

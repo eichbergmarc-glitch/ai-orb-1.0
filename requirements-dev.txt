@@ -1,0 +1,15 @@
+# =============================================================================
+# AI-Orb – Abhängigkeiten für die Tests
+# =============================================================================
+# Diese Pakete werden ausschließlich zum Ausführen der Tests benötigt.
+# AI-Orb selbst läuft vollständig ohne sie.
+#
+# Installation:
+#     .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#
+# Ausführen:
+#     .venv\Scripts\python.exe -m pytest tests/
+# =============================================================================
+
+pytest>=8.0
+pytest-asyncio>=0.23

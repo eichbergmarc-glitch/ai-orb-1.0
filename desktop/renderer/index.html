@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      Strikte Content-Security-Policy: Die Oberfläche lädt ausschließlich
+      eigene Dateien und spricht ausschließlich mit dem lokalen Backend.
+      Es werden keine externen Ressourcen nachgeladen.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src http://127.0.0.1:* http://localhost:*;"
+    />
+    <title>AI-Orb</title>
+    <link rel="stylesheet" href="styles/themes.css" />
+    <link rel="stylesheet" href="styles/orb.css" />
+  </head>
+  <body>
+    <!--
+      Die gesamte Oberfläche besteht aus genau einem Canvas.
+      Keine Schaltflächen, keine Rahmen, keine HTML-Bedienelemente.
+    -->
+    <canvas id="orb-canvas"></canvas>
+    <script src="renderer.js"></script>
+  </body>
+</html>

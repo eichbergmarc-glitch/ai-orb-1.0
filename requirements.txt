@@ -1,0 +1,25 @@
+# =============================================================================
+# AI-Orb – Python-Abhängigkeiten
+# =============================================================================
+# Bewusst minimal: Das Backend kommt mit einer einzigen Abhängigkeit aus.
+#
+# Der lokale HTTP-/SSE-Server, die Anbindung der Sprachmodelle und die
+# gesamte Persistenz nutzen ausschließlich die Python-Standardbibliothek.
+# Dadurch gibt es nichts zu kompilieren, und die Installation funktioniert
+# auf jeder Python-Version ab 3.10 ohne Build-Werkzeuge.
+#
+# Die Version ist absichtlich nicht fest angepinnt: Eine feste Version, für
+# die es auf deiner Python-Fassung noch kein fertiges Paket gibt, würde die
+# gesamte Installation scheitern lassen.
+# =============================================================================
+
+# Zum Lesen von config.yaml. Einzige Pflicht-Abhängigkeit.
+PyYAML>=6.0
+
+# -----------------------------------------------------------------------------
+# Für die Tests wird zusätzlich pytest benötigt. Diese Pakete stehen in
+# requirements-dev.txt, damit ein Problem dort niemals den normalen Betrieb
+# von AI-Orb verhindert:
+#
+#     .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+# -----------------------------------------------------------------------------

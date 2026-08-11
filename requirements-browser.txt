@@ -1,0 +1,5 @@
+# Browsersteuerung (optional) - der Orb bedient ein echtes Browserfenster.
+# Installiert wird das ueber BROWSER-EINRICHTEN.bat, nicht mit der
+# Grundinstallation: Es zieht einen Browser (~150 MB) nach, den nicht jeder
+# braucht. Fehlt es, meldet das Werkzeug 'browser_bedienen' das ruhig.
+playwright>=1.40

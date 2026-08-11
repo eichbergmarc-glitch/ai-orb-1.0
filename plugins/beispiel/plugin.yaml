@@ -1,0 +1,41 @@
+# =============================================================================
+# Beispiel-Plugin
+# =============================================================================
+# Diese Datei zeigt, wie ein Plugin für AI-Orb aufgebaut ist. Kopiere den
+# Ordner, benenne ihn um und passe die Werte an, um ein eigenes zu bauen.
+#
+# Jedes Feld ausser 'author' und 'requires_version' ist Pflicht.
+# =============================================================================
+
+# Der Aufrufname. Kleinbuchstaben, Ziffern, Bindestrich, Unterstrich.
+name: "beispiel"
+
+# Fassung nach dem Muster 1.0 oder 1.0.3.
+version: "1.0.0"
+
+# Was das Plugin tut. Diesen Text bekommt der Benutzer vor der Freigabe zu
+# sehen - er muss ohne Fachwissen verstaendlich sein und mindestens zehn
+# Zeichen lang.
+description: >-
+  Zeigt, wie ein Plugin aufgebaut ist. Stellt zwei Werkzeuge bereit:
+  eines wuerfelt, eines rechnet Einheiten um.
+
+author: "AI-Orb"
+
+# Die Python-Datei im selben Ordner, die geladen wird. Sie muss eine Klasse
+# namens 'Plugin' enthalten, die von OrbPlugin erbt.
+entry_point: "plugin.py"
+
+# Die verlangten Berechtigungen. Ein Plugin darf nur Werkzeuge anmelden,
+# deren Berechtigung hier steht - alles andere weist AI-Orb ab.
+# Die vollstaendige Liste steht in docs/CONFIG.md.
+permissions:
+  - "compute"
+
+# Ob das Plugin beim Start geladen werden soll. Wirkt nur, wenn zusaetzlich
+# in config.yaml 'plugins.auto_load' eingeschaltet ist - fremder Code laeuft
+# nicht ungefragt mit.
+enabled: false
+
+# Kuerzeste Fassung von AI-Orb, mit der das Plugin laeuft.
+requires_version: "0.3.0"

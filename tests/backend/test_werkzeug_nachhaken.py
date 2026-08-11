@@ -1,0 +1,126 @@
+"""Der Orb hakt nach, wenn das Modell die Werkzeuge nicht anfasst.
+
+Die wiederkehrende Klage war "die Werkzeuge gehen nicht". Das Protokoll
+zeigte etwas anderes: Sie GINGEN - im selben Lauf liefen Suche und Browser -,
+aber auf manche Bitten (vor allem "schau dir den Bildschirm/das Video an")
+antwortete das Modell in Prosa, es KOENNE nicht, statt das passende Werkzeug
+zu rufen. Der Tool-Engine erkennt das jetzt und hakt GENAU EINMAL nach: Er
+fordert das Modell auf, das Werkzeug wirklich zu rufen. Kommt dann ein
+Aufruf, wird er ausgefuehrt.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from backend.events.event_bus import EventBus
+from backend.security.security_engine import SecurityEngine
+from backend.tools.base_tool import Tool, ToolResult
+from backend.tools.registry import ToolRegistry
+from backend.tools.tool_engine import ToolEngine, _klingt_nach_ausrede
+
+
+class _MerkTool(Tool):
+    name = "bildschirm_ansehen"
+    description = "Macht ein Standbild und wertet es aus (Test)."
+    permission = "screen_capture"
+    parameters = ()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gerufen = 0
+
+    async def execute(self, arguments):  # noqa: ANN001, D401
+        self.gerufen += 1
+        return ToolResult.success("Auf dem Bild ist ein Video zu sehen.")
+
+
+class _FakeProvider:
+    """Liefert der Reihe nach vorgegebene Antworten auf chat()."""
+
+    def __init__(self, antworten):
+        self._antworten = list(antworten)
+        self.aufrufe = 0
+
+    async def chat(self, history):  # noqa: ANN001
+        self.aufrufe += 1
+        text = self._antworten.pop(0) if self._antworten else ""
+
+        class _R:
+            pass
+
+        r = _R()
+        r.text = text
+        return r
+
+
+_AUFRUF = '```werkzeug\n{"werkzeug": "bildschirm_ansehen", "argumente": {}}\n```'
+
+
+def _engine(provider):
+    reg = ToolRegistry()
+    tool = _MerkTool()
+    reg.register(tool)
+    eng = ToolEngine(
+        registry=reg,
+        security=SecurityEngine(event_bus=EventBus()),
+        provider_manager=provider,
+    )
+    return eng, tool
+
+
+def test_die_ausrede_wird_erkannt():
+    assert _klingt_nach_ausrede("Ich kann das Video leider nicht anschauen.")
+    assert _klingt_nach_ausrede("Ich habe keinen Zugriff auf die Konfiguration.")
+    assert not _klingt_nach_ausrede("Klar, hier ist die Antwort.")
+
+
+def test_nachhaken_erzwingt_den_werkzeugaufruf():
+    """Erste Antwort ist eine Ausrede; nach dem Nachhaken kommt der Aufruf."""
+
+    provider = _FakeProvider([_AUFRUF, "Auf dem Video laufen KI-Nachrichten."])
+    eng, tool = _engine(provider)
+
+    ausrede = "Ich kann kein Video wirklich anschauen, nur reden."
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(messages=[], first_reply=ausrede, actor="test")
+    )
+
+    assert tool.gerufen == 1, "Das Werkzeug wurde nach dem Nachhaken nicht gerufen."
+    assert provider.aufrufe >= 1, "Es wurde gar nicht nachgehakt."
+    assert "Video" in antwort
+
+
+def test_ohne_ausrede_wird_nicht_nachgehakt():
+    """Eine normale Antwort ohne Werkzeug bleibt, wie sie ist - kein Nachhaken."""
+
+    provider = _FakeProvider(["sollte nicht gebraucht werden"])
+    eng, tool = _engine(provider)
+
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(
+            messages=[], first_reply="Die Hauptstadt von Frankreich ist Paris.",
+            actor="test",
+        )
+    )
+    assert provider.aufrufe == 0, "Ohne Ausrede darf nicht nachgehakt werden."
+    assert tool.gerufen == 0
+    assert "Paris" in antwort
+
+
+def test_nachhaken_geschieht_nur_einmal():
+    """Bleibt das Modell bei der Ausrede, endet es - keine Schleife."""
+
+    provider = _FakeProvider([
+        "Ich kann das leider nicht anschauen.",   # Antwort auf das Nachhaken
+        "und immer noch nicht",                    # duerfte gar nicht gebraucht werden
+    ])
+    eng, tool = _engine(provider)
+
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(
+            messages=[], first_reply="Ich kann kein Video anschauen.", actor="test",
+        )
+    )
+    assert provider.aufrufe == 1, "Es darf nur EINMAL nachgehakt werden."
+    assert tool.gerufen == 0
