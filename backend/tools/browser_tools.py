@@ -15,6 +15,7 @@ dem, was er sieht.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from backend.browser.steuerung import Browsersteuerung, BrowserNichtBereit, Element
@@ -161,6 +162,31 @@ class BrowserBedienenTool(Tool):
             )
 
         except BrowserNichtBereit as fehler:
+            # Der Ausweichweg, der dem Benutzer wochenlang gefehlt hat:
+            # Ist die STEUERUNG nicht eingerichtet (Playwright fehlt), soll
+            # "oeffne den Browser" trotzdem einen Browser oeffnen - den
+            # normalen Standardbrowser des Systems. Das kann Windows immer.
+            # Nur Klicken/Tippen/Lesen brauchen wirklich die Einrichtung.
+            if aktion == "oeffnen" and ziel:
+                adresse = ziel if ziel.startswith(("http://", "https://")) else "https://" + ziel
+                try:
+                    import webbrowser
+
+                    geoeffnet = await asyncio.to_thread(webbrowser.open, adresse)
+                except Exception:  # noqa: BLE001
+                    geoeffnet = False
+                if geoeffnet:
+                    logger.info(
+                        "Browsersteuerung fehlt - Ausweich: Standardbrowser "
+                        "geoeffnet (%s).", adresse
+                    )
+                    return ToolResult.success(
+                        f"Ich habe {adresse} im normalen Browser geöffnet. "
+                        "Klicken, Tippen und Mitlesen kann ich dort noch nicht - "
+                        "dafür muss einmal 'BROWSER-EINRICHTEN.bat' im "
+                        "AI-Orb-Ordner ausgeführt werden.",
+                        url=adresse, steuerung=False,
+                    )
             return ToolResult.failure(str(fehler))
         except Exception as fehler:  # noqa: BLE001 - ein Werkzeug darf nie den Kern reissen.
             logger.exception("browser_bedienen fehlgeschlagen")

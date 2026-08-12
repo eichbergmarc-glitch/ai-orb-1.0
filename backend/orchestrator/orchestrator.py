@@ -203,29 +203,73 @@ def will_webseite_lesen(text: str) -> str:
     return ""
 
 
+#: Seiten, die Benutzer beim Sprechen NIE mit Endung nennen. "Öffne ein
+#: Browserfenster mit Google" enthält keine einzige Adresse - und genau an
+#: dieser Huerde ist der Befehl im Protokoll des Benutzers gescheitert.
+_BEKANNTE_SEITEN: dict[str, str] = {
+    "google": "https://www.google.de",
+    "youtube": "https://www.youtube.com",
+    "wikipedia": "https://de.wikipedia.org",
+    "amazon": "https://www.amazon.de",
+    "ebay": "https://www.ebay.de",
+    "gmail": "https://mail.google.com",
+    "github": "https://github.com",
+    "tagesschau": "https://www.tagesschau.de",
+}
+
+#: Wendungen, die ein Browserfenster verlangen, auch ohne Ziel.
+_BROWSER_OEFFNEN: tuple[str, ...] = (
+    "browserfenster", "browser fenster", "browser oeffnen", "browser öffnen",
+    "oeffne den browser", "öffne den browser", "oeffne einen browser",
+    "öffne einen browser", "browser starten", "starte den browser",
+    "browser auf",
+)
+
+
 def will_browser(text: str) -> str:
     """Die Adresse für eine ausdrückliche Browser-BEDIENUNG - sonst "".
 
     Anders als beim Lesen geht es hier ums Tun: klicken, tippen, sich
-    anmelden, ein Formular ausfüllen. Verlangt wird ein Browser-Wort ODER
-    eine Handlungsabsicht zusammen mit einer Adresse. Der Orb öffnet dann
-    deterministisch das Fenster und zeigt, was anklickbar ist - den Rest
-    (klicken/tippen) macht das Modell mit dem Werkzeug weiter.
+    anmelden, ein Formular ausfüllen - oder schlicht "öffne ein
+    Browserfenster". Das Ziel darf eine Adresse sein, ein bekannter
+    Seitenname ("mit Google") oder ganz fehlen - dann wird die Startseite
+    der Suche geöffnet, denn ein leeres Browserfenster gibt es nicht.
     """
 
     knapp = " " + " ".join(text.lower().split()) + " "
     nennt_browser = any(wort in knapp for wort in _BROWSER_WOERTER)
     will_handeln = any(wort in knapp for wort in _BROWSER_HANDLUNG)
-    if not (nennt_browser or will_handeln):
+    will_fenster = any(wort in knapp for wort in _BROWSER_OEFFNEN)
+    if not (nennt_browser or will_handeln or will_fenster):
         return ""
+
     url = _url_aus(text)
-    if not url:
-        return ""
-    # Nur wenn wirklich gehandelt werden soll ODER ausdrücklich ein Browser
-    # genannt ist - "lies mir x.de vor" fällt so heraus.
-    if nennt_browser or will_handeln:
+    if url:
         return url
+    # Kein www und keine Endung? Dann die gesprochenen Seitennamen.
+    for name, adresse in _BEKANNTE_SEITEN.items():
+        if f" {name} " in knapp or f" {name}." in knapp or f" {name}," in knapp:
+            return adresse
+    # "Öffne ein Browserfenster" ohne Ziel: die Startseite der Suche.
+    if will_fenster:
+        return _BEKANNTE_SEITEN["google"]
     return ""
+
+
+def ist_browser_befehl(text: str) -> bool:
+    """Ob der Satz in erster Linie ein Browser-Befehl ist.
+
+    Gebraucht als Schutz VOR der erzwungenen Vorabsuche: "Öffne ein
+    Browserfenster bei Google und führe eine Suche durch" ist eine
+    Handlungsanweisung - wer sie wörtlich als Suchbegriff ins Netz schickt,
+    bekommt (belegt im Protokoll) null Treffer auf acht Kanälen und meldet
+    dann "die Suche geht nicht".
+    """
+
+    knapp = " " + " ".join(text.lower().split()) + " "
+    if any(wort in knapp for wort in _BROWSER_OEFFNEN):
+        return True
+    return bool(will_browser(text))
 
 
 @dataclass
@@ -276,6 +320,10 @@ class Orchestrator:
         self.router = router or TaskRouter()
         self.conversations = ConversationManager(memory)
         self._last_decision: dict[str, Any] = {}
+        #: Der zuletzt wirklich gesuchte Begriff. "Wiederhole die Suche"
+        #: soll DEN wiederholen - nicht den Satz "wiederhole die Suche"
+        #: wörtlich ins Netz schicken (belegt im Protokoll des Benutzers).
+        self._letzter_suchbegriff: str = ""
         #: Die Werkzeugschleife. Wird nach dem Aufbau angeschlossen (siehe
         #: attach_tool_engine) – zur Bauzeit des Orchestrators gibt es sie
         #: noch nicht.
@@ -501,7 +549,11 @@ class Orchestrator:
         # da gibt es nichts zu entscheiden. Also wird gesucht, und das
         # Ergebnis liegt dem Modell vor, wenn es zu denken anfängt.
         tools_available = self._tool_engine is not None and self._tool_engine.enabled
-        if tools_available and braucht_aktuelles(text):
+        # Browser-Befehle sind KEINE Suchanfragen: "öffne ein Browserfenster
+        # und führe eine Suche durch" löste vorher acht Suchläufe mit dem
+        # wörtlichen Befehlssatz aus - alle leer, und für den Benutzer sah
+        # das aus wie "die Suche ist kaputt".
+        if tools_available and braucht_aktuelles(text) and not ist_browser_befehl(text):
             frisch = await self._vorab_suchen(text)
             if frisch:
                 context_block = "\n\n".join(
@@ -837,13 +889,30 @@ class Orchestrator:
         # nicht den besten Treffer, sondern mehrere Darstellungen
         # nebeneinander. Der beste Treffer leistet das nicht: Er ist eine
         # Sicht, die sich als die Sache ausgibt.
-        mehr = await self._vorab_mehrquellen(text)
+        from backend.tools.web_tools import suchbegriff_aus
+
+        # "Wiederhole die Suche" wiederholt die LETZTE Suche - der Satz
+        # selbst ist kein Suchbegriff. Ohne diesen Griff wurde er woertlich
+        # gesucht (belegt im Protokoll: 'Wiederhole die Suche, sie muss
+        # funktionieren.'), ergab nichts, und jede Wiederholung erst recht.
+        knapp = " " + " ".join(text.lower().split()) + " "
+        ist_wiederholung = any(w in knapp for w in (
+            "wiederhol", "noch einmal such", "nochmal such", "nochmals such",
+            "such nochmal", "such noch einmal", "erneut such", "such erneut",
+        ))
+        if ist_wiederholung and self._letzter_suchbegriff:
+            begriff = self._letzter_suchbegriff
+            such_text = begriff
+            logger.info("Suche wiederholt mit dem letzten Begriff: %r", begriff)
+        else:
+            begriff = suchbegriff_aus(text)
+            self._letzter_suchbegriff = begriff
+            such_text = text
+
+        mehr = await self._vorab_mehrquellen(such_text)
         if mehr:
             return mehr
 
-        from backend.tools.web_tools import suchbegriff_aus
-
-        begriff = suchbegriff_aus(text)
         try:
             lauf = await self._tool_engine.direkt_ausfuehren(
                 "internet_suchen", {"suchbegriff": begriff, "max_treffer": 5}
@@ -971,6 +1040,20 @@ class Orchestrator:
                 "öffnen, und es ging nicht: "
                 + str(auf.result.error or "kein Ergebnis") + " Sag das dem "
                 "Benutzer geradeheraus."
+            )
+
+        # Lief nur der Ausweichweg (Standardbrowser, weil die Steuerung
+        # nicht eingerichtet ist)? Dann ist das Fenster offen, aber Klicken
+        # und Tippen gehen nicht - das Modell soll das ehrlich sagen und
+        # nicht so tun, als könnte es weitersteuern.
+        if (getattr(auf.result, "context", {}) or {}).get("steuerung") is False:
+            logger.info("Browser im Ausweichweg geöffnet: %s.", url)
+            return (
+                "DER BROWSER IST GEÖFFNET (bei " + url + ", im normalen "
+                "Standardbrowser). Die STEUERUNG (klicken, tippen, mitlesen) "
+                "ist noch nicht eingerichtet - dafür muss der Benutzer einmal "
+                "'BROWSER-EINRICHTEN.bat' im AI-Orb-Ordner ausführen. Sag ihm "
+                "genau das, kurz und freundlich."
             )
 
         teile = [str(auf.result.output)]
