@@ -590,20 +590,30 @@ class ToolEngine:
                         len(text),
                         text[:220].replace("\n", " | "),
                     )
-                    if _klingt_nach_ausrede(text) and not nachgehakt:
+                    # Zweites, haeufigeres Signal: Das Modell NENNT ein
+                    # Werkzeug beim Namen ("ich koennte 'bildschirm_ansehen'
+                    # nutzen"), ruft es aber nicht auf. Genau das stand im
+                    # Protokoll des Benutzers - der Orb "kennt" seine Werkzeuge,
+                    # redet darueber, und benutzt sie doch nicht. Wer ein
+                    # Werkzeug beim Namen nennt, haette es rufen sollen.
+                    nennt_werkzeug = any(
+                        name and name in text for name in self._registry.names()
+                    )
+                    if (_klingt_nach_ausrede(text) or nennt_werkzeug) and not nachgehakt:
                         # EINMAL nachhaken, statt die Ausrede weiterzureichen.
                         #
                         # Das war die wiederkehrende Klage "die Werkzeuge gehen
                         # nicht": Sie gingen (Suche und Browser liefen im selben
                         # Protokoll) - das Modell griff nur nicht danach, sondern
-                        # sagte, es koenne nicht. Genau hier wird es einmal
+                        # sagte, es koenne nicht, oder es sprach ueber das
+                        # Werkzeug, ohne es zu rufen. Genau hier wird es einmal
                         # bestimmt aufgefordert, das passende Werkzeug wirklich
                         # zu rufen. Nur einmal (``nachgehakt``), damit daraus
                         # keine Schleife wird.
                         nachgehakt = True
                         logger.warning(
-                            "Die Antwort behauptet, kein Werkzeug benutzen zu "
-                            "koennen - die Werkzeuge sind aber angemeldet. Ich "
+                            "Das Modell hat ein Werkzeug nicht benutzt, obwohl "
+                            "es angebracht war (Ausrede oder nur benannt). Ich "
                             "hake einmal nach."
                         )
                         from backend.orchestrator.providers.base_provider import (

@@ -48,6 +48,7 @@ from backend.events import event_types
 from backend.events.event_bus import EventBus
 from backend.security.security_engine import SecurityEngine
 from backend.system.logging_setup import get_logger
+from backend.diktat.diktat import KALIBRIERSATZ, Diktierer
 from backend.tts.tts_manager import TtsManager
 from backend.voice.speaker_id import Stimmerkennung, Urteil
 from backend.whisper.transcriber import Transcriber, Transcript
@@ -234,6 +235,17 @@ class VoicePipeline:
         self._answer_stream = answer_stream
         self._loop = loop
 
+        # --- Diktiermodus --------------------------------------------------------
+        # Laeuft ein Diktat, uebernimmt eine kleine Zustandsmaschine die
+        # Aeusserungen (weiter/langsamer/nochmal/stopp), statt sie ans
+        # Sprachmodell zu geben. ``None`` = kein Diktat.
+        self._diktat: Any = None
+        self._diktat_phase = ""          # "" | "kalibrierung" | "diktat"
+        self._diktat_start = 0.0
+        self._diktat_ziel_sekunden = float(
+            config.get("voice.diktat.ziel_sekunden", 12)
+        )
+
         # --- Einstellungen -------------------------------------------------------
         self._enabled = bool(config.get("voice.enabled", True))
         self._always_on = bool(config.get("voice.wake_word.always_on", True))
@@ -359,6 +371,11 @@ class VoicePipeline:
         self._stimme_anzahl = int(config.get("voice.speaker.enrollment_utterances", 3))
         #: Waehrend des Lernens gesammelte Aufnahmen. Leer heisst: kein Lernen.
         self._stimme_lernt: list[Path] | None = None
+        #: Wie oft in Folge eine Probe als unbrauchbar zurueckgewiesen wurde.
+        #: Verhindert eine Endlosschleife, wenn das Mikrofon dauerhaft zu leise
+        #: oder zu laut ist - nach ein paar Versuchen wird die Probe dennoch
+        #: genommen und das ehrliche Urteil faellt am Ende.
+        self._stimme_rueckweisungen = 0
         #: Ob jede eigene Aeusserung die Sprachausgabe beendet - nicht nur
         #: das Stop-Wort. Setzt eine hinterlegte Stimme voraus.
         self._interrupt_on_speech = bool(
@@ -391,6 +408,22 @@ class VoicePipeline:
         #: fremde Rede aus.
         self._fremd_mindestsicherheit = float(
             config.get("voice.interrupt_min_confidence", 0.45)
+        )
+        #: Ab welcher Stimm-Aehnlichkeit ein Hoerfenster die laufende Rede
+        #: ABBRICHT - bewusst HOCH und getrennt von der Akzeptanzschwelle
+        #: der Sprechererkennung.
+        #:
+        #: Genau hier lag der Grund, warum der Orb "mitten im Satz abbrach":
+        #: Waehrend er spricht, ist sein eigenes Echo im Hoerfenster, und die
+        #: Akzeptanzschwelle war (fuer das Wiedererkennen des Benutzers) auf
+        #: 0.55 gesenkt. Damit galt schon das eigene Echo als "der Benutzer
+        #: redet" - und die Antwort brach ab. Ein ABBRUCH ist aber eine viel
+        #: staerkere Behauptung als ein blosses "das ist der Benutzer": Er
+        #: verlangt, dass wirklich jemand DEUTLICH ueber die laufende Rede
+        #: spricht. Darum eine eigene, hohe Schwelle. Das Stop-Wort und der
+        #: Wortvergleich unterbrechen weiterhin unabhaengig davon.
+        self._barge_in_min_aehnlichkeit = float(
+            config.get("voice.barge_in_min_aehnlichkeit", 0.82)
         )
         #: Wie viele Fenster in Folge bisher fremde Worte enthielten.
         self._fremd_folge = 0
@@ -737,11 +770,17 @@ class VoicePipeline:
                     # verschiedenen Wegen, und ein Ja von einer reicht.
                     if self._interrupt_on_speech and self._stimme.aktiv:
                         urteil = self._stimme.pruefen(aktuell)
-                        if urteil.geprueft and urteil.akzeptiert:
+                        # Fuer den ABBRUCH zaehlt nicht die (niedrige)
+                        # Akzeptanzschwelle, sondern eine eigene, HOHE:
+                        # sonst bricht das eigene Echo die Antwort ab.
+                        schwelle = getattr(self, "_barge_in_min_aehnlichkeit", 0.82)
+                        if urteil.geprueft and urteil.aehnlichkeit >= schwelle:
                             logger.info(
-                                "Der Benutzer spricht (Ähnlichkeit %.2f) – "
-                                "die Sprachausgabe wird beendet.",
+                                "Der Benutzer spricht deutlich dazwischen "
+                                "(Ähnlichkeit %.2f ≥ %.2f) – die Sprachausgabe "
+                                "wird beendet.",
                                 urteil.aehnlichkeit,
+                                schwelle,
                             )
                             self.interrupt()
                             return
@@ -953,12 +992,27 @@ class VoicePipeline:
         """
 
         self._stimme_lernt = []
+        self._stimme_rueckweisungen = 0
         anzahl = max(2, self._stimme_anzahl)
         return (
             f"Ich höre jetzt genau hin. Sag mir bitte {anzahl} ganze Sätze, "
             "einen nach dem anderen – der Inhalt ist gleichgültig, es geht "
             "nur um den Klang. Jeder sollte ein paar Sekunden dauern."
         )
+
+    async def stimme_neu_einlernen(self) -> str:
+        """Lernt die Stimme SAUBER neu – erst vergessen, dann frisch sammeln.
+
+        Der Unterschied zum gewöhnlichen Lernen liegt im Vorher: Ein altes,
+        womöglich verrutschtes Profil wird zuerst gelöscht, damit es sich
+        nicht mit den neuen Aufnahmen mischt. Danach ist der Ablauf derselbe,
+        nur dass jede Probe sofort auf Brauchbarkeit geprüft wird.
+        """
+
+        if self._stimme.gelernt:
+            self._stimme.vergessen()
+        beginn = await self.stimme_lernen_starten()
+        return "Ich fange mit deiner Stimme noch einmal von vorn an. " + beginn
 
     def stimme_lernen_abbrechen(self) -> str:
         """Bricht das Lernen ab, ohne etwas zu ändern."""
@@ -1006,7 +1060,51 @@ class VoicePipeline:
             )
             return
 
-        self._stimme_lernt.append(ziel)
+        # Jede Probe wird SOFORT geprüft, nicht erst am Ende.
+        #
+        # Das ist der Kern des sauberen Wiedereinlernens: Früher wurde jede
+        # Aufnahme gezählt und erst nach der letzten festgestellt, dass zwei
+        # davon zu kurz oder zu leise waren - dann musste alles von vorn
+        # beginnen. Jetzt sagt der Orb bei genau der Probe, die nichts taugt,
+        # dass sie zu wiederholen ist, und zählt sie nicht mit.
+        from backend.voice.speaker_id import abdruck
+
+        brauchbar = True
+        try:
+            if abdruck(ziel) is None:
+                brauchbar = False
+        except Exception as fehler:  # noqa: BLE001 - eine schlechte Probe darf nie abbrechen.
+            logger.debug("Stimmprobe nicht auswertbar: %s", fehler)
+            brauchbar = False
+
+        if not brauchbar:
+            with contextlib.suppress(OSError):
+                ziel.unlink()
+            self._stimme_rueckweisungen += 1
+            # Nach drei erfolglosen Versuchen wird nachgegeben: Die Probe wird
+            # doch genommen, damit niemand endlos wiederholt. Das ehrliche
+            # Urteil fällt dann beim eigentlichen Lernen.
+            if self._stimme_rueckweisungen < 3:
+                await self._say(
+                    "Diese Aufnahme war zu kurz oder zu leise, um deine Stimme "
+                    "darin zu erkennen. Sag den Satz bitte noch einmal - ruhig "
+                    "etwas länger und in normaler Lautstärke.",
+                    emotion="freundlich",
+                )
+                return
+            # Nachgeben: doch aufnehmen.
+            try:
+                ziel.write_bytes(path.read_bytes())
+                self._stimme_lernt.append(ziel)
+            except OSError:
+                self._stimme_aufraeumen()
+                await self._say("Ich konnte die Aufnahme nicht ablegen und höre auf.")
+                return
+        else:
+            # Brauchbare Probe: mitzählen und den Rückweiser-Zähler leeren.
+            self._stimme_lernt.append(ziel)
+            self._stimme_rueckweisungen = 0
+
         noch = max(2, self._stimme_anzahl) - len(self._stimme_lernt)
 
         if noch > 0:
@@ -1037,6 +1135,7 @@ class VoicePipeline:
             with contextlib.suppress(OSError):
                 probe.unlink()
         self._stimme_lernt = None
+        self._stimme_rueckweisungen = 0
 
     #: Saetze, die das Hinterlegen der Stimme ausloesen.
     #:
@@ -1055,6 +1154,22 @@ class VoicePipeline:
         "hinterlege meine stimme",
         "meine stimme hinterlegen",
         "stimme einlernen",
+    )
+
+    #: Saetze, die die Stimme SAUBER neu einlernen - erst vergessen, dann neu.
+    #: Bewusst vor dem gewoehnlichen Lernen geprueft, weil "lern meine stimme
+    #: neu" sonst schon von "lern meine stimme" gefangen wuerde.
+    _STIMME_NEU = (
+        "stimme neu einlernen",
+        "stimme neu lernen",
+        "stimme neu einrichten",
+        "lern meine stimme neu",
+        "lerne meine stimme neu",
+        "meine stimme neu einlernen",
+        "meine stimme neu lernen",
+        "stimme sauber neu",
+        "stimme noch einmal einlernen",
+        "stimme nochmal einlernen",
     )
 
     #: Saetze, die das Hinterlegte wieder loeschen.
@@ -1082,6 +1197,12 @@ class VoicePipeline:
         """
 
         klein = text.lower()
+
+        # Das saubere Neu-Einlernen zuerst - es enthaelt die Woerter des
+        # gewoehnlichen Lernens und wuerde sonst von ihm gefangen.
+        if any(satz in klein for satz in self._STIMME_NEU):
+            await self._say(await self.stimme_neu_einlernen(), emotion="freundlich")
+            return True
 
         if any(satz in klein for satz in self._STIMME_LERNEN):
             await self._say(await self.stimme_lernen_starten(), emotion="freundlich")
@@ -1151,12 +1272,193 @@ class VoicePipeline:
         else:
             await self._set_state(VoiceState.LISTENING)
 
+    # --- Diktiermodus ------------------------------------------------------------
+
+    _DIKTAT_AUSLOESER = (
+        "diktier", "diktat", "nimm ein diktat", "diktiere mir", "diktiermodus",
+    )
+
+    async def _nichts_sprechen(self, *args: Any, **kwargs: Any) -> bool:
+        """Ein on_speech, das nichts spricht - fuers stille Erzeugen des Textes."""
+
+        return False
+
+    async def _diktat_befehl(self, text: str) -> bool:
+        """Startet den Diktiermodus, wenn der Benutzer darum bittet."""
+
+        klein = text.lower()
+        if not any(a in klein for a in self._DIKTAT_AUSLOESER):
+            return False
+        thema = self._diktat_thema(text)
+        await self._diktat_starten(thema)
+        return True
+
+    @staticmethod
+    def _diktat_thema(text: str) -> str:
+        """Zieht das Thema aus 'diktiere mir das Vorgehen zu X' heraus."""
+
+        rest = text
+        for stich in (
+            "diktiere mir bitte", "diktier mir bitte", "diktiere mir",
+            "diktier mir", "nimm ein diktat ueber", "nimm ein diktat über",
+            "diktiermodus", "diktiere", "diktier", "diktat über", "diktat ueber",
+            "diktat zu", "diktat",
+        ):
+            idx = rest.lower().find(stich)
+            if idx != -1:
+                rest = rest[idx + len(stich):]
+                break
+        # Fuellwoerter am Anfang wegnehmen.
+        rest = rest.strip(" ,:-")
+        for vor in ("mir", "bitte", "ein", "das thema", "das", "die", "der", "über", "ueber", "zu", "zum", "zur"):
+            if rest.lower().startswith(vor + " "):
+                rest = rest[len(vor):].strip()
+        return rest.strip(" ,:-.")
+
+    async def _diktat_starten(self, thema: str) -> None:
+        """Erzeugt den Diktattext und beginnt mit der Tempo-Messung."""
+
+        if not thema:
+            await self._say("Worüber soll ich dir diktieren?", emotion="fragend")
+            return
+
+        await self._say("Einen Moment, ich bereite das Diktat vor.", emotion="freundlich")
+
+        auftrag = (
+            f"Erstelle einen klar gegliederten, sachlichen Text zum DIKTIEREN "
+            f"über: {thema}. Er wird laut vorgelesen und von Hand mitgeschrieben. "
+            "Nimm vollständige, eher kurze Sätze in sinnvoller Reihenfolge. "
+            "Keine Aufzählungszeichen, keine Überschriften, keine Klammern, keine "
+            "Emojis - reiner Fließtext. Beginne direkt mit dem Inhalt."
+        )
+        self._processing = True
+        try:
+            inhalt, _ = await self._answer(auftrag, on_speech=self._nichts_sprechen)
+        except Exception:  # noqa: BLE001 - der Diktatstart darf den Orb nie reissen.
+            logger.exception("Der Diktattext liess sich nicht erzeugen.")
+            await self._say(
+                "Ich konnte den Text für das Diktat gerade nicht vorbereiten.",
+                emotion="nachdenklich",
+            )
+            return
+        finally:
+            self._processing = False
+
+        inhalt = (inhalt or "").strip()
+        if not inhalt:
+            await self._say(
+                "Mir fällt dazu gerade kein Text zum Diktieren ein.",
+                emotion="nachdenklich",
+            )
+            return
+
+        self._diktat = Diktierer(ziel_sekunden=self._diktat_ziel_sekunden)
+        self._diktat.beginnen(inhalt)
+        self._diktat_phase = "kalibrierung"
+        await self._say(
+            "Wir messen zuerst kurz dein Schreibtempo. Schreib diesen Satz mit, "
+            "und sag 'weiter', sobald du fertig bist: " + KALIBRIERSATZ,
+            emotion="freundlich",
+        )
+        # Die Zeit laeuft ab JETZT - erst nach dem gesprochenen Satz, damit
+        # nur das Schreiben gemessen wird, nicht das Vorlesen.
+        self._diktat_start = time.time()
+
+    async def _diktat_weiter(self, text: str) -> None:
+        """Verarbeitet eine Aeusserung, waehrend ein Diktat laeuft."""
+
+        if self._diktat is None:
+            return
+        klein = text.lower()
+
+        if any(w in klein for w in (
+            "stopp", "stop", "beende", "abbrechen", "abbruch", "schluss",
+            "hör auf", "hoer auf", "aufhören", "aufhoeren", "genug", "beenden",
+        )):
+            await self._diktat_beenden(freundlich=True)
+            return
+
+        if self._diktat_phase == "kalibrierung":
+            if any(w in klein for w in ("weiter", "fertig", "hab ich", "habs", "hab es", "okay", "ok", "los", "bereit")):
+                sekunden = max(0.5, time.time() - self._diktat_start)
+                self._diktat.kalibrieren(len(KALIBRIERSATZ), sekunden)
+                self._diktat_phase = "diktat"
+                await self._say(
+                    "Danke. Ich diktiere jetzt in deinem Tempo. Sag 'weiter' für "
+                    "den nächsten Teil, oder 'nochmal', 'langsamer', 'schneller', "
+                    "'stopp'.",
+                    emotion="freundlich",
+                )
+                await self._diktat_abschnitt()
+            else:
+                await self._say(
+                    "Sag 'weiter', sobald du den Satz aufgeschrieben hast.",
+                    emotion="fragend",
+                )
+            return
+
+        # Phase: Diktat laeuft.
+        if any(w in klein for w in ("langsamer", "zu schnell", "nicht so schnell")):
+            self._diktat.langsamer()
+            await self._say("Gut, langsamer.", emotion="freundlich")
+            await self._diktat_abschnitt(wiederholen=True)
+            return
+        if any(w in klein for w in ("schneller", "zu langsam", "geht schneller")):
+            self._diktat.schneller()
+            await self._say("Gut, schneller.", emotion="freundlich")
+            return
+        if any(w in klein for w in ("nochmal", "noch mal", "wiederhol", "noch einmal", "zurück", "zurueck")):
+            await self._diktat_abschnitt(wiederholen=True)
+            return
+        if any(w in klein for w in ("weiter", "fertig", "nächstes", "naechstes", "hab ich", "habs", "okay", "ok", "los", "und dann", "bereit")):
+            await self._diktat_abschnitt()
+            return
+
+        await self._say(
+            "Sag 'weiter' für den nächsten Teil, oder 'nochmal', 'langsamer', "
+            "'schneller', 'stopp'.",
+            emotion="fragend",
+        )
+
+    async def _diktat_abschnitt(self, *, wiederholen: bool = False) -> None:
+        """Diktiert den naechsten (oder denselben) Abschnitt - oder beendet."""
+
+        if self._diktat is None:
+            return
+        stueck = self._diktat.wiederholen() if wiederholen else self._diktat.naechster_abschnitt()
+        if not stueck:
+            await self._say(
+                "Das war der ganze Text. Fertig mit dem Diktat.",
+                emotion="freundlich",
+            )
+            await self._diktat_beenden(freundlich=False)
+            return
+        await self._say(stueck)
+
+    async def _diktat_beenden(self, *, freundlich: bool) -> None:
+        """Beendet den Diktiermodus."""
+
+        self._diktat = None
+        self._diktat_phase = ""
+        if freundlich:
+            await self._say("Diktat beendet.", emotion="freundlich")
+
     async def _handle_while_awake(self, transcript: Transcript, turn: VoiceTurn) -> None:
         """Behandelt eine Anweisung im wachen Zustand."""
 
         # Ein erneutes Weckwort wird abgeschnitten, damit „Hallo Orb, und
         # jetzt …" nicht als Teil der Frage bei der KI landet.
         text = self._wake_word.strip_wake_word(transcript.text).strip()
+
+        # Laeuft ein Diktat, gehen ALLE Aeusserungen an die Diktatsteuerung -
+        # zuerst, noch vor der Laengen- und Sicherheitspruefung, weil die
+        # Steuerworte kurz sind ("weiter", "stopp") und sicher durchkommen
+        # muessen.
+        if self._diktat is not None:
+            self._wake()
+            with contextlib.suppress(Exception):
+                await self._diktat_weiter(text)
+            return
 
         if len(text) < self._min_characters:
             self._wake()
@@ -1192,6 +1494,14 @@ class VoicePipeline:
         # richtig ausfaellt. Das hier ist eine Einrichtungshandlung, kein
         # Gespraech: Ein fester Satz, eine feste Wirkung.
         if await self._stimme_befehl(text):
+            self._wake()
+            return
+
+        # Diktiermodus starten - eine feste Einrichtungshandlung, kein
+        # Gespraech (wie das Hinterlegen der Stimme). Wer "diktier mir ..."
+        # sagt, soll nicht darauf angewiesen sein, dass das Sprachmodell
+        # zufaellig den richtigen Weg waehlt.
+        if await self._diktat_befehl(text):
             self._wake()
             return
 

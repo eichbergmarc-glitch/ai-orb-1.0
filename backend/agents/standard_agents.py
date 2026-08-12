@@ -22,6 +22,15 @@ logger = get_logger(__name__)
 class LlmAgent(BaseAgent):
     """Gemeinsame Basis für alle Agenten, die ein Sprachmodell nutzen."""
 
+    #: Welches Modell dieser Agent bevorzugt (Providername, z.B.
+    #: ``"claude_code"`` oder ``"ollama"``). Leer = der gerade aktive
+    #: Provider. Wird beim Bau aus der Konfiguration (``agents.modelle``)
+    #: gesetzt und ist der Kern der Aufgabenverteilung: Laufen mehrere
+    #: Agenten gleichzeitig, koennen sie so auf VERSCHIEDENEN Modellen
+    #: arbeiten (Claude UND lokal) und damit wirklich parallel - statt sich
+    #: hintereinander am selben Modell anzustellen.
+    bevorzugtes_modell: str = ""
+
     def __init__(self, provider_manager: Any) -> None:
         super().__init__()
         self._providers = provider_manager
@@ -35,7 +44,9 @@ class LlmAgent(BaseAgent):
         messages.append(ChatMessage(role="user", content=task.text))
 
         try:
-            response = await self._providers.chat(messages)
+            response = await self._providers.chat(
+                messages, preferred=self.bevorzugtes_modell or None
+            )
         except ProviderError as error:
             return AgentResult(
                 agent=self.name,

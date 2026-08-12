@@ -124,3 +124,20 @@ def test_nachhaken_geschieht_nur_einmal():
     )
     assert provider.aufrufe == 1, "Es darf nur EINMAL nachgehakt werden."
     assert tool.gerufen == 0
+
+
+def test_nachhaken_auch_wenn_werkzeug_nur_benannt_wird():
+    """Der Fall aus dem Protokoll: Das Modell NENNT das Werkzeug, ruft es
+    aber nicht - dann muss der Orb ebenfalls nachhaken."""
+
+    provider = _FakeProvider([_AUFRUF, "Auf dem Bild ist ein Dokument."])
+    eng, tool = _engine(provider)
+
+    # Keine klassische Ausrede - das Modell redet nur ueber das Werkzeug.
+    benannt = "Ich koennte dafuer eigentlich bildschirm_ansehen benutzen."
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(messages=[], first_reply=benannt, actor="test")
+    )
+
+    assert tool.gerufen == 1, "Wird ein Werkzeug nur benannt, muss der Orb nachhaken."
+    assert provider.aufrufe >= 1

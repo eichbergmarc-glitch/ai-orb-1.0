@@ -73,6 +73,13 @@ class AgentManager:
         self._security = security
         agents_config = config.section("agents")
 
+        # Welcher Agent welches Modell bevorzugt (Aufgabenverteilung auf
+        # mehrere Modelle). Leerer Eintrag oder fehlend = der aktive Provider.
+        self._modell_zuordnung: dict[str, str] = {
+            str(name): str(engine or "")
+            for name, engine in (agents_config.get("modelle", {}) or {}).items()
+        }
+
         self.registry = AgentRegistry()
         self.capabilities = CapabilityRegistry()
         self.metrics = AgentMetrics()
@@ -145,6 +152,18 @@ class AgentManager:
             agents.append(GmailAgent(self._security))
 
         for agent in agents:
+            # Aufgabenverteilung: Jedem Agenten, der ein Modell nutzt, das in
+            # der Konfiguration gewuenschte zuweisen. So arbeiten mehrere
+            # Agenten gleichzeitig auf verschiedenen Modellen (Claude UND
+            # lokal) - der Kern der schnelleren, verteilten Beantwortung.
+            gewuenscht = self._modell_zuordnung.get(agent.name)
+            if gewuenscht and hasattr(agent, "bevorzugtes_modell"):
+                agent.bevorzugtes_modell = gewuenscht
+                logger.info(
+                    "Agent '%s' nutzt bevorzugt das Modell '%s'.",
+                    agent.name,
+                    gewuenscht,
+                )
             self.add_agent(agent)
 
     def add_agent(self, agent: BaseAgent, permissions: list[str] | None = None) -> None:

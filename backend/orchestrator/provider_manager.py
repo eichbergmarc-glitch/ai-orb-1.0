@@ -294,7 +294,27 @@ class ProviderManager:
                 )
                 self._health.note_success(name, time.perf_counter() - started)
                 if name != self._active_name:
-                    await self._activate(name, reason="fallback_bei_fehler")
+                    # Ein einzelner Ausweichtreffer macht den Ausweichprovider
+                    # NICHT zum neuen Standard.
+                    #
+                    # Das war der Grund, warum Werkzeuge "zuerst gehen und dann
+                    # ploetzlich nicht mehr": Setzte Claude ein einziges Mal
+                    # kurz aus, sprang Ollama ein - und BLIEB ab da aktiv. Der
+                    # Rest der Sitzung lief dann am schwaecheren lokalen Modell,
+                    # das die Bilddatei nicht lesen kann (Bildschirm-Ansehen)
+                    # und Werkzeugaufrufe kaum trifft. Aus einem Wackler wurde
+                    # so ein Dauerzustand.
+                    #
+                    # Welcher Provider DAUERHAFT aktiv ist, entscheidet allein
+                    # der Gesundheitswaechter anhand echter Verfuegbarkeit. Ein
+                    # Wackler faellt fuer DIESE Anfrage aus, die naechste
+                    # versucht wieder zuerst den starken Provider.
+                    logger.info(
+                        "Anfrage ueber Ausweichprovider '%s' beantwortet - "
+                        "aktiv bleibt '%s'.",
+                        name,
+                        self._active_name or "unbekannt",
+                    )
                 return response
             except ProviderError as error:
                 last_error = error

@@ -13,7 +13,12 @@
  * nichts und kennt weder Three.js noch das DOM.
  */
 
-/** Die möglichen Zustände des Orb. */
+/** Die möglichen Zustände des Orb.
+ *
+ * Die ersten sieben sind die bestehenden Namen, die das Backend seit jeher
+ * meldet - sie bleiben unverändert gültig. Die fünf neuen kommen mit dem
+ * Energy-Orb dazu: executing, waiting, success, warning, offline.
+ */
 export type OrbStateName =
   | "idle"
   | "listening"
@@ -21,7 +26,12 @@ export type OrbStateName =
   | "speaking"
   | "busy"
   | "error"
-  | "sleep";
+  | "sleep"
+  | "executing"
+  | "waiting"
+  | "success"
+  | "warning"
+  | "offline";
 
 /** Alle Zustände in fester Reihenfolge. */
 export const ORB_STATES: OrbStateName[] = [
@@ -32,6 +42,11 @@ export const ORB_STATES: OrbStateName[] = [
   "busy",
   "error",
   "sleep",
+  "executing",
+  "waiting",
+  "success",
+  "warning",
+  "offline",
 ];
 
 /** Die visuellen Eigenschaften eines Zustands. */
@@ -93,7 +108,49 @@ export interface StateAppearance {
    * soll auffallen, ohne zu hetzen.
    */
   smokeWarning: number;
+
+  // --- Energy-Orb: die neuen, ebenfalls weich interpolierten Werte --------
+
+  /** Tempo der Energiebahnen (1.0 = ruhig). */
+  ringSpeed: number;
+  /** Helligkeit der Energiebahnen. */
+  ringIntensity: number;
+  /** Tempo der Partikel auf den Bahnen. */
+  particleSpeed: number;
+  /** Wie stark die innere Plasmaschicht arbeitet. */
+  energyFlow: number;
+  /** Zusätzliches Glühen des Kerns. */
+  coreGlow: number;
+  /** Augen: Öffnung/Größe (1.0 = normal, 0 = geschlossen). */
+  eyeOpen: number;
+  /** Augen: unterer Bogen – freundlicher Ausdruck (0..1). */
+  eyeHappy: number;
+  /** Augen: oben abgeflacht – fokussiert (0..1). */
+  eyeSquint: number;
+  /** Augen: nach innen geneigt – Fehlerausdruck (0..1). */
+  eyeAngry: number;
+  /** Augen: Leuchtkraft (1.0 = normal, gedimmt < 0.5). */
+  eyeBright: number;
 }
+
+/**
+ * Die Energy-Orb-Vorgaben, mit denen ALTE Zustandsdefinitionen (etwa
+ * Überschreibungen aus einer config.yaml von vor dem Umbau) aufgefüllt
+ * werden. So kann eine unvollständige Überschreibung die Anzeige nicht
+ * kaputtmachen.
+ */
+const ENERGY_DEFAULTS = {
+  ringSpeed: 1.0,
+  ringIntensity: 1.0,
+  particleSpeed: 1.0,
+  energyFlow: 1.0,
+  coreGlow: 0.6,
+  eyeOpen: 1.0,
+  eyeHappy: 0.0,
+  eyeSquint: 0.0,
+  eyeAngry: 0.0,
+  eyeBright: 1.0,
+} as const;
 
 /** Ein Zustand mit Namen und Erscheinungsbild. */
 export interface OrbState extends StateAppearance {
@@ -114,24 +171,21 @@ export interface OrbState extends StateAppearance {
  * über den Zustand, keine Frage des Geschmacks. Wer sein Theme wechselt,
  * soll nicht neu lernen müssen, woran er das Zuhören erkennt.
  *
- * Rot, weil der Benutzer es so wollte – und weil es auf einen Blick
- * unmissverständlich ist: Rot heißt hier „ich nehme gerade auf", wie die
- * Aufnahmeleuchte an einer Kamera. Der Kern ist kräftig, der Schein hell,
- * damit die Kugel auch vor dunklem Hintergrund nicht bloß dunkelrot
- * absäuft.
+ * Grün, nach dem Referenzbild des Energy-Orb-Umbaus: Grün heißt hier
+ * „ich höre dich" – aufmerksam und freundlich, nicht alarmiert. Der Kern
+ * ist kräftig, der Schein hell, damit die Kugel auch vor dunklem
+ * Hintergrund nicht absäuft.
  */
-export const LISTENING_COLOR = { core: 0xff3b30, glow: 0xffc9c4 };
+export const LISTENING_COLOR = { core: 0x2fd06a, glow: 0xa8ffcd };
 
 /**
  * Die Farbe beim Nachdenken.
  *
- * Ebenfalls rot, aber eine Spur tiefer und wärmer als beim Zuhören: Beide
- * Zustände sind auf einen Blick als „der Orb ist gerade beschäftigt"
- * erkennbar, lassen sich bei genauerem Hinsehen aber unterscheiden. Ein
- * einziges Rot für beides würde die Auskunft verschenken, welcher der
- * beiden Vorgänge gerade läuft.
+ * Violett, nach dem Referenzbild: Denken ist sichtbar etwas anderes als
+ * Zuhören (grün) und Arbeiten (orange). Ein einziger Farbton für alles
+ * würde die Auskunft verschenken, welcher Vorgang gerade läuft.
  */
-export const THINKING_COLOR = { core: 0xd81f26, glow: 0xff8a7a };
+export const THINKING_COLOR = { core: 0x8a4dff, glow: 0xd3b4ff };
 
 export const THEMES: Record<string, { base: number; accent: number; deep: number }> = {
   blue: { base: 0x4aa3ff, accent: 0xbfe4ff, deep: 0x0d3a72 },
@@ -201,6 +255,11 @@ export function buildStates(
 ): Record<OrbStateName, OrbState> {
   const theme = THEMES[themeName] ?? THEMES.blue;
 
+  // Die Zustandsfarben folgen dem Referenzbild des Energy-Orb: Zuhören ist
+  // grün, Denken violett, Arbeiten orange, Erfolg grün mit freundlichen
+  // Augen, Warnung bernstein, Fehler rot, Offline grau. Die Farben sind
+  // eine Auskunft über den Zustand und deshalb themeunabhängig; nur Ruhe-
+  // und Sprechzustand tragen das gewählte Theme.
   const defaults: Record<OrbStateName, StateAppearance> = {
     idle: {
       coreColor: theme.base,
@@ -218,6 +277,18 @@ export function buildStates(
       smokeDensity: 0.85,
       smokePulse: 0.0,
       smokeWarning: 0.0,
+      // Ruhig genug, um es stundenlang anzusehen: langsame Bahnen, wenig
+      // Partikel, schwaches Leuchten. "Er wartet entspannt."
+      ringSpeed: 0.6,
+      ringIntensity: 0.7,
+      particleSpeed: 0.6,
+      energyFlow: 0.65,
+      coreGlow: 0.5,
+      eyeOpen: 1.0,
+      eyeHappy: 0.0,
+      eyeSquint: 0.0,
+      eyeAngry: 0.0,
+      eyeBright: 0.9,
     },
     listening: {
       // Zuhören zeigt sich in der Farbe, nicht in der Bewegung.
@@ -248,6 +319,17 @@ export function buildStates(
       smokeDensity: 1.15,
       smokePulse: 0.0,
       smokeWarning: 0.0,
+      // Weich beschleunigt, Augen größer und aufmerksamer.
+      ringSpeed: 1.1,
+      ringIntensity: 1.0,
+      particleSpeed: 1.15,
+      energyFlow: 1.0,
+      coreGlow: 0.8,
+      eyeOpen: 1.25,
+      eyeHappy: 0.0,
+      eyeSquint: 0.0,
+      eyeAngry: 0.0,
+      eyeBright: 1.15,
     },
     thinking: {
       // Wie beim Zuhören themeunabhängig: Der Zustand soll immer gleich
@@ -266,9 +348,21 @@ export function buildStates(
       smokeDensity: 1.15,
       smokePulse: 0.0,
       smokeWarning: 0.0,
+      // "Energie wird intern verarbeitet": Plasma und Kern arbeiten
+      // sichtbar, die Bahnen laufen schneller, einzelne werden heller.
+      ringSpeed: 1.5,
+      ringIntensity: 1.15,
+      particleSpeed: 1.5,
+      energyFlow: 1.5,
+      coreGlow: 0.95,
+      eyeOpen: 0.85,
+      eyeHappy: 0.0,
+      eyeSquint: 0.35,
+      eyeAngry: 0.0,
+      eyeBright: 1.0,
     },
     speaking: {
-      coreColor: theme.accent,
+      coreColor: theme.base,
       glowColor: theme.accent,
       particleColor: theme.accent,
       speed: 1.5,
@@ -282,6 +376,16 @@ export function buildStates(
       smokeDensity: 1.1,
       smokePulse: 1.0,
       smokeWarning: 0.0,
+      ringSpeed: 1.2,
+      ringIntensity: 1.1,
+      particleSpeed: 1.2,
+      energyFlow: 1.2,
+      coreGlow: 0.9,
+      eyeOpen: 1.05,
+      eyeHappy: 0.25,
+      eyeSquint: 0.0,
+      eyeAngry: 0.0,
+      eyeBright: 1.1,
     },
     busy: {
       // Auch beim Arbeiten rot – und aus demselben Grund wie beim Denken:
@@ -291,9 +395,11 @@ export function buildStates(
       // die Anweisung überhaupt angekommen ist. Der Nebel wirbelt dabei
       // kräftiger als beim Denken: Es ist derselbe Zustand, nur mit mehr
       // Getriebe dahinter.
-      coreColor: THINKING_COLOR.core,
-      glowColor: THINKING_COLOR.glow,
-      particleColor: THINKING_COLOR.core,
+      // busy = die Drag-/Übergangsvariante des Arbeitens: dieselbe
+      // Orange-Energie wie executing, nur eine Spur zurückgenommen.
+      coreColor: 0xff8a2f,
+      glowColor: 0xffc891,
+      particleColor: 0xffb35c,
       speed: 1.2,
       particleIntensity: 0.6,
       lightIntensity: 1.05,
@@ -305,6 +411,16 @@ export function buildStates(
       smokeDensity: 0.95,
       smokePulse: 0.0,
       smokeWarning: 0.0,
+      ringSpeed: 1.4,
+      ringIntensity: 1.1,
+      particleSpeed: 1.4,
+      energyFlow: 1.25,
+      coreGlow: 0.8,
+      eyeOpen: 0.9,
+      eyeHappy: 0.0,
+      eyeSquint: 0.3,
+      eyeAngry: 0.0,
+      eyeBright: 1.0,
     },
     error: {
       coreColor: 0xff4a4a,
@@ -321,6 +437,18 @@ export function buildStates(
       smokeDensity: 0.9,
       smokePulse: 0.0,
       smokeWarning: 1.0,
+      // Deutlich anders, aber weiterhin minimalistisch: geneigte,
+      // schmalere Augen, ruhiger Energiefluss - kein hektisches Blinken.
+      ringSpeed: 0.7,
+      ringIntensity: 0.8,
+      particleSpeed: 0.7,
+      energyFlow: 0.8,
+      coreGlow: 0.7,
+      eyeOpen: 0.75,
+      eyeHappy: 0.0,
+      eyeSquint: 0.45,
+      eyeAngry: 1.0,
+      eyeBright: 1.1,
     },
     sleep: {
       coreColor: theme.deep,
@@ -338,12 +466,168 @@ export function buildStates(
       smokeDensity: 0.5,
       smokePulse: 0.0,
       smokeWarning: 0.0,
+      ringSpeed: 0.25,
+      ringIntensity: 0.3,
+      particleSpeed: 0.25,
+      energyFlow: 0.3,
+      coreGlow: 0.25,
+      // Augen geschlossen - er schläft.
+      eyeOpen: 0.1,
+      eyeHappy: 0.6,
+      eyeSquint: 0.0,
+      eyeAngry: 0.0,
+      eyeBright: 0.35,
+    },
+
+    // --- Die fünf neuen Zustände des Energy-Orb ---------------------------
+
+    executing: {
+      // Orange Energie, die nach außen fließt: "Der Orb arbeitet gerade."
+      coreColor: 0xff8a2f,
+      glowColor: 0xffd9a8,
+      particleColor: 0xffb35c,
+      speed: 1.7,
+      particleIntensity: 1.0,
+      lightIntensity: 1.25,
+      pulseAmount: 0.10,
+      auraScale: 1.1,
+      bloomStrength: 1.25,
+      scale: 1.02,
+      smokeTurbulence: 1.4,
+      smokeDensity: 1.1,
+      smokePulse: 0.0,
+      smokeWarning: 0.0,
+      ringSpeed: 1.9,
+      ringIntensity: 1.2,
+      particleSpeed: 1.9,
+      energyFlow: 1.3,
+      coreGlow: 0.85,
+      eyeOpen: 0.9,
+      eyeHappy: 0.0,
+      eyeSquint: 0.45,
+      eyeAngry: 0.0,
+      eyeBright: 1.05,
+    },
+    waiting: {
+      // "Ich warte auf dich": deutlich beruhigt, aufmerksame Augen,
+      // einzelne langsame Lichtimpulse über pulseAmount.
+      coreColor: 0x3f8fdd,
+      glowColor: 0xa8dcff,
+      particleColor: 0x9fd0ff,
+      speed: 0.7,
+      particleIntensity: 0.35,
+      lightIntensity: 1.0,
+      pulseAmount: 0.09,
+      auraScale: 1.0,
+      bloomStrength: 1.05,
+      scale: 1.0,
+      smokeTurbulence: 0.4,
+      smokeDensity: 0.8,
+      smokePulse: 0.0,
+      smokeWarning: 0.0,
+      ringSpeed: 0.45,
+      ringIntensity: 0.75,
+      particleSpeed: 0.5,
+      energyFlow: 0.5,
+      coreGlow: 0.65,
+      eyeOpen: 1.2,
+      eyeHappy: 0.0,
+      eyeSquint: 0.0,
+      eyeAngry: 0.0,
+      eyeBright: 1.1,
+    },
+    success: {
+      // Kurz und elegant: grün, freundliche Augen; den eigentlichen
+      // Impuls (sammeln -> aufleuchten -> Welle) löst main.ts über
+      // flash() aus. Kein Feuerwerk.
+      coreColor: 0x35d97a,
+      glowColor: 0xbcffd9,
+      particleColor: 0x7dffb5,
+      speed: 1.1,
+      particleIntensity: 0.7,
+      lightIntensity: 1.3,
+      pulseAmount: 0.06,
+      auraScale: 1.1,
+      bloomStrength: 1.3,
+      scale: 1.05,
+      smokeTurbulence: 0.6,
+      smokeDensity: 0.9,
+      smokePulse: 0.0,
+      smokeWarning: 0.0,
+      ringSpeed: 0.9,
+      ringIntensity: 1.05,
+      particleSpeed: 0.9,
+      energyFlow: 0.9,
+      coreGlow: 0.9,
+      eyeOpen: 1.0,
+      eyeHappy: 1.0,
+      eyeSquint: 0.0,
+      eyeAngry: 0.0,
+      eyeBright: 1.2,
+    },
+    warning: {
+      // Warme Akzentfarbe, leicht unruhiger Fluss, subtiler Puls -
+      // kein aggressives Blinken (smokeWarning pulsiert langsam).
+      coreColor: 0xffb340,
+      glowColor: 0xffe3b0,
+      particleColor: 0xffd27d,
+      speed: 1.0,
+      particleIntensity: 0.6,
+      lightIntensity: 1.15,
+      pulseAmount: 0.12,
+      auraScale: 1.05,
+      bloomStrength: 1.1,
+      scale: 1.0,
+      smokeTurbulence: 0.9,
+      smokeDensity: 1.0,
+      smokePulse: 0.0,
+      smokeWarning: 0.6,
+      ringSpeed: 0.9,
+      ringIntensity: 1.0,
+      particleSpeed: 1.1,
+      energyFlow: 1.0,
+      coreGlow: 0.8,
+      eyeOpen: 1.15,
+      eyeHappy: 0.0,
+      eyeSquint: 0.25,
+      eyeAngry: 0.0,
+      eyeBright: 1.15,
+    },
+    offline: {
+      // Sofort erkennbar, aber weiterhin lebendig - nicht abgestürzt:
+      // deutlich weniger Glühen, langsame Bahnen, gedimmte Augen.
+      coreColor: 0x5a6b7d,
+      glowColor: 0x9fb2c4,
+      particleColor: 0x7d8fa1,
+      speed: 0.5,
+      particleIntensity: 0.15,
+      lightIntensity: 0.5,
+      pulseAmount: 0.04,
+      auraScale: 0.9,
+      bloomStrength: 0.6,
+      scale: 0.9,
+      smokeTurbulence: 0.25,
+      smokeDensity: 0.6,
+      smokePulse: 0.0,
+      smokeWarning: 0.0,
+      ringSpeed: 0.3,
+      ringIntensity: 0.45,
+      particleSpeed: 0.3,
+      energyFlow: 0.35,
+      coreGlow: 0.3,
+      eyeOpen: 0.8,
+      eyeHappy: 0.0,
+      eyeSquint: 0.2,
+      eyeAngry: 0.0,
+      eyeBright: 0.4,
     },
   };
 
   const result = {} as Record<OrbStateName, OrbState>;
   for (const name of ORB_STATES) {
-    result[name] = { name, ...defaults[name], ...(overrides[name] ?? {}) };
+    // ENERGY_DEFAULTS zuerst: Sollte eine (etwa ältere) Überschreibung
+    // einen Zustand unvollständig definieren, fehlen der Anzeige nie Werte.
+    result[name] = { name, ...ENERGY_DEFAULTS, ...defaults[name], ...(overrides[name] ?? {}) };
   }
   return result;
 }
@@ -459,50 +743,24 @@ export class StateMachine {
     );
     const amount = easeInOut(this.transitionElapsed / this.transitionDuration);
 
-    this.blended = {
-      coreColor: lerpColor(this.fromAppearance.coreColor, this.toAppearance.coreColor, amount),
-      glowColor: lerpColor(this.fromAppearance.glowColor, this.toAppearance.glowColor, amount),
-      particleColor: lerpColor(
-        this.fromAppearance.particleColor,
-        this.toAppearance.particleColor,
-        amount
-      ),
-      speed: lerp(this.fromAppearance.speed, this.toAppearance.speed, amount),
-      particleIntensity: lerp(
-        this.fromAppearance.particleIntensity,
-        this.toAppearance.particleIntensity,
-        amount
-      ),
-      lightIntensity: lerp(
-        this.fromAppearance.lightIntensity,
-        this.toAppearance.lightIntensity,
-        amount
-      ),
-      pulseAmount: lerp(this.fromAppearance.pulseAmount, this.toAppearance.pulseAmount, amount),
-      auraScale: lerp(this.fromAppearance.auraScale, this.toAppearance.auraScale, amount),
-      bloomStrength: lerp(
-        this.fromAppearance.bloomStrength,
-        this.toAppearance.bloomStrength,
-        amount
-      ),
-      scale: lerp(this.fromAppearance.scale, this.toAppearance.scale, amount),
-      smokeTurbulence: lerp(
-        this.fromAppearance.smokeTurbulence,
-        this.toAppearance.smokeTurbulence,
-        amount
-      ),
-      smokeDensity: lerp(
-        this.fromAppearance.smokeDensity,
-        this.toAppearance.smokeDensity,
-        amount
-      ),
-      smokePulse: lerp(this.fromAppearance.smokePulse, this.toAppearance.smokePulse, amount),
-      smokeWarning: lerp(
-        this.fromAppearance.smokeWarning,
-        this.toAppearance.smokeWarning,
-        amount
-      ),
-    };
+    // Generisch statt handgepflegt: Jede Zahl wird linear überblendet,
+    // Farben kanalweise. Ein neuer Zustandswert kann so nie vergessen
+    // werden - genau daran ist die alte, handgeschriebene Liste beim
+    // Erweitern zweimal fast gescheitert.
+    const blended = {} as Record<string, number>;
+    const from = this.fromAppearance as unknown as Record<string, number>;
+    const to = this.toAppearance as unknown as Record<string, number>;
+    for (const key of Object.keys(to)) {
+      const target = to[key];
+      const source = from[key] ?? target;
+      if (typeof target !== "number") {
+        continue;
+      }
+      blended[key] = key.endsWith("Color")
+        ? lerpColor(source, target, amount)
+        : lerp(source, target, amount);
+    }
+    this.blended = blended as unknown as StateAppearance;
   }
 
   /** Wechselt das Theme zur Laufzeit, ohne den Zustand zu verlieren. */

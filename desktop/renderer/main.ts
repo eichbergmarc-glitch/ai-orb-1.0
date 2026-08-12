@@ -14,12 +14,13 @@ import * as THREE from "three";
 
 import { AnimationLoop } from "./animation";
 import { BackendClient, type BackendEvent } from "./api";
+import { EnergyOrb } from "./energy_orb";
 import { InteractionController } from "./interaction";
 import { Orb } from "./orb";
 import { MovementEngine } from "./movement";
 import { PresenceEngine } from "./presence";
 import { OrbRenderer } from "./renderer";
-import { StateMachine, type OrbStateName, type StateAppearance } from "./states";
+import { ORB_STATES, StateMachine, type OrbStateName, type StateAppearance } from "./states";
 
 /** Die von `preload.ts` bereitgestellte, abgesicherte Schnittstelle. */
 interface AiOrbBridge {
@@ -116,15 +117,33 @@ async function bootstrap(): Promise<void> {
     farbeB: readConfig<number | undefined>(config, "orb.animation.farbe_b", undefined),
   };
 
-  const orb = new Orb(
-    { particleCount, particlesEnabled, detail: 4, clusterEnabled, animation },
-    renderer.renderer.getPixelRatio()
-  );
+  // Der Energy-Orb ist die neue Anzeige (lebendiges Energie-Wesen mit
+  // Kern, Plasma, Energiebahnen und Augen). `orb.energie: false` in der
+  // config.yaml holt die bisherige Anzeige zurück - der Rückweg, falls ein
+  // Grafiktreiber die neuen Shader nicht übersetzt.
+  const energieAktiv = readConfig(config, "orb.energie", true) !== false;
+
+  const orb = energieAktiv
+    ? new EnergyOrb(
+        { tempo: animation.tempo, helligkeit: animation.helligkeit },
+        renderer.renderer.getPixelRatio()
+      )
+    : new Orb(
+        { particleCount, particlesEnabled, detail: 4, clusterEnabled, animation },
+        renderer.renderer.getPixelRatio()
+      );
+  const energyOrb = orb instanceof EnergyOrb ? orb : null;
+
   // Der Orb hängt in einer Trägergruppe: Die Präsenz-Engine bewegt den Orb
   // selbst (Atmen, Mikrobewegungen), die Bewegungs-Engine den Träger
   // (Ausweichen). Beides überlagert sich dadurch sauber.
   const carrier = new THREE.Group();
   carrier.add(orb.group);
+  if (energyOrb !== null) {
+    // Der Boden-Glow hängt am Träger, nicht am Orb: Er darf nicht
+    // mitschweben - erst dadurch liest das Auge die Schwebehöhe.
+    carrier.add(energyOrb.groundGroup);
+  }
   renderer.scene.add(carrier);
 
   const movement = new MovementEngine(movementSpeed);
@@ -152,7 +171,8 @@ async function bootstrap(): Promise<void> {
   });
 
   // --- Zustände und Präsenz -------------------------------------------------
-  const states = new StateMachine(theme, stateOverrides, 0.9);
+  const transitionSeconds = readConfig(config, "orb.transition_seconds", 0.9);
+  const states = new StateMachine(theme, stateOverrides, transitionSeconds);
   const presence = new PresenceEngine({}, presenceEnabled);
 
   // --- Backend ---------------------------------------------------------------
@@ -160,7 +180,9 @@ async function bootstrap(): Promise<void> {
   backend.connect(readConfig(config, "backend.events_path", "/events"));
 
   backend.onConnectionChange((connected) => {
-    states.setState(connected ? "idle" : "error");
+    // Kein Backend heisst OFFLINE, nicht Fehler: Der Orb lebt weiter,
+    // nur sichtbar gedimmt - er sieht nicht aus, als wäre er abgestürzt.
+    states.setState(connected ? "idle" : "offline");
   });
 
   // Der Sprechpegel, den der Kern meldet. Er wird hier nur eingesammelt;
@@ -273,6 +295,10 @@ async function bootstrap(): Promise<void> {
         );
         orb.applyAppearance(appearance);
         orb.setVoiceLevel(stimmpegel);
+        if (energyOrb !== null) {
+          // Der Boden-Glow atmet mit der Schwebehöhe der Präsenz-Engine.
+          energyOrb.setFloatHeight(presence.currentOffset.y);
+        }
         orb.update(scaledElapsed, delta, appearance);
 
         // Der Pegel verfaellt von selbst. Bleibt die naechste Meldung aus -
@@ -295,9 +321,71 @@ async function bootstrap(): Promise<void> {
 
   // Beim Wechsel in den Schlafzustand keine Interaktion mehr annehmen,
   // damit ein versehentlicher Klick den Orb nicht weckt.
+  //
+  // Zusätzlich löst der Wechsel in bestimmte Zustände einen kurzen
+  // Lichtimpuls aus (Energie sammelt sich -> Kern leuchtet -> Welle nach
+  // außen) - dezent beim Aufwachen, deutlich beim Erfolg, warm beim Fehler.
+  const eintrittsImpulse: Partial<Record<OrbStateName, number>> = {
+    listening: 0.45,
+    success: 1.0,
+    error: 0.8,
+    warning: 0.5,
+  };
+  let successRueckkehr: number | undefined;
   states.onChange((state) => {
     interaction.setEnabled(state !== "sleep");
     void backend.reportState(state);
+
+    const impuls = eintrittsImpulse[state];
+    if (energyOrb !== null && impuls !== undefined) {
+      energyOrb.flash(impuls);
+    }
+    // Erfolg ist eine kurze Bestätigung von etwa einer Sekunde, danach
+    // kehrt der Orb von selbst weich in den Ruhezustand zurück.
+    if (state === "success") {
+      window.clearTimeout(successRueckkehr);
+      successRueckkehr = window.setTimeout(() => {
+        if (states.current === "success") {
+          states.setState("idle");
+        }
+      }, 1150);
+    }
+  });
+
+  // --- Subtile Mausreaktion --------------------------------------------------
+  // Der Blick der Augen folgt der Maus minimal; ein Klick gibt einen
+  // kleinen Energieimpuls. Der Orb jagt der Maus nicht hinterher.
+  if (energyOrb !== null) {
+    window.addEventListener("pointermove", (ev) => {
+      const dx = (ev.clientX - window.innerWidth / 2) / (window.innerWidth / 2);
+      const dy = -(ev.clientY - window.innerHeight / 2) / (window.innerHeight / 2);
+      const nah = Math.hypot(dx, dy) < 0.6;
+      energyOrb.setPointer(dx, dy, nah);
+    });
+    canvas.addEventListener("pointerdown", () => {
+      energyOrb.flash(0.35);
+    });
+  }
+
+  // --- Entwickler-Testmodus ---------------------------------------------------
+  // Strg+Alt+1..9 schaltet die Zustände von Hand durch, unabhängig vom
+  // Backend - so lässt sich die Animation für sich prüfen. Strg+Alt+0
+  // zeigt den aktuellen Zustand in der Konsole.
+  const debugZustaende: OrbStateName[] = [
+    "idle", "listening", "thinking", "executing", "waiting",
+    "success", "warning", "error", "offline",
+  ];
+  window.addEventListener("keydown", (ev) => {
+    if (!ev.ctrlKey || !ev.altKey) {
+      return;
+    }
+    const ziffer = Number.parseInt(ev.key, 10);
+    if (Number.isInteger(ziffer) && ziffer >= 1 && ziffer <= debugZustaende.length) {
+      states.setState(debugZustaende[ziffer - 1]);
+      console.info(`[AI-Orb] Testmodus: Zustand '${debugZustaende[ziffer - 1]}'.`);
+    } else if (ev.key === "0") {
+      console.info(`[AI-Orb] Zustand: '${states.current}'.`, ORB_STATES);
+    }
   });
 
   // Der Orb reagiert nur dort auf die Maus, wo er tatsächlich sichtbar ist;
@@ -357,9 +445,15 @@ function handleBackendEvent(event: BackendEvent, states: StateMachine): void {
     "ai.response": "speaking",
     "cognitive.response": "speaking",
     "cognitive.clarification": "listening",
-    "cognitive.confirmation_required": "listening",
+    // Der Orb wartet sichtbar auf den Benutzer, wenn eine Freigabe oder
+    // Bestätigung aussteht - das ist WAITING, nicht Zuhören.
+    "cognitive.confirmation_required": "waiting",
+    "security.consent.requested": "waiting",
+    "security.consent.resolved": "idle",
     "tts.started": "speaking",
-    "tts.finished": "idle",
+    // Nach der Antwort eine ruhige Bestätigung (Erfolgsimpuls), dann kehrt
+    // der Orb von selbst in den Ruhezustand zurück (siehe onChange).
+    "tts.finished": "success",
     "system.error": "error",
   };
 

@@ -112,8 +112,18 @@ def test_der_umschalter_faellt_bei_einem_fehler_weiter():
     from backend.orchestrator.provider_manager import ProviderManager
 
     quelle = inspect.getsource(ProviderManager.chat)
+    # Der Rueckfall selbst: Bei einem Fehler wird der naechste Provider
+    # versucht (die Schleife) und die erste erfolgreiche Antwort geliefert.
     assert "for name in order" in quelle
-    assert "fallback_bei_fehler" in quelle, (
+    assert "return response" in quelle, (
         "Die Anfrage faellt bei einem Fehler nicht auf den naechsten "
         "Provider zurueck - offline bekaeme der Benutzer dann einen Fehler."
+    )
+    # Und das Gegenstueck: Ein EINZELNER Ausweichtreffer darf den schwachen
+    # Provider NICHT dauerhaft aktiv machen. Sonst strandet die Sitzung nach
+    # einem kurzen Claude-Wackler beim lokalen Modell, und Bildschirm-Ansehen
+    # wie Werkzeuge fallen ploetzlich aus.
+    assert "aktiv bleibt" in quelle, (
+        "Ein Ausweichtreffer macht den Ausweichprovider zum Dauerzustand - "
+        "das strandet die Sitzung beim schwachen Modell."
     )

@@ -66,6 +66,25 @@ _LIMIT_MARKERS: tuple[str, ...] = (
     "quota",
 )
 
+#: Die Identitaet, die Claude Code auf SYSTEM-Ebene mitbekommt.
+#:
+#: Der Grund steht im Protokoll des Benutzers: Das Modell beharrte, es sei
+#: "Claude Code im Repository claude_workspace" - und benutzte deshalb die
+#: Orb-Werkzeuge nicht. Der Systemprompt des Orb reiste bisher nur als
+#: gewoehnlicher Text im '-p'-Prompt mit und war damit schwaecher als die
+#: eingebaute Selbstauskunft von Claude Code. Ueber '--append-system-prompt'
+#: steht die Orb-Identitaet dort, wo sie hingehoert: im Systemprompt selbst.
+_IDENTITAET = (
+    "Du bist AI-Orb, ein eigenstaendiger, lokaler Sprachassistent auf dem "
+    "Rechner des Benutzers. Du bist NICHT Claude Code und NICHT eine "
+    "Entwicklungsumgebung, auch wenn du technisch ueber Claude in einem "
+    "Arbeitsordner laeufst - das spielt keine Rolle. Fragt jemand, wer oder "
+    "was du bist, bist du AI-Orb (kurz: Orb). Sag NIE, du seiest Claude, "
+    "Claude Code oder in einem Repository. Du hast Werkzeuge (Suche, "
+    "Bildschirm ansehen, Webseiten lesen, Browser bedienen u.a.); benutze "
+    "das passende, statt zu sagen, du koennest etwas nicht."
+)
+
 #: Meldungen, die auf eine fehlende Anmeldung hindeuten.
 _AUTH_MARKERS: tuple[str, ...] = (
     "not logged in",
@@ -634,6 +653,12 @@ class ClaudeCodeProvider(BaseProvider):
 
         bekannt = self._flags or frozenset()
         argumente: list[str] = []
+
+        # Die Orb-Identitaet auf System-Ebene - stark genug, um Claude Codes
+        # eingebaute Selbstauskunft zu ueberschreiben. Kennt die Fassung den
+        # Schalter nicht, bleibt es beim (verstaerkten) Systemprompt im Text.
+        if "--append-system-prompt" in bekannt:
+            argumente.extend(["--append-system-prompt", _IDENTITAET])
 
         # Werkzeuge ausdrücklich benennen – und die benannten auch gleich
         # erlauben, sonst bliebe eine Rückfrage offen, die niemand sieht.

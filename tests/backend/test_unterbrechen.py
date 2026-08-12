@@ -309,8 +309,11 @@ def test_die_stimmerkennung_unterbricht_weiterhin_sofort():
     """
 
     text = _code()
-    stelle = text.index("urteil.geprueft and urteil.akzeptiert")
-    ausschnitt = text[stelle : stelle + 400]
+    # Der Stimm-Weg unterbricht weiterhin SOFORT (ohne Fensterzaehlung) -
+    # jetzt aber erst ab einer hohen Aehnlichkeit, damit nicht das eigene
+    # Echo abbricht.
+    stelle = text.index("urteil.aehnlichkeit >= schwelle")
+    ausschnitt = text[stelle : stelle + 700]
     assert "self.interrupt()" in ausschnitt
     assert "_fremd_folge" not in ausschnitt, (
         "Die Stimmerkennung wurde an die Fensterzaehlung gehaengt."

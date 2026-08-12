@@ -504,6 +504,150 @@ class HealthCheck:
         mood = presence.emotions.current().label()
         return CheckState.OK, f"Stimmung {mood}", ""
 
+    # --- Funktionsprüfungen: das, was im Betrieb immer wieder aussetzte -------
+    #
+    # Die Prüfungen darüber fragen "ist der Baustein da?". Die drei hier
+    # fragen "TUT er es auch?". Genau das war die wiederkehrende Klage des
+    # Benutzers: Werkzeuge, die da waren und trotzdem nicht griffen; eine
+    # Suche, die abwies; ein Bildschirm, der sich mal ansehen liess und mal
+    # nicht. Ein grüner Haken hier bedeutet nicht "installiert", sondern
+    # "eben ausprobiert und es ging".
+
+    #: Die Werkzeuge, ohne die der Orb im Alltag als "kann nichts" erlebt
+    #: wird. Fehlt eines, ist das kein "vielleicht" - es ist rot.
+    _KERNWERKZEUGE = (
+        "internet_suchen", "webseite_lesen", "bildschirm_ansehen",
+        "browser_bedienen",
+    )
+
+    def check_werkzeuge(self) -> tuple[CheckState, str, str]:
+        """Ob die wichtigen Werkzeuge wirklich registriert sind.
+
+        Der Benutzer klagte mehrfach, der Orb könne "keine Werkzeuge
+        benutzen". Hier wird die Werkzeugliste tatsächlich aufgebaut und
+        nachgesehen, ob die vier Kernwerkzeuge dabei sind - nicht bloss, ob
+        irgendein Modul lädt.
+        """
+
+        from backend.events.event_bus import EventBus
+        from backend.security.security_engine import SecurityEngine
+        from backend.tools.standard_tools import build_standard_tools
+
+        namen: set[str] = set()
+        try:
+            for werkzeug in build_standard_tools(security=SecurityEngine(EventBus())):
+                namen.add(getattr(werkzeug, "name", ""))
+        except Exception as error:  # noqa: BLE001
+            return (
+                CheckState.WARNING,
+                "nicht aufbaubar",
+                f"Die Werkzeugliste liess sich nicht aufbauen ({error}). "
+                "Der Orb antwortet, kann aber vielleicht nicht handeln.",
+            )
+
+        # bildschirm_ansehen und browser_bedienen werden erst mit ihren
+        # Abhängigkeiten (Bildschirm, Browsersteuerung) zusammengebaut; hier
+        # genügt der Nachweis, dass ihre Werkzeugklassen überhaupt vorhanden
+        # sind. Fehlt eine, ist das Modul unvollständig.
+        bild_ok = browser_ok = True
+        try:
+            from backend.tools.vision_tools import DescribeScreenTool  # noqa: F401
+        except Exception:  # noqa: BLE001
+            bild_ok = False
+        try:
+            from backend.tools.browser_tools import BrowserBedienenTool  # noqa: F401
+        except Exception:  # noqa: BLE001
+            browser_ok = False
+
+        # In der Standardliste MÜSSEN Suche und Seiten-Lesen stehen.
+        stets_dabei = {"internet_suchen", "webseite_lesen"}
+        fehlend = [w for w in stets_dabei if w not in namen]
+        if fehlend:
+            return (
+                CheckState.FAILED,
+                "unvollständig",
+                "Es fehlen Kernwerkzeuge: " + ", ".join(fehlend) + ". Ohne sie "
+                "kann der Orb nicht suchen oder Seiten lesen. Eine "
+                "Neuinstallation stellt sie wieder her.",
+            )
+
+        # Bildschirm/Browser sind für die volle Handlungsfähigkeit da, aber
+        # kein Grund, den Start zu blockieren - fehlen sie, ist es eine
+        # Warnung.
+        nicht_da = []
+        if not bild_ok:
+            nicht_da.append("bildschirm_ansehen")
+        if not browser_ok:
+            nicht_da.append("browser_bedienen")
+        if nicht_da:
+            return (
+                CheckState.WARNING,
+                "Kern da, " + ", ".join(nicht_da) + " fehlt",
+                "Suchen und Lesen gehen; " + " und ".join(nicht_da) + " nicht. "
+                "Eine Neuinstallation bringt die fehlenden Werkzeuge mit.",
+            )
+        return CheckState.OK, f"{len(namen)} Werkzeuge, Kern vollständig", ""
+
+    def check_suche(self) -> tuple[CheckState, str, str]:
+        """Ob eine echte Suche gerade durchkommt - jetzt, nicht theoretisch.
+
+        Ein kurzer, echter Suchlauf. Klappt er, ist der häufigste
+        Störungsfall ("alle Suchmaschinen werden abgelehnt") beim Start
+        schon ausgeschlossen. Klappt er nicht, steht der Grund im Klartext
+        da - kein Netz, abgewiesen oder Seitenaufbau geändert -, statt dass
+        der Benutzer es erst im Gespräch merkt.
+        """
+
+        from backend.tools.web_tools import _Suchfehler, search_web
+
+        try:
+            treffer = search_web("Testabfrage Bundesregierung", limit=2)
+        except _Suchfehler as fehler:
+            auskunft = {
+                "kein_netz": "kein Internet - die Suche ist offline nicht möglich.",
+                "abgewiesen": "die Suchmaschine hält die Anfrage für automatisiert.",
+                "unlesbar": "die Suchmaschine hat geantwortet, war aber nicht lesbar.",
+            }.get(fehler.art, str(fehler))
+            return (
+                CheckState.WARNING,
+                fehler.art,
+                "Die Suche kam beim Start nicht durch: " + auskunft + " Sobald "
+                "Internet da ist, versucht der Orb es bei jeder Frage neu.",
+            )
+        except Exception as error:  # noqa: BLE001
+            return CheckState.WARNING, "gescheitert", f"Die Testsuche brach ab: {error}"
+
+        if not treffer:
+            return (
+                CheckState.WARNING,
+                "keine Treffer",
+                "Die Suche lief, lieferte aber nichts. Das kann am Suchbegriff "
+                "liegen; im Betrieb wird mit echten Fragen gesucht.",
+            )
+        return CheckState.OK, f"{len(treffer)} Treffer", ""
+
+    def check_bildschirm_fotografieren(self) -> tuple[CheckState, str, str]:
+        """Ob der Orb wirklich ein Bildschirmfoto machen kann.
+
+        Getrennt von 'Desktop': Fenster steuern und ein Bild aufnehmen sind
+        zwei verschiedene Fähigkeiten. Der Benutzer erlebte, dass der Orb
+        "zuerst einen Printscreen macht ... danach aber plötzlich nicht
+        mehr". Ob das Aufnehmen überhaupt möglich ist, gehört darum sichtbar
+        in den Selbsttest.
+        """
+
+        from backend.vision.screen_capture import ScreenCapture
+
+        if not ScreenCapture.is_available():
+            return (
+                CheckState.WARNING,
+                "nicht möglich",
+                "Für Bildschirmfotos fehlt das Paket 'mss'. Ohne es kann der "
+                "Orb den Bildschirm nicht ansehen. Die Neuinstallation bringt "
+                "es mit.",
+            )
+        return CheckState.OK, "möglich", ""
+
     # --- Gesamtlauf ---------------------------------------------------------------------
 
     def run(self, *, include_optional: bool = True) -> HealthReport:
@@ -551,6 +695,12 @@ class HealthCheck:
             self._run("Memory", self.check_memory, required=False)
             self._run("Desktop", self.check_desktop, required=False)
             self._run("Human Experience", self.check_presence, required=False)
+            # Der eigentliche Selbsttest: nicht "ist es da?", sondern "tut
+            # es?". Diese drei fassen die Fähigkeiten zusammen, die im
+            # Betrieb immer wieder aussetzten - Werkzeuge, Suche, Bildschirm.
+            self._run("Werkzeuge", self.check_werkzeuge, required=False)
+            self._run("Suche", self.check_suche, required=False)
+            self._run("Bildschirmfoto", self.check_bildschirm_fotografieren, required=False)
 
         self._report.seconds = time.perf_counter() - started
         return self._report

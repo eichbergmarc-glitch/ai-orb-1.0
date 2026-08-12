@@ -79,6 +79,154 @@ def braucht_aktuelles(text: str) -> bool:
     return any(wort in knapp for wort in _JETZT_WOERTER)
 
 
+#: Ausdrueckliche Woerter fuer "mach ein Bild vom Bildschirm". Sie loesen
+#: allein aus.
+_BILDSCHIRM_DIREKT: tuple[str, ...] = (
+    "screenshot", "screen shot", "printscreen", "print screen",
+    "bildschirmfoto", "bildschirm-foto", "bildschirmaufnahme",
+)
+
+#: Das Wort fuer den Ort. Nur zusammen mit einem Seh-/Lesewort loest es aus -
+#: sonst faenge man auch "mach den Bildschirm heller", was eine Einstellung
+#: ist und kein Ansehen.
+_BILDSCHIRM_ORT: tuple[str, ...] = (
+    "bildschirm", "monitor", "auf dem schirm", "am schirm",
+)
+
+#: Die Absicht, hinzusehen oder zu lesen.
+_BILDSCHIRM_SEHEN: tuple[str, ...] = (
+    "schau", "sieh", "guck", "erkenn", "les", "lies", "beschreib",
+    "analysier", "zeig mir was", "was siehst", "was ist", "was zeigt",
+    "was laeuft", "was läuft", "zu sehen", "was steht", "welches",
+    "was offen", "was gerade offen", "welches dokument", "was du siehst",
+)
+
+
+def will_bildschirm(text: str) -> bool:
+    """Ob der Benutzer AUSDRUECKLICH auf den Bildschirm sehen lassen will.
+
+    Bewusst eng gefasst: Ein Wort fuer den Ort (Bildschirm/Monitor) allein
+    genuegt nicht - erst zusammen mit einer Seh- oder Leseabsicht. So faengt
+    die Regel "schau auf den Bildschirm" und "was ist auf dem Bildschirm",
+    aber nicht "mach den Bildschirm heller". Die klaren Fotobefehle
+    (Screenshot, Printscreen) loesen fuer sich aus.
+    """
+
+    knapp = " " + " ".join(text.lower().split()) + " "
+    if any(wort in knapp for wort in _BILDSCHIRM_DIREKT):
+        return True
+    if any(wort in knapp for wort in _BILDSCHIRM_ORT):
+        if any(wort in knapp for wort in _BILDSCHIRM_SEHEN):
+            return True
+    return False
+
+
+import re as _re
+
+#: Eine Adresse im gesprochenen Text - mit oder ohne ``http``. ``www.x.de``
+#: und ``spiegel.de/politik`` sollen genauso greifen wie eine volle URL.
+_URL_MUSTER = _re.compile(
+    r"\b((?:https?://)?(?:www\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    r"(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:/[^\s]*)?)",
+    _re.IGNORECASE,
+)
+
+#: Endungen, die fast immer eine echte Netzadresse markieren. Ohne diese
+#: Prüfung fischt das Muster auch "z.B." oder "u.a." heraus.
+_URL_ENDUNGEN: tuple[str, ...] = (
+    ".de", ".com", ".org", ".net", ".ch", ".at", ".eu", ".info", ".io",
+    ".gov", ".edu", ".it", ".fr", ".uk", ".es", ".nl", ".pl", ".ru",
+)
+
+#: Die Absicht, eine bestimmte Seite zu LESEN (nicht im Browser zu klicken).
+_LESE_ABSICHT: tuple[str, ...] = (
+    "lies", "les", "vorles", "vorlesen", "lesen", "lese", "oeffne", "öffne",
+    "ruf auf", "rufe auf", "geh auf", "geh zu", "zeig mir", "zeige mir",
+    "zusammenfass", "fasse zusammen", "fasse", "zusammen", "worum geht",
+    "was steht", "was schreibt", "schau dir", "sieh dir", "was sagt",
+    "prüf", "pruef",
+)
+
+#: Wendungen, die einen echten Browser mit Klicken/Bedienen verlangen.
+_BROWSER_WOERTER: tuple[str, ...] = (
+    "browser", "im browser", "chrome", "firefox", "webseite bedien",
+    "seite bedien", "steuere den browser", "browsersteuerung",
+)
+
+#: Die Absicht, im Browser etwas zu TUN (nicht bloss zu lesen).
+_BROWSER_HANDLUNG: tuple[str, ...] = (
+    "klick", "klicke", "tippe", "eingeb", "einloggen", "anmeld", "melde",
+    "formular", "ausfüll", "ausfuell", "scroll", "navigier", "bediene",
+    "drück", "drueck", "wähle", "waehle", "such auf", "buche", "bestell",
+)
+
+
+def _url_aus(text: str) -> str:
+    """Zieht die erste echte Netzadresse aus dem Text - oder gibt "" zurück.
+
+    Eng gefasst: Nur was auf eine bekannte Endung ausgeht, zählt. So wird
+    "gegen 20.30 Uhr" nicht für eine Adresse gehalten, "spiegel.de/politik"
+    aber schon.
+    """
+
+    for treffer in _URL_MUSTER.findall(text or ""):
+        kandidat = treffer.strip().rstrip(".,;:!?)")
+        # Erst das Schema abstreifen, sonst wäre "https:" der Wirt (die
+        # Doppelschrägstriche zerlegten die Adresse an der falschen Stelle).
+        ohne_schema = _re.sub(r"^https?://", "", kandidat, flags=_re.IGNORECASE)
+        kern = ohne_schema.split("/")[0].lower()
+        if any(kern.endswith(endung) for endung in _URL_ENDUNGEN):
+            if not kandidat.lower().startswith(("http://", "https://")):
+                kandidat = "https://" + kandidat
+            return kandidat
+    return ""
+
+
+def will_webseite_lesen(text: str) -> str:
+    """Die Adresse, die der Benutzer ausdrücklich LESEN lassen will - sonst "".
+
+    Zwei Dinge müssen zusammenkommen: eine erkennbare Adresse UND eine
+    Leseabsicht ("lies mir spiegel.de vor", "worum geht es auf …"). Eine
+    Adresse allein genügt nicht - sie könnte auch nur erwähnt sein. Ist
+    zugleich von einem Browser mit Klicken die Rede, gehört das nicht
+    hierher, sondern in ``will_browser``.
+    """
+
+    url = _url_aus(text)
+    if not url:
+        return ""
+    knapp = " " + " ".join(text.lower().split()) + " "
+    if any(wort in knapp for wort in _BROWSER_HANDLUNG):
+        return ""
+    if any(wort in knapp for wort in _LESE_ABSICHT):
+        return url
+    return ""
+
+
+def will_browser(text: str) -> str:
+    """Die Adresse für eine ausdrückliche Browser-BEDIENUNG - sonst "".
+
+    Anders als beim Lesen geht es hier ums Tun: klicken, tippen, sich
+    anmelden, ein Formular ausfüllen. Verlangt wird ein Browser-Wort ODER
+    eine Handlungsabsicht zusammen mit einer Adresse. Der Orb öffnet dann
+    deterministisch das Fenster und zeigt, was anklickbar ist - den Rest
+    (klicken/tippen) macht das Modell mit dem Werkzeug weiter.
+    """
+
+    knapp = " " + " ".join(text.lower().split()) + " "
+    nennt_browser = any(wort in knapp for wort in _BROWSER_WOERTER)
+    will_handeln = any(wort in knapp for wort in _BROWSER_HANDLUNG)
+    if not (nennt_browser or will_handeln):
+        return ""
+    url = _url_aus(text)
+    if not url:
+        return ""
+    # Nur wenn wirklich gehandelt werden soll ODER ausdrücklich ein Browser
+    # genannt ist - "lies mir x.de vor" fällt so heraus.
+    if nennt_browser or will_handeln:
+        return url
+    return ""
+
 
 @dataclass
 class OrchestrationResult:
@@ -360,6 +508,49 @@ class Orchestrator:
                     part for part in (context_block, frisch) if part
                 )
 
+        # Bittet jemand ausdruecklich, auf den Bildschirm zu sehen, dann WIRD
+        # hingesehen - deterministisch, nicht auf gut Glueck.
+        #
+        # Genau hier lag die wiederkehrende Klage: Der Benutzer sagte "mach
+        # einen Printscreen und nutze das Werkzeug", und das Modell nannte das
+        # Werkzeug, ohne es zu rufen. Ein Schubser (das Nachhaken) hilft oft,
+        # aber "oft" ist bei einer klaren Ansage zu wenig. Wo die Entscheidung
+        # feststeht, gehoert sie in den Ablauf: Der Orb macht das Bild selbst
+        # und legt die Beschreibung dem Modell vor, bevor es zu denken anfaengt.
+        if tools_available and will_bildschirm(text):
+            gesehen = await self._vorab_bildschirm(text)
+            if gesehen:
+                context_block = "\n\n".join(
+                    part for part in (context_block, gesehen) if part
+                )
+
+        # Nennt der Benutzer eine Adresse und will sie gelesen haben, dann WIRD
+        # sie gelesen - dasselbe Prinzip wie bei Suche und Bildschirm. Vorher
+        # nannte das Modell "webseite_lesen" und rief es nicht; hier holt der
+        # Orb die Seite selbst und legt den Text vor.
+        if tools_available:
+            zu_lesen = will_webseite_lesen(text)
+            if zu_lesen:
+                gelesen = await self._vorab_webseite(zu_lesen)
+                if gelesen:
+                    context_block = "\n\n".join(
+                        part for part in (context_block, gelesen) if part
+                    )
+
+        # Verlangt der Benutzer, im Browser etwas zu TUN (klicken, anmelden,
+        # ein Formular), öffnet der Orb das Fenster deterministisch und zeigt,
+        # was anklickbar ist. Klicken/Tippen macht das Modell danach mit dem
+        # Werkzeug - aber der erste, so oft verweigerte Schritt (überhaupt
+        # öffnen) ist damit getan.
+        if tools_available:
+            browser_ziel = will_browser(text)
+            if browser_ziel:
+                geoeffnet = await self._vorab_browser(browser_ziel)
+                if geoeffnet:
+                    context_block = "\n\n".join(
+                        part for part in (context_block, geoeffnet) if part
+                    )
+
         # Und bei einer Fachfrage in den EIGENEN Quellen.
         #
         # Der Benutzer hat das unmissverständlich verlangt: "er soll aber
@@ -577,9 +768,10 @@ class Orchestrator:
             return ""
 
         from backend.research.eigene_quellen import eigene_domaenen
+        from backend.research.suchmasken import favoriten_suche
         from backend.tools.web_tools import (
-            mehrquellensuche,
             quellen_gegenueberstellen,
+            suchbegriff_aus,
         )
 
         domaenen = await asyncio.to_thread(
@@ -594,13 +786,15 @@ class Orchestrator:
             )
             return ""
 
-        quellen = [
-            {"name": f"deine Quelle: {d}", "einschraenkung": f"site:{d}"}
-            for d in domaenen
-        ]
-        gesammelt = await mehrquellensuche(
-            text,
-            quellen,
+        # Jetzt werden die Favoriten nicht mehr bloss mit ``site:`` von
+        # aussen abgesucht, sondern - wo es geht - über ihre EIGENE
+        # Suchmaske bedient (JSTOR, BASE, Semantic Scholar, Wikipedia …).
+        # Für die übrigen bleibt es beim ``site:``-Weg. Wikipedia ist als
+        # Auffangquelle immer dabei, damit eine Fachfrage nie ganz leer
+        # ausgeht.
+        gesammelt = await favoriten_suche(
+            suchbegriff_aus(text),
+            list(domaenen),
             je_quelle=int(einstellungen.get("treffer_je_domaene", 3) or 3),
         )
         if not gesammelt:
@@ -608,9 +802,9 @@ class Orchestrator:
             return ""
 
         logger.info(
-            "In %d eigenen Quellen gesucht, %d davon mit Treffern.",
-            len(quellen),
+            "In eigenen Quellen gesucht, %d davon mit Treffern: %s",
             len(gesammelt),
+            ", ".join(gesammelt),
         )
         return (
             "AUS DEN EIGENEN QUELLEN DES BENUTZERS (seine Favoriten - über "
@@ -647,9 +841,12 @@ class Orchestrator:
         if mehr:
             return mehr
 
+        from backend.tools.web_tools import suchbegriff_aus
+
+        begriff = suchbegriff_aus(text)
         try:
             lauf = await self._tool_engine.direkt_ausfuehren(
-                "internet_suchen", {"suchbegriff": text, "max_treffer": 5}
+                "internet_suchen", {"suchbegriff": begriff, "max_treffer": 5}
             )
         except Exception:  # noqa: BLE001 - eine Vorabsuche darf nie die Antwort verhindern.
             logger.exception("Die Vorabsuche ist gescheitert.")
@@ -672,6 +869,131 @@ class Orchestrator:
             "Gedächtnis zu antworten."
         )
 
+    async def _vorab_bildschirm(self, text: str) -> str:
+        """Sieht auf den Bildschirm - deterministisch, ohne das Modell zu fragen.
+
+        Das ist das Gegenstueck zur erzwungenen Vorabsuche, nur fuers Sehen.
+        Bittet der Benutzer ausdruecklich darum ("mach einen Printscreen",
+        "was ist auf dem Bildschirm"), nimmt der Orb das Bild selbst auf und
+        wertet es aus, statt zu hoffen, dass das Modell von sich aus das
+        Werkzeug ruft. Die Beschreibung liegt dem Modell dann vor, wenn es zu
+        antworten beginnt.
+        """
+
+        if self._tool_engine is None:
+            return ""
+
+        try:
+            lauf = await self._tool_engine.direkt_ausfuehren(
+                "bildschirm_ansehen", {"frage": text[:200]}
+            )
+        except Exception:  # noqa: BLE001 - das Ansehen darf die Antwort nie verhindern.
+            logger.exception("Das erzwungene Bildschirm-Ansehen ist gescheitert.")
+            return ""
+
+        if lauf.result.ok and lauf.result.output:
+            logger.info("Bildschirm vorab angesehen (%.1f s).", lauf.seconds)
+            return (
+                "SO SIEHT DER BILDSCHIRM DES BENUTZERS GERADE AUS (soeben "
+                "aufgenommen und ausgewertet) - stütze deine Antwort darauf und "
+                "sag NICHT, du könntest den Bildschirm nicht sehen:\n\n"
+                + str(lauf.result.output)
+            )
+
+        logger.warning("Das Bildschirm-Ansehen brachte nichts: %s", lauf.result.error)
+        return (
+            "HINWEIS: Ich habe versucht, den Bildschirm anzusehen, und es ging "
+            "nicht: " + str(lauf.result.error or "kein Ergebnis") + " Sag das dem "
+            "Benutzer geradeheraus."
+        )
+
+    async def _vorab_webseite(self, url: str) -> str:
+        """Liest eine ausdrücklich genannte Seite - ohne das Modell zu fragen.
+
+        Das Gegenstück zur erzwungenen Suche, nur für eine konkrete Adresse.
+        Nennt der Benutzer eine Seite und will sie gelesen haben, holt der
+        Orb sie selbst und legt den Text vor - statt zu hoffen, dass das
+        Modell von sich aus 'webseite_lesen' ruft.
+        """
+
+        if self._tool_engine is None:
+            return ""
+
+        try:
+            lauf = await self._tool_engine.direkt_ausfuehren(
+                "webseite_lesen", {"url": url, "max_zeichen": 4000}
+            )
+        except Exception:  # noqa: BLE001 - das Lesen darf die Antwort nie verhindern.
+            logger.exception("Das erzwungene Webseite-Lesen ist gescheitert.")
+            return ""
+
+        if lauf.result.ok and lauf.result.output:
+            logger.info("Seite vorab gelesen: %s (%.1f s).", url, lauf.seconds)
+            return (
+                "SO STEHT ES AUF DER SEITE, DIE DER BENUTZER GENANNT HAT "
+                f"({url}, soeben geholt) - stütze deine Antwort darauf und sag "
+                "NICHT, du könntest keine Webseiten öffnen:\n\n"
+                + str(lauf.result.output)
+            )
+
+        logger.warning("Das Webseite-Lesen brachte nichts: %s", lauf.result.error)
+        return (
+            "HINWEIS: Ich habe versucht, " + url + " zu öffnen, und es ging "
+            "nicht: " + str(lauf.result.error or "kein Ergebnis") + " Sag das "
+            "dem Benutzer geradeheraus, statt etwas zu erfinden."
+        )
+
+    async def _vorab_browser(self, url: str) -> str:
+        """Öffnet den Browser bei einer Adresse und zeigt, was anklickbar ist.
+
+        Nur die beiden gefahrlosen Schritte werden vorweggenommen: das
+        Fenster öffnen und die Elemente auflisten. Geklickt, getippt oder
+        abgeschickt wird hier NICHTS - das bleibt dem Modell mit dem Werkzeug,
+        weil es je nach Seite und Absicht anders ausfällt. Behoben ist damit
+        die häufigste Klage: dass der Orb den Browser gar nicht erst öffnete.
+        """
+
+        if self._tool_engine is None:
+            return ""
+
+        try:
+            auf = await self._tool_engine.direkt_ausfuehren(
+                "browser_bedienen", {"aktion": "oeffnen", "ziel": url}
+            )
+        except Exception:  # noqa: BLE001 - das Öffnen darf die Antwort nie verhindern.
+            logger.exception("Das erzwungene Browser-Öffnen ist gescheitert.")
+            return ""
+
+        if not (auf.result.ok and auf.result.output):
+            logger.warning("Das Browser-Öffnen brachte nichts: %s", auf.result.error)
+            return (
+                "HINWEIS: Ich habe versucht, den Browser bei " + url + " zu "
+                "öffnen, und es ging nicht: "
+                + str(auf.result.error or "kein Ergebnis") + " Sag das dem "
+                "Benutzer geradeheraus."
+            )
+
+        teile = [str(auf.result.output)]
+        # Die Elemente sind der zweite gefahrlose Schritt - mit ihnen kann das
+        # Modell direkt weiter klicken/tippen, statt sie erst anzufordern.
+        try:
+            elemente = await self._tool_engine.direkt_ausfuehren(
+                "browser_bedienen", {"aktion": "elemente"}
+            )
+            if elemente.result.ok and elemente.result.output:
+                teile.append(str(elemente.result.output))
+        except Exception:  # noqa: BLE001 - ohne die Liste geht es auch weiter.
+            logger.info("Die Elemente ließen sich nach dem Öffnen nicht lesen.")
+
+        logger.info("Browser vorab geöffnet: %s (%.1f s).", url, auf.seconds)
+        return (
+            "DER BROWSER IST BEREITS GEÖFFNET (bei " + url + ", vom Orb selbst). "
+            "Sag NICHT, du könntest keinen Browser bedienen - du kannst es, das "
+            "Fenster steht offen. Mach mit dem Werkzeug 'browser_bedienen' "
+            "weiter: 'klicken'/'tippen' sprechen die Nummern unten an, "
+            "'scrollen' blättert.\n\n" + "\n\n".join(teile)
+        )
+
     async def _vorab_mehrquellen(self, text: str) -> str:
         """Befragt mehrere Häuser parallel und stellt sie gegenüber."""
 
@@ -686,8 +1008,10 @@ class Orchestrator:
             quellen_gegenueberstellen,
         )
 
+        from backend.tools.web_tools import suchbegriff_aus
+
         gesammelt = await mehrquellensuche(
-            text,
+            suchbegriff_aus(text),
             [dict(q) for q in quellen],
             je_quelle=int(self._config.get("recherche.treffer_je_quelle", 3) or 3),
             gleichzeitig=int(self._config.get("recherche.gleichzeitig", 4) or 4),
@@ -727,7 +1051,11 @@ class Orchestrator:
 
         memories = memory_context.get("memories") or []
         if memories:
-            lines.append("Bekanntes aus dem Gedächtnis:")
+            lines.append(
+                "Bekanntes aus dem Gedächtnis (das hast DU in früheren "
+                "Sitzungen mit dem Benutzer gelernt - deine eigene "
+                "Erinnerung, sprich daraus):"
+            )
             for entry in memories:
                 marker = "" if entry.get("certainty") == "fakt" else f" [{entry.get('certainty')}]"
                 lines.append(f"- {entry['content']}{marker}")

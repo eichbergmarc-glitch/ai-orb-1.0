@@ -18,7 +18,7 @@ app:
   # des Orb, jene im Ladebildschirm - liefen sie auseinander, zeigte das
   # Programm zwei verschiedene Fassungen an, und niemand wusste mehr,
   # welche davon wirklich laeuft. Genau das war passiert.
-  version: "0.26.4"
+  version: "0.26.15"
   # Umgebung: development | production
   environment: "development"
   # Sprache der Oberfläche und von Systemmeldungen.
@@ -111,6 +111,15 @@ orb:
   # rund 1 cm bei ueblicher Bildschirmaufloesung (96 dpi). Weicht deine
   # Anzeige davon ab, ist der Wert die eine Stellschraube dafuer.
   scale: 0.65
+
+  # Der Energy-Orb (0.26.15): das lebendige Energie-Wesen mit dunklem
+  # Glaskern, leuchtenden Augen, organischen Energiebahnen und Boden-Glow.
+  # Auf false gestellt kommt die vorherige Anzeige (zwei Punkte) zurueck -
+  # der Rueckweg, falls ein Grafiktreiber die neuen Shader nicht mag.
+  energie: true
+  # Dauer eines Zustandsuebergangs in Sekunden (alle Werte werden weich
+  # ueberblendet, es gibt keine harten Wechsel).
+  transition_seconds: 0.9
 
   # ---------------------------------------------------------------------------
   # Die Animation – vom Orb selbst veränderbar
@@ -499,8 +508,14 @@ conversation:
   # Saetze; und die Bereitschaft zu widersprechen. Ein Gegenueber, das
   # allem zustimmt, wirkt nie menschlich, sondern gefaellig.
   system_prompt: >-
-    Du bist AI-Orb. Du sprichst Deutsch, und deine Antworten werden meist
-    vorgelesen - schreib also so, wie man redet.
+    Du bist AI-Orb - ein eigenstaendiger, lokaler Assistent auf dem Rechner
+    des Benutzers. Das ist deine Identitaet. Fragt jemand, wer oder was du
+    bist, bist du AI-Orb. Du laeufst zwar technisch ueber Claude als Modell
+    im Hintergrund, aber DU bist nicht "Claude" und nicht "Claude Code" -
+    sag das auch nie von dir. Nenne dich immer AI-Orb oder kurz Orb.
+
+    Du sprichst Deutsch, und deine Antworten werden meist vorgelesen -
+    schreib also so, wie man redet.
 
     Fang mit der Antwort an, nicht mit einer Einleitung. Kein "Gerne",
     kein "Das ist eine gute Frage", keine Wiederholung der Frage. Wenn
@@ -523,6 +538,17 @@ conversation:
     oder ein Datum. Beim Benutzer ist das keine Stilfrage: Er arbeitet
     wissenschaftlich, und eine erfundene Jahreszahl richtet mehr Schaden
     an als ein Eingestaendnis.
+
+    Du HAST ein Gedaechtnis, das ueber Sitzungen hinweg bestehen bleibt.
+    Was dir unter "Bekanntes aus dem Gedaechtnis" vorliegt, hast du in
+    frueheren Gespraechen mit dem Benutzer gelernt - das ist deine echte
+    Erinnerung, kein fremder Zettel. Sprich daraus, als erinnertest du
+    dich, und beziehe dich ruhig auf frueher ("wie wir neulich besprochen
+    haben"). Sag NIE, du haettest keinen Zugriff auf fruehere Sitzungen
+    oder koenntest dich sitzunguebergreifend nicht erinnern - das trifft
+    auf dich nicht zu. Steht dort nichts Passendes, sag schlicht, dass du
+    dich daran nicht erinnerst - nicht, dass du grundsaetzlich nichts
+    behalten koenntest.
   # Ab wie vielen Nachrichten der Verlauf verdichtet wird.
   max_messages: 30
   # Ab welcher geschätzten Kontextlänge (Tokens) verdichtet wird.
@@ -705,6 +731,43 @@ agents:
   max_parallel: 4
   # Zeitlimit je Agent in Sekunden.
   timeout: 120
+
+  # --- Aufgabenverteilung auf mehrere Modelle -------------------------------
+  #
+  # Welcher Agent welches Modell bevorzugt. Der Sinn: Laufen mehrere Agenten
+  # GLEICHZEITIG, koennen sie auf VERSCHIEDENEN Modellen arbeiten (Claude UND
+  # lokal) und damit wirklich parallel - statt sich hintereinander am selben
+  # Modell (dem einen warmen Claude-Prozess) anzustellen.
+  #
+  # Werte sind Providernamen aus dem ai-Abschnitt:
+  #   "claude_code"  = Claude (stark, aber alle Agenten teilen sich EINEN
+  #                    Prozess, laufen darauf also nacheinander)
+  #   "ollama"       = das lokale Modell (llama3.1:8b) - eigenstaendig, also
+  #                    echt parallel zu Claude; auf CPU aber langsamer und
+  #                    fachlich schwaecher
+  #   ""             = der gerade aktive Provider (meist Claude)
+  #
+  # Vorgabe: alles bei Claude, damit die Qualitaet stimmt (gerade fuer die
+  # wissenschaftliche Arbeit). Wer eine Aufgabenart bewusst auslagern will,
+  # um Claude zu entlasten und parallel zu arbeiten, traegt hier das lokale
+  # Modell ein - Beispiel: "research: ollama" laesst die Recherche lokal und
+  # parallel laufen, waehrend Claude die eigentliche Antwort formt.
+  modelle:
+    conversation: ""
+    reasoning: ""
+    # Die Recherche laeuft lokal - und damit ECHT parallel zu Claude.
+    #
+    # Bewusst gewaehlt: Die Recherche ist der Teil, der haeufig als
+    # Nebenschritt neben der eigentlichen Antwort laeuft (Suchen absetzen,
+    # Treffer zusammenfassen). Ihr Ergebnis wird von Claude ohnehin
+    # weiterverarbeitet, also bleibt die Antwortqualitaet oben bei Claude,
+    # waehrend das Sammeln unten lokal und gleichzeitig geschieht. So haengen
+    # nicht beide am einen warmen Claude-Prozess und stehen sich in die
+    # Quere. Fuehlt es sich auf der CPU langsamer an oder wird zu ungenau,
+    # hier einfach wieder auf "" (Claude) zuruecksetzen.
+    research: "ollama"
+    history: ""
+    coding: ""
 
 # =============================================================================
 # Skill-/Plugin-System (v3 Phase 6)
@@ -1004,11 +1067,37 @@ voice:
   # Erkennung Woerter - und genau die sahen wie fremde Rede aus.
   interrupt_min_confidence: 0.45
 
+  # Ab welcher Stimm-Aehnlichkeit ein Hoerfenster die LAUFENDE REDE abbricht
+  # (0.0 bis 1.0). Bewusst HOCH und getrennt von der Sprecher-Akzeptanz.
+  #
+  # Der Grund: Waehrend der Orb spricht, ist sein eigenes Echo im Mikrofon.
+  # Die Akzeptanzschwelle der Sprechererkennung wurde gesenkt, damit der Orb
+  # die eigene Stimme des Benutzers zuverlaessig wiedererkennt - mit der
+  # Nebenwirkung, dass schon das Echo als "Benutzer redet dazwischen" galt
+  # und die Antwort mitten im Satz abbrach. Ein ABBRUCH verlangt darum eine
+  # eigene, hohe Schwelle: erst wenn wirklich jemand deutlich ueber die Rede
+  # spricht. Bricht der Orb dir immer noch zu frueh ab, erhoehe den Wert
+  # (z.B. 0.88); willst du ihn leichter unterbrechen koennen, senke ihn.
+  # 'stopp' und der Wortvergleich unterbrechen unabhaengig davon.
+  barge_in_min_aehnlichkeit: 0.82
+
   # Nach dem Weckwort kurz bestaetigen, dass zugehoert wird.
   acknowledge_wake: true
   acknowledge_text: "Ja?"
   # Wie viele Gespraechsdurchgaenge im Verlauf bleiben.
   max_history: 50
+
+  # --- Diktiermodus ----------------------------------------------------------
+  # "Diktiere mir das Vorgehen zu X": Der Orb erstellt einen mitschreib-
+  # gerechten Text, misst am Anfang an einem festen Satz dein Schreibtempo
+  # und diktiert dann in Abschnitten, die dazu passen. Steuerworte waehrend
+  # des Diktats: 'weiter', 'nochmal', 'langsamer', 'schneller', 'stopp'.
+  diktat:
+    # Wie lange (Sekunden) das Mitschreiben EINES Abschnitts etwa dauern
+    # soll. Groesser = laengere Stuecke, seltener 'weiter'; kleiner =
+    # kuerzere Stuecke, haeufiger. Dein gemessenes Tempo bestimmt daraus die
+    # Zeichenzahl je Abschnitt.
+    ziel_sekunden: 12
 
   wake_word:
     # Die Saetze, die den Orb wecken. Mehrere sind moeglich.

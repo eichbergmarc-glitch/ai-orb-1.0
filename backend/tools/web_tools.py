@@ -112,6 +112,67 @@ _EIGENE_WIRTE: tuple[str, ...] = (
 )
 
 
+#: Frage-Geruest und Hoeflichkeit, die vor einer Suche weg koennen.
+_FRAGE_GERUEST: tuple[str, ...] = (
+    "kannst du mir sagen", "kannst du mir", "kannst du", "koenntest du",
+    "könntest du", "weißt du", "weisst du", "sag mir mal", "sag mir",
+    "erklaer mir", "erkläre mir", "erklär mir", "ich moechte wissen",
+    "ich möchte wissen", "ich will wissen", "ich moechte", "ich möchte",
+    "such mir", "suche mir", "such nach", "suche nach", "finde mir",
+    "recherchiere", "recherchier", "bitte", "mal eben", "mal kurz",
+)
+
+#: Haeufige deutsche Fuell- und Funktionswoerter, die als Suchbegriff nichts
+#: beitragen. Bewusst KEINE Fachwoerter - nur Grammatik-Kleinkram.
+_STOPPWOERTER: frozenset[str] = frozenset(
+    "der die das den dem des ein eine einen einem einer eines und oder aber "
+    "mit zu zum zur fuer für von vom im in am an auf aus bei nach ueber über "
+    "unter vor hinter neben ist sind war waren wird werden worden sein hat "
+    "habe haben hatte ich du wir ihr mir mich dir dich uns euch sie er es man "
+    "wie was wann wo warum wieso weshalb welche welcher welches welchen ob "
+    "dass so als auch noch nur schon denn doch mal eben kurz genau eigentlich "
+    "hier da dort diese dieser dieses diesen jene jener kann koennte könnte "
+    "soll sollte will wollte moechte möchte bitte etwa etwas gerade jetzt "
+    "dann wenn weil damit um".split()
+)
+
+
+def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
+    """Macht aus einem gesprochenen Satz einen brauchbaren Suchbegriff.
+
+    Das war die eigentliche, lange uebersehene Ursache scheiternder Suchen:
+    Der Orb schickte den GANZEN gesprochenen Satz als Anfrage - im Protokoll
+    stand woertlich „wann ist diese zeit wo ich die frage mit urkunden
+    abgleichen kann startpunkt und endpunkt bitte". Darauf gibt keine
+    Suchmaschine etwas Brauchbares zurueck. Hier bleiben die tragenden
+    Woerter (Namen, Begriffe, Zahlen) uebrig, das Frage-Geruest faellt weg.
+
+    ``site:...``-Ausdruecke bleiben erhalten - sie schraenken gezielt auf
+    eine Quelle ein und sind kein Fuellwort.
+    """
+
+    knapp = " " + " ".join(str(text).lower().split()) + " "
+    for wendung in _FRAGE_GERUEST:
+        knapp = knapp.replace(" " + wendung + " ", " ")
+
+    behalten: list[str] = []
+    for roh in knapp.split():
+        # site:/filetype:-Filter und alles mit Doppelpunkt unveraendert lassen.
+        if ":" in roh:
+            behalten.append(roh)
+            continue
+        wort = re.sub(r"[^0-9a-zäöüß-]+", "", roh)
+        if not wort or wort in _STOPPWOERTER:
+            continue
+        behalten.append(wort)
+
+    ergebnis = " ".join(behalten).strip()
+    if len(ergebnis) > hoechstens:
+        ergebnis = ergebnis[:hoechstens].rsplit(" ", 1)[0]
+    # Bleibt nichts uebrig (sehr kurze Frage), lieber der Originaltext.
+    return ergebnis or " ".join(str(text).split())[:hoechstens]
+
+
 def _fetch(url: str, *, data: bytes | None = None, timeout: float = 12.0) -> bytes:
     """Holt eine Adresse und gibt die rohen Bytes zurück."""
 
