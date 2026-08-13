@@ -28,6 +28,7 @@ Thumbs.db
 .DS_Store
 .env
 .env.*
+!.env.example
 runtime/
 node_modules/
 models/
@@ -38,3 +39,5 @@ dist/
 __pycache__/
 *.pyc
 data/
+.env.*
+.env.example

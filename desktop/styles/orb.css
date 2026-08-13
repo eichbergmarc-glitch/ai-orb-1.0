@@ -55,6 +55,31 @@ body {
   display: none;
 }
 
+.diagnostics {
+  position: fixed;
+  top: 22px;
+  right: 22px;
+  width: 290px;
+  padding: 14px;
+  color: #dff7ff;
+  background: rgba(3, 13, 31, 0.92);
+  border: 1px solid rgba(70, 200, 255, 0.5);
+  border-radius: 14px;
+  box-shadow: 0 0 28px rgba(35, 150, 255, 0.24);
+  font: 12px/1.45 "Segoe UI", sans-serif;
+  backdrop-filter: blur(12px);
+  z-index: 10;
+}
+
+.diagnostics[hidden] { display: none; }
+.diagnostics__header { display: flex; justify-content: space-between; font-weight: 600; color: #65d9ff; }
+.diagnostics__header button { border: 0; background: transparent; color: #dff7ff; font-size: 20px; cursor: pointer; }
+.diagnostics__content { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; margin-top: 10px; }
+.diagnostics__label { color: #8ba9be; }
+.diagnostics__value { text-align: right; }
+.diagnostics__ok { color: #69efad; }
+.diagnostics__warn { color: #ffc46b; }
+
 /* Respektiert die Systemeinstellung für reduzierte Bewegung: In diesem Fall
    bleibt der Orb ruhiger, hört aber nicht vollständig auf, sich zu bewegen –
    sonst wirkte er leblos. */

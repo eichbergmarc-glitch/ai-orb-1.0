@@ -103,8 +103,14 @@ class OllamaService:
         if platform.system() == "Windows":
             for candidate in WINDOWS_CANDIDATES:
                 path = Path(os.path.expandvars(candidate))
-                if path.is_file():
-                    return str(path)
+                try:
+                    if path.is_file():
+                        return str(path)
+                except OSError:
+                    # Ein gesperrter oder nicht erreichbarer Installationsort
+                    # bedeutet nicht, dass der ganze Status-Endpunkt scheitern
+                    # darf. Weitere Kandidaten koennen weiterhin gueltig sein.
+                    logger.debug("Ollama-Kandidat nicht lesbar: %s", path, exc_info=True)
 
         return None
 

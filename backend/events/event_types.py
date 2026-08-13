@@ -22,6 +22,11 @@ SPEECH_TRANSCRIBED = "speech.transcribed"
 AI_REQUEST = "ai.request"
 AI_RESPONSE = "ai.response"
 
+# --- Längere Arbeiten / Fortschritt ------------------------------------
+TASK_STARTED = "task.started"
+TASK_PROGRESS = "task.progress"
+TASK_FINISHED = "task.finished"
+
 # --- Sprachausgabe (vorbereitet für spätere Phasen) ---------------------
 TTS_STARTED = "tts.started"
 TTS_FINISHED = "tts.finished"

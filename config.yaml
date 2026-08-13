@@ -102,15 +102,12 @@ orb:
   #   0.42  ->  etwa 132 px  (sehr groß)
   #
   # Die Zustände skalieren diesen Wert zusätzlich (siehe Abschnitt states):
-  # im Schlaf 0.62-fach, beim Zuhören 1.14-fach.
-  # Deutlich groesser als zuvor (war 0.20).
-  #
-  # Der Benutzer will die zwei Punkte in echter Zentimeter-Groesse: jeder
-  # etwa 1 cm, verschmolzen etwa 2,5 cm. Bei 0.20 war ein Punkt nur ~11
-  # Bildpunkte gross (~0,3 cm). 0.65 bringt ihn auf ~38 Bildpunkte, also
-  # rund 1 cm bei ueblicher Bildschirmaufloesung (96 dpi). Weicht deine
-  # Anzeige davon ab, ist der Wert die eine Stellschraube dafuer.
-  scale: 0.65
+  # im Schlaf 0.62-fach, beim Zuhören 1.08-fach.
+  # Kompakte Desktop-Groesse: Im 520-Pixel-Fenster ist der Energy-Orb im
+  # Ruhezustand inklusive Bahnen etwa 90 Pixel breit. Das unsichtbare
+  # Fenster bleibt absichtlich gross, damit der Orb darin weich ausweichen
+  # kann; `scale` veraendert nur das sichtbare Objekt.
+  scale: 0.28
 
   # Der Energy-Orb (0.26.15): das lebendige Energie-Wesen mit dunklem
   # Glaskern, leuchtenden Augen, organischen Energiebahnen und Boden-Glow.
@@ -167,9 +164,9 @@ orb:
   # Automatische Qualitätsanpassung bei geringer Leistung.
   adaptive_quality: true
   # Intensität des Bloom-Postprocessing-Effekts (0.0 – 3.0).
-  bloom_strength: 1.35
-  bloom_radius: 0.55
-  bloom_threshold: 0.15
+  bloom_strength: 1.18
+  bloom_radius: 0.46
+  bloom_threshold: 0.18
   # Der gerechnete Kristallhaufen im Inneren.
   #
   # Er wird nicht als Geometrie gebaut, sondern fuer jeden Bildpunkt
@@ -210,7 +207,7 @@ states:
     particle_intensity: 0.75
     light_intensity: 1.25
     # Zuhören: Der Orb richtet sich auf und wirkt aufmerksam.
-    scale: 1.14
+    scale: 1.08
   thinking:
     speed: 1.6
     particle_intensity: 0.9
@@ -220,7 +217,7 @@ states:
     speed: 1.5
     particle_intensity: 1.0
     light_intensity: 1.4
-    scale: 1.08
+    scale: 1.05
   busy:
     speed: 1.2
     particle_intensity: 0.6

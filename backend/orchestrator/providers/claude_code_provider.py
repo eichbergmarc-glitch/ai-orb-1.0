@@ -42,6 +42,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -306,6 +307,26 @@ class ClaudeCodeProvider(BaseProvider):
 
         return None
 
+    @staticmethod
+    def _process_command(executable: str, *arguments: str) -> list[str]:
+        """Baut einen unter Windows wirklich startbaren Prozessaufruf.
+
+        ``asyncio.create_subprocess_exec`` startet auf Windows nur echte
+        Programme direkt. Claude Code wird dort jedoch meistens als
+        ``claude.cmd`` installiert; Test- und Hilfsprogramme liegen oft als
+        ``.py`` vor. Beide endeten bisher mit WinError 193. Die Shell wird
+        nur fuer eine bereits gefundene cmd/bat-Datei verwendet, niemals
+        fuer Benutzereingaben oder einen zusammengesetzten Befehlsstring.
+        """
+
+        suffix = Path(executable).suffix.lower()
+        if suffix == ".py":
+            return [sys.executable, executable, *arguments]
+        if os.name == "nt" and suffix in {".cmd", ".bat"}:
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            return [comspec, "/d", "/s", "/c", executable, *arguments]
+        return [executable, *arguments]
+
     # --- Verfügbarkeit ---------------------------------------------------------
 
     async def is_available(self) -> bool:
@@ -354,8 +375,7 @@ class ClaudeCodeProvider(BaseProvider):
 
         try:
             process = await asyncio.create_subprocess_exec(
-                executable,
-                "--version",
+                *self._process_command(executable, "--version"),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._workdir),
@@ -541,13 +561,13 @@ class ClaudeCodeProvider(BaseProvider):
                 "melde dich einmalig mit deinem Abo an ('claude' im Terminal)."
             )
 
-        arguments = [
+        arguments = self._process_command(
             executable,
             "-p",
             prompt,
             "--output-format",
             "json",
-        ]
+        )
         if self._model:
             arguments.extend(["--model", self._model])
         # Auch hier nur, was diese Fassung kennt – sonst startet der Aufruf
@@ -624,8 +644,7 @@ class ClaudeCodeProvider(BaseProvider):
         self._flags = frozenset()
         try:
             process = await asyncio.create_subprocess_exec(
-                executable,
-                "--help",
+                *self._process_command(executable, "--help"),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._workdir),
@@ -656,7 +675,7 @@ class ClaudeCodeProvider(BaseProvider):
     def _stream_arguments(self, executable: str) -> list[str]:
         """Baut den Aufruf für einen wartenden Prozess."""
 
-        arguments = [executable]
+        arguments = self._process_command(executable)
         arguments.extend(self._filter_flags(_STREAM_ARGS))
         if self._model:
             arguments.extend(["--model", self._model])

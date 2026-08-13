@@ -128,14 +128,14 @@ def test_kein_eigener_shader():
         assert standard in text, standard
 
 
-def test_orb_benutzt_den_nervenkern():
-    """Ein Modul, das niemand einbindet, zeichnet nichts."""
+def test_der_alte_nervenkern_ist_nicht_zusaetzlich_eingebunden():
+    """Der Energy-Orb darf nicht mit einem alten Renderer vermischt werden."""
 
     orb = (get_project_root() / "desktop" / "renderer" / "orb.ts").read_text(
         encoding="utf-8"
     )
-    assert 'from "./neural_core"' in orb
-    assert "new NeuralCore()" in orb
+    assert 'from "./neural_core"' not in orb
+    assert "new NeuralCore()" not in orb
     assert "NeonCube" not in orb, "der alte Wuerfel wird noch eingebunden"
 
 

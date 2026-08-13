@@ -21,6 +21,13 @@
       Keine Schaltflächen, keine Rahmen, keine HTML-Bedienelemente.
     -->
     <canvas id="orb-canvas"></canvas>
+    <aside id="diagnostics" class="diagnostics" hidden aria-live="polite">
+      <div class="diagnostics__header">
+        <span>AI-Orb Diagnose</span>
+        <button id="diagnostics-close" type="button" aria-label="Diagnose schließen">×</button>
+      </div>
+      <div id="diagnostics-content" class="diagnostics__content">Status wird geladen …</div>
+    </aside>
     <script src="renderer.js"></script>
   </body>
 </html>

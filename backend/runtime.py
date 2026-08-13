@@ -56,6 +56,7 @@ from backend.security.security_engine import SecurityEngine
 from backend.skills.skill_manager import SkillManager
 from backend.system.desktop_control import DesktopControl
 from backend.system.logging_setup import get_logger, setup_logging
+from backend.system.task_manager import BackgroundTaskManager
 from backend.system.window_control import WindowControl
 from backend.tools.registry import ToolRegistry
 from backend.tools.standard_tools import build_standard_tools
@@ -92,8 +93,7 @@ class Runtime:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._started_at = 0.0
-        self._maintenance_task: asyncio.Task[None] | None = None
-        self._voice_task: asyncio.Task[None] | None = None
+        self.background_tasks = BackgroundTaskManager()
 
         # --- Schicht 0: Sicherheit -------------------------------------------
         # Kommt vor allem anderen. Jedes Modul, das mehr tut als antworten,
@@ -187,6 +187,7 @@ class Runtime:
             registry=self.tools,
             security=self.security,
             provider_manager=self.providers,
+            event_bus=self.event_bus,
         )
         # Erst jetzt gibt es die Werkzeugschleife – dem Orchestrator
         # nachreichen, damit Gespräche Werkzeuge benutzen können (Internet,
@@ -494,7 +495,7 @@ class Runtime:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self._loop = loop
-            loop.create_task(self._boot())
+            self.background_tasks.create("ai-orb-boot", self._boot())
             self._ready.set()
             loop.run_forever()
 
@@ -522,9 +523,7 @@ class Runtime:
             },
         )
 
-        self._maintenance_task = asyncio.create_task(
-            self._maintenance_loop(), name="ai-orb-maintenance"
-        )
+        self.background_tasks.create("ai-orb-maintenance", self._maintenance_loop())
 
         # „Ich bin da." – der einzige Moment, in dem der Orb von sich aus
         # etwas meldet, ohne gefragt worden zu sein. Er steht hier und
@@ -544,9 +543,7 @@ class Runtime:
         if bool(self.config.get("voice.enabled", True)) and bool(
             self.config.get("voice.autostart", True)
         ):
-            self._voice_task = asyncio.create_task(
-                self._start_voice(), name="ai-orb-voice-start"
-            )
+            self.background_tasks.create("ai-orb-voice-start", self._start_voice())
 
     async def _start_voice(self) -> None:
         """Startet die Sprachsteuerung und meldet das Ergebnis im Klartext."""
@@ -662,21 +659,10 @@ class Runtime:
             await self.providers.stop()
             await self.event_bus.publish(event_types.SYSTEM_SHUTDOWN, {})
 
-            # Alle noch laufenden Hintergrundaufgaben beenden. Das schließt
-            # die Wartungsschleife ein – und auch den Startvorgang, falls er
-            # beim Herunterfahren noch nicht abgeschlossen war.
-            self._maintenance_task = None
-            self._voice_task = None
-            current = asyncio.current_task()
-            pending = [
-                task
-                for task in asyncio.all_tasks()
-                if task is not current and not task.done()
-            ]
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+            # Nur Aufgaben beenden, die der Runtime auch wirklich gehören.
+            # Global alle Tasks der Event-Loop abzubrechen konnte fremde
+            # Aufräumarbeiten mitten im Abschluss zerstören.
+            await self.background_tasks.shutdown()
 
         try:
             self.run(_shutdown(), timeout=15.0)
@@ -731,6 +717,8 @@ class Runtime:
         return {
             "version": __version__,
             "uptime_seconds": round(time.time() - self._started_at, 1) if self._started_at else 0.0,
+            "providers": self.providers.status(),
+            "background_tasks": self.background_tasks.snapshot(),
             "cognitive": self.cognitive.status(),
             "agents": self.agents.status(),
             "skills": self.skills.status(),

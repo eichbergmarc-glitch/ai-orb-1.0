@@ -248,14 +248,14 @@ def test_kein_eigener_shader():
         assert standard in text, standard
 
 
-def test_orb_benutzt_den_ring():
-    """Ein Modul, das niemand einbindet, zeichnet nichts."""
+def test_der_alte_ring_ist_nicht_zusaetzlich_eingebunden():
+    """Der Energy-Orb darf nicht mit einem alten Renderer vermischt werden."""
 
     orb = (get_project_root() / "desktop" / "renderer" / "orb.ts").read_text(
         encoding="utf-8"
     )
-    assert 'from "./neon_ring"' in orb
-    assert "new NeonRing()" in orb
+    assert 'from "./neon_ring"' not in orb
+    assert "new NeonRing()" not in orb
     for alt in ("NeonCube", "NeuralCore"):
         assert alt not in orb, f"{alt} wird noch eingebunden"
 

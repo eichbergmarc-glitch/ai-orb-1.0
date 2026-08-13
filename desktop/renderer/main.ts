@@ -15,6 +15,7 @@ import * as THREE from "three";
 import { AnimationLoop } from "./animation";
 import { BackendClient, type BackendEvent } from "./api";
 import { EnergyOrb } from "./energy_orb";
+import { DiagnosticsPanel } from "./diagnostics";
 import { InteractionController } from "./interaction";
 import { Orb } from "./orb";
 import { MovementEngine } from "./movement";
@@ -78,7 +79,7 @@ async function bootstrap(): Promise<void> {
   // Der gerechnete Kristallhaufen im Inneren. Auf false gestellt kommt der
   // schlichte Kern zurueck - der Rueckweg, falls ein Grafiktreiber den
   // aufwendigen Shader nicht uebersetzt.
-  const clusterEnabled = readConfig(config, "orb.cluster", true) !== false;
+  const clusterEnabled = readConfig<boolean>(config, "orb.cluster", true) !== false;
   const particleCount = readConfig(config, "orb.particle_count", 260);
   const presenceEnabled = readConfig(config, "orb.presence_motion", true);
   // Grundgröße des Orb, unabhängig von der Fenstergröße. Das Fenster ist
@@ -89,7 +90,7 @@ async function bootstrap(): Promise<void> {
   // die Konfiguration nicht gelesen werden, erschien ein riesiger Orb –
   // und das sah nach einem Fehler in der Darstellung aus, obwohl es einer
   // beim Finden einer Datei war.
-  const orbScale = readConfig(config, "orb.scale", 0.2);
+  const orbScale = readConfig(config, "orb.scale", 0.28);
   const movementSpeed = readConfig<string>(config, "smart_desktop.movement_speed", "medium");
   const stateOverrides = readConfig<Record<string, Partial<StateAppearance>>>(config, "states", {});
 
@@ -97,9 +98,9 @@ async function bootstrap(): Promise<void> {
 
   // --- Rendering ----------------------------------------------------------
   const renderer = new OrbRenderer(canvas, {
-    bloomStrength: readConfig(config, "orb.bloom_strength", 1.35),
-    bloomRadius: readConfig(config, "orb.bloom_radius", 0.55),
-    bloomThreshold: readConfig(config, "orb.bloom_threshold", 0.15),
+    bloomStrength: readConfig(config, "orb.bloom_strength", 1.18),
+    bloomRadius: readConfig(config, "orb.bloom_radius", 0.46),
+    bloomThreshold: readConfig(config, "orb.bloom_threshold", 0.18),
     maxPixelRatio: 2,
   });
 
@@ -121,7 +122,7 @@ async function bootstrap(): Promise<void> {
   // Kern, Plasma, Energiebahnen und Augen). `orb.energie: false` in der
   // config.yaml holt die bisherige Anzeige zurück - der Rückweg, falls ein
   // Grafiktreiber die neuen Shader nicht übersetzt.
-  const energieAktiv = readConfig(config, "orb.energie", true) !== false;
+  const energieAktiv = readConfig<boolean>(config, "orb.energie", true) !== false;
 
   const orb = energieAktiv
     ? new EnergyOrb(
@@ -188,13 +189,34 @@ async function bootstrap(): Promise<void> {
   // Der Sprechpegel, den der Kern meldet. Er wird hier nur eingesammelt;
   // geglaettet und in Bewegung uebersetzt wird er im Orb selbst.
   let stimmpegel = 0.0;
+  let progressHideTimer: number | undefined;
+
+  const handleProgress = (event: BackendEvent): void => {
+    if (energyOrb === null || !event.event.startsWith("task.")) return;
+    if (event.event === "task.started") {
+      energyOrb.setProgress(0.0, true);
+      return;
+    }
+    if (event.event === "task.progress") {
+      const raw = Number(event.payload.progress ?? event.payload.percent);
+      energyOrb.setProgress(Number.isFinite(raw) ? (raw > 1 ? raw / 100 : raw) : 0.0, !Number.isFinite(raw));
+      return;
+    }
+    if (event.event === "task.finished") {
+      energyOrb.setProgress(1.0);
+      window.clearTimeout(progressHideTimer);
+      progressHideTimer = window.setTimeout(() => energyOrb.setProgress(null), 550);
+    }
+  };
 
   backend.onEvent((event) => {
     stimmpegel = pegelAus(event, stimmpegel);
+    handleProgress(event);
     handleBackendEvent(event, states);
   });
   window.aiOrb.onBackendEvent((event) => {
     stimmpegel = pegelAus(event, stimmpegel);
+    handleProgress(event);
     handleBackendEvent(event, states);
   });
 
@@ -316,6 +338,11 @@ async function bootstrap(): Promise<void> {
     },
     { targetFps, adaptiveQuality }
   );
+
+  const diagnostics = new DiagnosticsPanel(backend, loop);
+  backend.onEvent((event) => {
+    if (event.event === "ui.diagnostics.toggle") diagnostics.toggle();
+  });
 
   loop.start();
 

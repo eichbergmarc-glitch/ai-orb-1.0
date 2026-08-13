@@ -393,6 +393,10 @@ function buildContextMenu(): Menu {
         void shell.openPath(getLogsDir());
       },
     },
+    {
+      label: "Diagnose anzeigen",
+      click: () => sendToRenderer("ui.diagnostics.toggle", {}),
+    },
     ...(environment === "development"
       ? ([
           { type: "separator" },

@@ -200,16 +200,14 @@ def test_kein_eigener_shader():
         assert standard in text, standard
 
 
-def test_orb_benutzt_den_wirbel():
-    """Ein Modul, das niemand einbindet, zeichnet nichts."""
+def test_der_alte_wirbel_ist_nicht_zusaetzlich_eingebunden():
+    """Der Energy-Orb darf nicht mit einem alten Renderer vermischt werden."""
 
     orb = (get_project_root() / "desktop" / "renderer" / "orb.ts").read_text(
         encoding="utf-8"
     )
-    assert 'from "./energy_vortex"' in orb
-    assert "new EnergyVortex()" in orb
-    for alt in ("NeonCube", "NeuralCore", "NeonRing"):
-        assert alt not in orb, f"{alt} wird noch eingebunden"
+    assert 'from "./energy_vortex"' not in orb
+    assert "new EnergyVortex()" not in orb
 
 
 def test_alle_gerufenen_methoden_gibt_es():

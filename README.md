@@ -6,7 +6,7 @@ Rechner; nur die Anfragen an das Sprachmodell gehen nach außen – und wenn
 kein Internet da ist oder Claudes Kontingent erschöpft ist, übernimmt ein
 lokales Modell.
 
-Version 0.26.4
+Version 0.26.17
 
 ## Loslegen
 
@@ -93,9 +93,10 @@ startest du später mit einem Satz.
 ## Wie er sich verhält
 
 Der Orb ist so groß wie ein Desktopsymbol. Er zieht sich zusammen, wenn er
-nichts zu tun hat, und richtet sich auf, wenn er zuhört. Im Inneren bewegen
-sich zwei Punkte, die einander umkreisen, verschmelzen und Fäden ziehen –
-ruhig im Leerlauf, lebhafter beim Denken und Sprechen.
+nichts zu tun hat, und richtet sich auf, wenn er zuhört. Ein dunkler
+Energiekern, organische Lichtbahnen und ausdrucksstarke Augen zeigen seine
+Zustände: aufmerksam beim Zuhören, konzentriert beim Denken, freundlich bei
+Erfolg, warnend oder deutlich verändert bei einem Fehler.
 
 Er weicht deiner Maus und dem aktiven Fenster aus, weich und ohne Sprünge.
 Ziehst du ihn weg, merkt er sich das. Nachts ist er gedämpft und spricht
@@ -158,7 +159,7 @@ laufende Protokoll steht in `AI-Orb-Start-Log.txt`.
       agents/ skills/ plugins/ evolution/
 
     desktop/          Electron und Three.js: der Orb selbst
-      renderer/       Die Animation (zwei umkreisende Punkte)
+      renderer/       Energy-Orb, Zustandsaugen und Animation
 
     docs/             Installation, Konfiguration, Phasen
 

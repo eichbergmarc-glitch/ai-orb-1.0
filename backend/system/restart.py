@@ -103,7 +103,7 @@ def helferskript(
         # Hülle und bliebe sonst als Waise zurück und hielte den Port.
         zeilen = [
             "@echo off",
-            "rem Von AI-Orb erzeugt, um sich selbst neu zu starten.",
+            "rem Von AI-Orb erzeugt, um sich selbst neu zu laden.",
             f"timeout /t {warten} /nobreak >nul",
         ]
         if eltern_pid > 0:

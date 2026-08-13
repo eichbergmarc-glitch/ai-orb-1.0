@@ -169,8 +169,12 @@ def test_unbekannte_aktion_wird_abgewiesen():
     assert "Unbekannte Aktion" in r.error
 
 
-def test_fehlende_einrichtung_reisst_nicht_den_kern():
-    """Ist Playwright nicht installiert, kommt eine ruhige Auskunft."""
+def test_fehlende_einrichtung_oeffnet_den_standardbrowser(monkeypatch):
+    """Ohne Playwright bleibt wenigstens das reine Oeffnen nutzbar."""
+
+    import webbrowser
+
+    monkeypatch.setattr(webbrowser, "open", lambda _url: True)
 
     class _Streikt:
         async def oeffnen(self, url):
@@ -181,5 +185,6 @@ def test_fehlende_einrichtung_reisst_nicht_den_kern():
 
     werkzeug = BrowserBedienenTool(_Streikt())
     r = asyncio.run(werkzeug.execute({"aktion": "oeffnen", "ziel": "x.de"}))
-    assert not r.ok
-    assert "BROWSER-EINRICHTEN.bat" in r.error
+    assert r.ok
+    assert r.context.get("steuerung") is False
+    assert "BROWSER-EINRICHTEN.bat" in r.output

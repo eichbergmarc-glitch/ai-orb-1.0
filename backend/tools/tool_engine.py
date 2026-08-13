@@ -344,6 +344,7 @@ class ToolEngine:
         registry: ToolRegistry,
         security: SecurityEngine,
         provider_manager: Any,
+        event_bus: Any | None = None,
     ) -> None:
         """
         Args:
@@ -357,6 +358,7 @@ class ToolEngine:
         self._registry = registry
         self._security = security
         self._providers = provider_manager
+        self._event_bus = event_bus
 
         self._enabled = bool(config.get("tools.enabled", True))
         self._max_rounds = int(config.get("tools.max_rounds", 4))
@@ -758,6 +760,14 @@ class ToolEngine:
         if tool.permission in HANDELNDE_RECHTE:
             _klang_zur_tat()
 
+        # Keine Argumente in Ereigniskennungen: Darin könnten Dateinamen,
+        # Suchtexte oder andere private Inhalte stehen. Eine lokale laufende
+        # Nummer genügt, um Start und Ende zuzuordnen.
+        task_id = f"tool-{self._total_calls}"
+        if self._event_bus is not None:
+            await self._event_bus.publish(
+                "task.started", {"id": task_id, "label": tool.name, "progress": 0.0}
+            )
         try:
             result = await tool.execute(cleaned)
         except Exception as error:  # noqa: BLE001 - ein Werkzeug darf nichts abbrechen.
@@ -766,6 +776,17 @@ class ToolEngine:
 
         if not result.ok:
             self._failed_calls += 1
+
+        if self._event_bus is not None:
+            await self._event_bus.publish(
+                "task.finished",
+                {
+                    "id": task_id,
+                    "label": tool.name,
+                    "progress": 1.0,
+                    "ok": result.ok,
+                },
+            )
 
         # Jeder Werkzeugeinsatz ins Protokoll, und zwar sichtbar.
         #

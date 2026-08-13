@@ -213,3 +213,27 @@ def test_ein_stummer_klang_haelt_kein_werkzeug_auf(monkeypatch):
 
     assert ergebnis.result.ok, ergebnis.result.error
     assert motor.HANDELNDE_RECHTE  # nur damit klar ist, dass der Pfad genommen wurde
+
+
+def test_werkzeuge_melden_start_und_abschluss():
+    from backend.tools.tool_engine import ToolCall, ToolEngine
+
+    class _Bus:
+        def __init__(self):
+            self.events = []
+
+        async def publish(self, name, payload):
+            self.events.append((name, payload))
+
+    bus = _Bus()
+    maschine = ToolEngine(
+        registry=_Verzeichnis(_Werkzeug("compute")),
+        security=_Freigabe(),
+        provider_manager=None,
+        event_bus=bus,
+    )
+    ergebnis = asyncio.run(maschine._execute(ToolCall("probe", {}), "test"))
+
+    assert ergebnis.result.ok
+    assert [name for name, _ in bus.events] == ["task.started", "task.finished"]
+    assert bus.events[-1][1]["progress"] == 1.0

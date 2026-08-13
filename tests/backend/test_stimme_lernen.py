@@ -114,7 +114,7 @@ def _rauschen(pfad: Path, amplitude: float, saat: int = 5) -> Path:
     return pfad
 
 
-def test_die_lautstaerke_kommt_in_dezibel_heraus():
+def test_die_lautstaerke_kommt_in_dezibel_heraus(tmp_path: Path):
     """Der Fehler in einem Satz: Ein Punkt DCT-0 ist kein Dezibel.
 
     Geprueft wird an einem Signal, dessen Pegel bekannt ist: Wird die
@@ -125,8 +125,8 @@ def test_die_lautstaerke_kommt_in_dezibel_heraus():
     und wer die fuer Dezibel hielt, verrechnete sich um das Sechsfache.
     """
 
-    _, laut = merkmale(_rauschen(Path("/tmp/pegel-laut.wav"), 0.20))
-    _, leise = merkmale(_rauschen(Path("/tmp/pegel-leise.wav"), 0.10))
+    _, laut = merkmale(_rauschen(tmp_path / "pegel-laut.wav", 0.20))
+    _, leise = merkmale(_rauschen(tmp_path / "pegel-leise.wav", 0.10))
 
     gefallen = float(np.median(laut)) - float(np.median(leise))
     erwartet = 20.0 * math.log10(2.0)
@@ -161,7 +161,7 @@ def test_die_grenze_laesst_einen_ganzen_satz_durch():
 # --- Und was daran haengt ---------------------------------------------------------
 
 
-def test_ungleich_laute_woerter_ergeben_trotzdem_einen_abdruck():
+def test_ungleich_laute_woerter_ergeben_trotzdem_einen_abdruck(tmp_path: Path):
     """Der Test, der gefehlt hat.
 
     Vier Woerter mit rund vierzehn Dezibel Unterschied - also eine ganz
@@ -169,7 +169,7 @@ def test_ungleich_laute_woerter_ergeben_trotzdem_einen_abdruck():
     der Abdruck war None.
     """
 
-    pfad = _stimme(Path("/tmp/ungleich.wav"), [0.40, 0.09, 0.22, 0.06])
+    pfad = _stimme(tmp_path / "ungleich.wav", [0.40, 0.09, 0.22, 0.06])
 
     _, energie = merkmale(pfad)
     untergrenze = max(
@@ -184,11 +184,11 @@ def test_ungleich_laute_woerter_ergeben_trotzdem_einen_abdruck():
     assert abdruck(pfad) is not None, "kein Abdruck aus einer gewoehnlichen Aeusserung"
 
 
-def test_die_pausen_fallen_trotzdem_weg():
+def test_die_pausen_fallen_trotzdem_weg(tmp_path: Path):
     """Sonst haette man das Gegenteil erreicht: In den Pausen steht der
     Klang des Raumes, nicht der der Person."""
 
-    pfad = _stimme(Path("/tmp/pausen.wav"), [0.40, 0.30, 0.35, 0.30])
+    pfad = _stimme(tmp_path / "pausen.wav", [0.40, 0.30, 0.35, 0.30])
     _, energie = merkmale(pfad)
 
     untergrenze = max(
@@ -263,10 +263,10 @@ def test_eine_deutlich_andere_stimme_wird_abgewiesen(tmp_path: Path):
     )
 
 
-def test_stille_ergibt_keinen_abdruck():
+def test_stille_ergibt_keinen_abdruck(tmp_path: Path):
     """Und keinen Absturz."""
 
-    pfad = Path("/tmp/stille.wav")
+    pfad = tmp_path / "stille.wav"
     with wave.open(str(pfad), "wb") as datei:
         datei.setnchannels(1)
         datei.setsampwidth(2)

@@ -131,6 +131,16 @@ export interface StateAppearance {
   eyeAngry: number;
   /** Augen: Leuchtkraft (1.0 = normal, gedimmt < 0.5). */
   eyeBright: number;
+  /** Blendet die Augen in ein Fragezeichen um (Warten auf Eingabe). */
+  eyeQuestion: number;
+  /** Blendet die Augen in ein Ausrufezeichen um (Warnung). */
+  eyeAlert: number;
+  /** Leichte Asymmetrie und angehobener Blick (Neugier). */
+  eyeCurious: number;
+  /** Weit geöffneter, runder Ausdruck (Überraschung). */
+  eyeSurprised: number;
+  /** Gegensinnige Augenhöhe (Unsicherheit/Nachdenklichkeit). */
+  eyeUncertain: number;
 }
 
 /**
@@ -150,6 +160,11 @@ const ENERGY_DEFAULTS = {
   eyeSquint: 0.0,
   eyeAngry: 0.0,
   eyeBright: 1.0,
+  eyeQuestion: 0.0,
+  eyeAlert: 0.0,
+  eyeCurious: 0.0,
+  eyeSurprised: 0.0,
+  eyeUncertain: 0.0,
 } as const;
 
 /** Ein Zustand mit Namen und Erscheinungsbild. */
@@ -289,6 +304,11 @@ export function buildStates(
       eyeSquint: 0.0,
       eyeAngry: 0.0,
       eyeBright: 0.9,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.18,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.0,
     },
     listening: {
       // Zuhören zeigt sich in der Farbe, nicht in der Bewegung.
@@ -313,7 +333,7 @@ export function buildStates(
       auraScale: 1.15,
       bloomStrength: 1.25,
       // Zuhören: Der Orb richtet sich auf und wirkt aufmerksam.
-      scale: 1.14,
+      scale: 1.08,
       // Der Nebel wirbelt lebhafter – die Bewegung wandert nach innen.
       smokeTurbulence: 1.15,
       smokeDensity: 1.15,
@@ -330,6 +350,11 @@ export function buildStates(
       eyeSquint: 0.0,
       eyeAngry: 0.0,
       eyeBright: 1.15,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.45,
+      eyeSurprised: 0.35,
+      eyeUncertain: 0.0,
     },
     thinking: {
       // Wie beim Zuhören themeunabhängig: Der Zustand soll immer gleich
@@ -355,11 +380,16 @@ export function buildStates(
       particleSpeed: 1.5,
       energyFlow: 1.5,
       coreGlow: 0.95,
-      eyeOpen: 0.85,
-      eyeHappy: 0.0,
-      eyeSquint: 0.35,
+      eyeOpen: 0.72,
+      eyeHappy: 0.68,
+      eyeSquint: 0.22,
       eyeAngry: 0.0,
       eyeBright: 1.0,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.55,
     },
     speaking: {
       coreColor: theme.base,
@@ -371,7 +401,7 @@ export function buildStates(
       pulseAmount: 0.18,
       auraScale: 1.2,
       bloomStrength: 1.35,
-      scale: 1.08,
+      scale: 1.05,
       smokeTurbulence: 0.95,
       smokeDensity: 1.1,
       smokePulse: 1.0,
@@ -386,6 +416,11 @@ export function buildStates(
       eyeSquint: 0.0,
       eyeAngry: 0.0,
       eyeBright: 1.1,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.0,
     },
     busy: {
       // Auch beim Arbeiten rot – und aus demselben Grund wie beim Denken:
@@ -421,6 +456,11 @@ export function buildStates(
       eyeSquint: 0.3,
       eyeAngry: 0.0,
       eyeBright: 1.0,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.12,
     },
     error: {
       coreColor: 0xff4a4a,
@@ -444,11 +484,16 @@ export function buildStates(
       particleSpeed: 0.7,
       energyFlow: 0.8,
       coreGlow: 0.7,
-      eyeOpen: 0.75,
+      eyeOpen: 0.62,
       eyeHappy: 0.0,
-      eyeSquint: 0.45,
+      eyeSquint: 0.72,
       eyeAngry: 1.0,
       eyeBright: 1.1,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.0,
     },
     sleep: {
       coreColor: theme.deep,
@@ -472,11 +517,16 @@ export function buildStates(
       energyFlow: 0.3,
       coreGlow: 0.25,
       // Augen geschlossen - er schläft.
-      eyeOpen: 0.1,
-      eyeHappy: 0.6,
+      eyeOpen: 0.05,
+      eyeHappy: 0.85,
       eyeSquint: 0.0,
       eyeAngry: 0.0,
       eyeBright: 0.35,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.0,
     },
 
     // --- Die fünf neuen Zustände des Energy-Orb ---------------------------
@@ -507,6 +557,11 @@ export function buildStates(
       eyeSquint: 0.45,
       eyeAngry: 0.0,
       eyeBright: 1.05,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.0,
     },
     waiting: {
       // "Ich warte auf dich": deutlich beruhigt, aufmerksame Augen,
@@ -530,11 +585,16 @@ export function buildStates(
       particleSpeed: 0.5,
       energyFlow: 0.5,
       coreGlow: 0.65,
-      eyeOpen: 1.2,
+      eyeOpen: 1.0,
       eyeHappy: 0.0,
       eyeSquint: 0.0,
       eyeAngry: 0.0,
       eyeBright: 1.1,
+      eyeQuestion: 1.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.65,
     },
     success: {
       // Kurz und elegant: grün, freundliche Augen; den eigentlichen
@@ -564,6 +624,11 @@ export function buildStates(
       eyeSquint: 0.0,
       eyeAngry: 0.0,
       eyeBright: 1.2,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.0,
     },
     warning: {
       // Warme Akzentfarbe, leicht unruhiger Fluss, subtiler Puls -
@@ -587,11 +652,16 @@ export function buildStates(
       particleSpeed: 1.1,
       energyFlow: 1.0,
       coreGlow: 0.8,
-      eyeOpen: 1.15,
+      eyeOpen: 1.0,
       eyeHappy: 0.0,
       eyeSquint: 0.25,
       eyeAngry: 0.0,
       eyeBright: 1.15,
+      eyeQuestion: 0.0,
+      eyeAlert: 1.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.55,
+      eyeUncertain: 0.0,
     },
     offline: {
       // Sofort erkennbar, aber weiterhin lebendig - nicht abgestürzt:
@@ -615,11 +685,16 @@ export function buildStates(
       particleSpeed: 0.3,
       energyFlow: 0.35,
       coreGlow: 0.3,
-      eyeOpen: 0.8,
+      eyeOpen: 0.08,
       eyeHappy: 0.0,
-      eyeSquint: 0.2,
+      eyeSquint: 0.65,
       eyeAngry: 0.0,
       eyeBright: 0.4,
+      eyeQuestion: 0.0,
+      eyeAlert: 0.0,
+      eyeCurious: 0.0,
+      eyeSurprised: 0.0,
+      eyeUncertain: 0.25,
     },
   };
 

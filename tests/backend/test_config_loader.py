@@ -97,3 +97,26 @@ def test_real_project_config_loads_successfully():
     assert loader.get("app.name") == "AI-Orb"
     assert isinstance(loader.section("window"), dict)
     assert isinstance(loader.section("orb"), dict)
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        ("backend:\n  port: 99999\n", "backend.port"),
+        ("orb:\n  scale: riesig\n", "orb.scale"),
+        ("window:\n  start_position: irgendwo\n", "window.start_position"),
+        ("states:\n  idle:\n    scale: 4\n", "states.idle.scale"),
+    ],
+)
+def test_schema_meldet_den_genauen_pfad(tmp_path, text, path):
+    config = tmp_path / "config.yaml"
+    config.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError, match=path.replace(".", r"\.")):
+        ConfigLoader(config_path=config)
+
+
+def test_yaml_fehler_meldet_zeile(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("orb:\n  scale: [1,\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="Zeile"):
+        ConfigLoader(config_path=config)

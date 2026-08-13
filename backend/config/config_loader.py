@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from backend.config.schema import validate_config
 from backend.utils.paths import get_config_path
 
 
@@ -49,8 +50,13 @@ class ConfigLoader:
                 f"Konfigurationsdatei nicht gefunden: {self._config_path}"
             )
 
-        with self._config_path.open("r", encoding="utf-8") as handle:
-            loaded = yaml.safe_load(handle)
+        try:
+            with self._config_path.open("r", encoding="utf-8") as handle:
+                loaded = yaml.safe_load(handle)
+        except yaml.YAMLError as error:
+            mark = getattr(error, "problem_mark", None)
+            location = f" Zeile {mark.line + 1}, Spalte {mark.column + 1}" if mark else ""
+            raise ConfigError(f"config.yaml ist ungueltig ({location.strip()}): {error}") from error
 
         if loaded is None:
             loaded = {}
@@ -60,6 +66,11 @@ class ConfigLoader:
                 "config.yaml muss auf oberster Ebene ein Mapping (Schlüssel/"
                 "Wert-Paare) enthalten."
             )
+
+        errors = validate_config(loaded)
+        if errors:
+            details = "\n  - ".join(errors)
+            raise ConfigError(f"Ungueltige Einstellungen in {self._config_path}:\n  - {details}")
 
         with self._lock:
             self._data = loaded

@@ -42,27 +42,27 @@ import type { StateAppearance } from "./states";
  */
 export const ENERGY_PARAMS = {
   /** Radius des dunklen Kerns. */
-  coreRadius: 0.62,
+  coreRadius: 0.67,
   /** Radius der Plasmaschicht (knapp über dem Kern). */
-  plasmaRadius: 0.655,
+  plasmaRadius: 0.705,
   /** Radius der weichen Außenhülle. */
-  shellRadius: 0.82,
+  shellRadius: 0.79,
   /** Die drei Bahnen: Halbachsen, Neigung, Grundtempo, Grundhelligkeit. */
   rings: [
-    { a: 1.06, b: 0.86, tiltX: 1.15, tiltZ: 0.20, speed: 0.110, gain: 1.00, tube: 0.038 },
-    { a: 1.18, b: 0.80, tiltX: -0.85, tiltZ: 0.75, speed: -0.080, gain: 0.80, tube: 0.030 },
-    { a: 0.98, b: 0.94, tiltX: 0.35, tiltZ: -1.05, speed: 0.062, gain: 0.62, tube: 0.024 },
+    { a: 1.04, b: 0.78, tiltX: 1.08, tiltZ: 0.18, speed: 0.092, gain: 1.00, tube: 0.030, warmth: 0.00 },
+    { a: 1.10, b: 0.72, tiltX: -0.78, tiltZ: 0.82, speed: -0.067, gain: 0.72, tube: 0.022, warmth: 0.10 },
+    { a: 0.96, b: 0.84, tiltX: 0.31, tiltZ: -1.08, speed: 0.051, gain: 0.48, tube: 0.017, warmth: 0.32 },
   ],
   /** Partikel je Bahn (HIGH; MEDIUM/LOW reduzieren). */
-  ringParticles: 40,
+  ringParticles: 30,
   /** Freie Staubpartikel um die Hülle. */
-  dustParticles: 64,
+  dustParticles: 46,
   /** Wie stark der Sprechpegel in das Leuchten eingeht (klein!). */
   audioSensitivity: 0.22,
   /** Boden-Glow: Grundgröße, Grundstärke, Kopplung an die Schwebehöhe. */
-  ground: { y: -0.95, size: 1.25, strength: 0.85, heightCoupling: 3.2 },
+  ground: { y: -0.94, size: 1.08, strength: 0.62, heightCoupling: 3.2 },
   /** Augen: Grundabstand, Grundgröße – klein; sie dürfen den Orb nie dominieren. */
-  eyes: { dx: 0.105, width: 0.034, height: 0.085, z: 0.0 },
+  eyes: { dx: 0.125, width: 0.042, height: 0.094, z: 0.0 },
   /** Wie lang ein Lichtimpuls (Erfolg/Fehler/Aufwachen) nachklingt. */
   flashSeconds: 1.1,
 } as const;
@@ -343,6 +343,11 @@ const EYES_FRAG = /* glsl */ `
   uniform float uSquint;    // 0..1: oben abgeflacht (fokussiert)
   uniform float uAngry;     // 0..1: nach innen geneigt (Fehler)
   uniform float uBright;    // Leuchtkraft
+  uniform float uQuestion;  // Augen werden zum Fragezeichen
+  uniform float uAlert;     // Augen werden zum Ausrufezeichen
+  uniform float uCurious;   // subtile Asymmetrie
+  uniform float uSurprised; // weiter, runder Blick
+  uniform float uUncertain; // fragende Augenhoehe
   uniform vec2 uLook;       // kleiner Blickversatz
   uniform float uDx;        // halber Augenabstand
   uniform float uW;         // Kapselbreite
@@ -355,13 +360,36 @@ const EYES_FRAG = /* glsl */ `
     return length(q) - w;
   }
 
+  float segment(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h);
+  }
+
+  float fragezeichen(vec2 p) {
+    // Offener Kopf, kurzer Haken und Punkt. Die linke untere Seite des
+    // Rings wird ausgeblendet, damit er nicht wie ein kleines O aussieht.
+    vec2 q = p - vec2(0.0, 0.055);
+    float ring = abs(length(q) - 0.060) - 0.012;
+    ring = max(ring, -(q.x + q.y * 0.55 + 0.015));
+    float haken = segment(p, vec2(0.045, 0.025), vec2(0.0, -0.040)) - 0.012;
+    float punkt = length(p - vec2(0.0, -0.105)) - 0.014;
+    return min(min(ring, haken), punkt);
+  }
+
+  float ausrufezeichen(vec2 p) {
+    float strich = segment(p, vec2(0.0, 0.105), vec2(0.0, -0.035)) - 0.016;
+    float punkt = length(p - vec2(0.0, -0.105)) - 0.017;
+    return min(strich, punkt);
+  }
+
   float eye(vec2 p) {
     // Neigung (Fehlerausdruck): inneres Ende hebt sich.
     float c = cos(uAngry * 0.55), s = sin(uAngry * 0.55);
     p = mat2(c, -s, s, c) * p;
 
-    float h = uH * uOpen * max(0.04, uBlink);
-    float w = uW * (1.0 + uSquint * 0.15);
+    float h = uH * uOpen * (1.0 + uSurprised * 0.32) * max(0.04, uBlink);
+    float w = uW * (1.0 + uSquint * 0.15 + uSurprised * 0.20);
 
     float d = kapsel(p, h, w);
 
@@ -384,10 +412,20 @@ const EYES_FRAG = /* glsl */ `
     p -= uLook * 0.03;
     vec2 pr = p - vec2(uDx, 0.0);
     vec2 pl = p + vec2(uDx, 0.0);
+    // Neugier hebt ein Auge leicht an; Unsicherheit kippt die Augenhöhe
+    // stärker gegeneinander. Beides bleibt klein genug, um nicht zu
+    // flackern oder wie ein Defekt auszusehen.
+    pr.y += uCurious * 0.018 + uUncertain * 0.028;
+    pl.y -= uCurious * 0.008 + uUncertain * 0.028;
     pl.x = -pl.x; // spiegeln, damit die Neigung symmetrisch wirkt
-    float d = min(eye(pr), eye(pl));
+    float dEyes = min(eye(pr), eye(pl));
+    float symbolMix = clamp(max(uQuestion, uAlert), 0.0, 1.0);
+    float dSymbol = mix(fragezeichen(p), ausrufezeichen(p), uAlert);
 
-    float body = smoothstep(0.006, -0.006, d);
+    float eyeBody = smoothstep(0.006, -0.006, dEyes) * (1.0 - symbolMix);
+    float symbolBody = smoothstep(0.006, -0.006, dSymbol) * symbolMix;
+    float body = eyeBody + symbolBody;
+    float d = mix(dEyes, dSymbol, symbolMix);
     float halo = exp(-max(d, 0.0) * 70.0) * 0.32;
     float glow = (body * 1.25 + halo) * uBright;
     gl_FragColor = vec4(uColor * glow, glow);
@@ -423,6 +461,26 @@ const WAVE_FRAG = /* glsl */ `
     float r = length((vUv - 0.5) * 2.0);
     float ring = exp(-pow((r - 0.72) * 6.5, 2.0));
     float glow = ring * uStrength;
+    gl_FragColor = vec4(uColor * glow, glow);
+  }
+`;
+
+/** Dünner Fortschrittsbogen außerhalb der Energiebahnen. */
+const PROGRESS_FRAG = /* glsl */ `
+  uniform vec3 uColor;
+  uniform float uProgress;
+  uniform float uStrength;
+  uniform float uTime;
+  varying vec2 vUv;
+  void main() {
+    vec2 p = (vUv - 0.5) * 2.0;
+    float r = length(p);
+    float ring = exp(-pow((r - 0.82) * 45.0, 2.0));
+    float angle = mod(atan(p.y, p.x) + 1.5707963 + 6.2831853, 6.2831853) / 6.2831853;
+    float arc = uProgress >= 0.0
+      ? step(angle, clamp(uProgress, 0.0, 1.0))
+      : smoothstep(0.18, 0.0, abs(fract(angle - uTime * 0.16 + 0.5) - 0.5));
+    float glow = ring * arc * uStrength;
     gl_FragColor = vec4(uColor * glow, glow);
   }
 `;
@@ -471,6 +529,7 @@ interface RingBundle {
   gain: number;
   seed: number;
   precession: number;
+  warmth: number;
 }
 
 /**
@@ -491,11 +550,13 @@ export class EnergyOrb {
   private readonly eyesMaterial: THREE.ShaderMaterial;
   private readonly groundMaterial: THREE.ShaderMaterial;
   private readonly waveMaterial: THREE.ShaderMaterial;
+  private readonly progressMaterial: THREE.ShaderMaterial;
   private readonly dustMaterial: THREE.ShaderMaterial;
 
   private readonly rings: RingBundle[] = [];
   private readonly dust: THREE.Points;
   private readonly wave: THREE.Mesh;
+  private readonly progressRing: THREE.Mesh;
   private readonly light: THREE.PointLight;
 
   private readonly geometries: THREE.BufferGeometry[] = [];
@@ -526,6 +587,7 @@ export class EnergyOrb {
   /** Fest, statt eine Farbhilfe zu überschreiben: Genau das hat einmal den
    *  Boden-Glow und das Punktlicht weiss gefärbt. */
   private readonly weiss = new THREE.Color(0xffffff);
+  private readonly warmesBahnlicht = new THREE.Color(0xffa34d);
   private readonly hslHilfe = { h: 0, s: 0, l: 0 };
 
   constructor(options?: { tempo?: number; helligkeit?: number }, pixelRatio = 1) {
@@ -629,6 +691,7 @@ export class EnergyOrb {
         gain: def.gain,
         seed: index * 0.731 + 0.17,
         precession: (index + 1) * 0.021 * (index % 2 === 0 ? 1 : -1),
+        warmth: def.warmth,
       });
     });
 
@@ -654,6 +717,11 @@ export class EnergyOrb {
       uSquint: { value: 0.0 },
       uAngry: { value: 0.0 },
       uBright: { value: 1.0 },
+      uQuestion: { value: 0.0 },
+      uAlert: { value: 0.0 },
+      uCurious: { value: 0.0 },
+      uSurprised: { value: 0.0 },
+      uUncertain: { value: 0.0 },
       uLook: { value: new THREE.Vector2(0, 0) },
       uDx: { value: ENERGY_PARAMS.eyes.dx },
       uW: { value: ENERGY_PARAMS.eyes.width },
@@ -677,6 +745,20 @@ export class EnergyOrb {
     this.wave.renderOrder = 5;
     this.wave.visible = false;
     this.group.add(this.wave);
+
+    const progressGeo = new THREE.PlaneGeometry(2.55, 2.55);
+    this.geometries.push(progressGeo);
+    this.progressMaterial = additiveMaterial(PLANE_VERT, PROGRESS_FRAG, {
+      uColor: { value: new THREE.Color(0x6fe4ff) },
+      uProgress: { value: -1.0 },
+      uStrength: { value: 0.0 },
+      uTime: { value: 0.0 },
+    });
+    this.progressMaterial.depthTest = false;
+    this.progressRing = new THREE.Mesh(progressGeo, this.progressMaterial);
+    this.progressRing.renderOrder = 7;
+    this.progressRing.visible = false;
+    this.group.add(this.progressRing);
 
     // --- Boden-Glow ------------------------------------------------------------
     const groundGeo = new THREE.PlaneGeometry(1.0, 1.0);
@@ -769,6 +851,15 @@ export class EnergyOrb {
     this.flashStrength = clampNumber(strength, 0, 1.5);
   }
 
+  /** Zeigt 0..1 oder einen laufenden Bogen bei fehlendem Prozentwert. */
+  public setProgress(progress: number | null, indeterminate = false): void {
+    this.progressRing.visible = progress !== null;
+    this.progressMaterial.uniforms.uProgress.value = indeterminate
+      ? -1.0
+      : clampNumber(progress ?? 0.0, 0.0, 1.0);
+    this.progressMaterial.uniforms.uStrength.value = progress === null ? 0.0 : 0.9;
+  }
+
   /**
    * Übernimmt die (bereits weich interpolierten) Zustandswerte.
    */
@@ -799,6 +890,13 @@ export class EnergyOrb {
       // Plasmabahnen, die die Farbauskunft des Zustands nie verfälschen.
       this.tonVerschieben(core, -0.055, ring.material.uniforms.uColorA.value as THREE.Color, 0.52);
       this.tonVerschieben(glow, 0.085, ring.material.uniforms.uColorB.value as THREE.Color, 0.58);
+      // Wie in der Referenz liegt auf einer der hinteren Bahnen ein kleiner
+      // warmer Lichtreflex. Er ist nur Akzent und ueberdeckt nie die
+      // Zustandsfarbe des Orb.
+      (ring.material.uniforms.uColorB.value as THREE.Color).lerp(
+        this.warmesBahnlicht,
+        ring.warmth
+      );
       ring.material.uniforms.uIntensity.value = ring.gain * a.ringIntensity * bright;
       ring.particleMaterial.uniforms.uColor.value.copy(particle);
       ring.particleMaterial.uniforms.uIntensity.value =
@@ -814,6 +912,11 @@ export class EnergyOrb {
     this.eyesMaterial.uniforms.uSquint.value = a.eyeSquint;
     this.eyesMaterial.uniforms.uAngry.value = a.eyeAngry;
     this.eyesMaterial.uniforms.uBright.value = a.eyeBright * bright;
+    this.eyesMaterial.uniforms.uQuestion.value = a.eyeQuestion;
+    this.eyesMaterial.uniforms.uAlert.value = a.eyeAlert;
+    this.eyesMaterial.uniforms.uCurious.value = a.eyeCurious;
+    this.eyesMaterial.uniforms.uSurprised.value = a.eyeSurprised;
+    this.eyesMaterial.uniforms.uUncertain.value = a.eyeUncertain;
 
     this.groundMaterial.uniforms.uColor.value.copy(core);
     this.waveMaterial.uniforms.uColor.value.copy(glow);
@@ -876,11 +979,12 @@ export class EnergyOrb {
       // Räumliche Präzession: Jede Bahn dreht langsam um eine eigene,
       // leicht wandernde Achse – die Bewegung wiederholt sich nie sichtbar.
       ring.group.rotation.y += delta * ring.precession * a.ringSpeed * this.tempoFactor;
-      ring.group.rotation.x += Math.sin(t * 0.043 + ring.seed * 20.0) * delta * 0.012;
-      ring.group.rotation.z += Math.cos(t * 0.037 + ring.seed * 31.0) * delta * 0.010;
+      ring.group.rotation.x += Math.sin(t * 0.043 + ring.seed * 20.0) * delta * 0.007;
+      ring.group.rotation.z += Math.cos(t * 0.037 + ring.seed * 31.0) * delta * 0.006;
     }
 
     this.dustMaterial.uniforms.uTime.value = t * (0.6 + a.speed * 0.4);
+    this.progressMaterial.uniforms.uTime.value = t;
 
     // --- Augen: Blinzeln und Blick -------------------------------------------
     this.blinkIn -= delta;
@@ -994,6 +1098,7 @@ export class EnergyOrb {
     this.eyesMaterial.dispose();
     this.groundMaterial.dispose();
     this.waveMaterial.dispose();
+    this.progressMaterial.dispose();
     this.dustMaterial.dispose();
     for (const ring of this.rings) {
       ring.material.dispose();

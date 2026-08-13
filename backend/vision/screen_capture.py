@@ -147,7 +147,7 @@ class ScreenCapture:
             return []
 
         try:
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 # Der erste Eintrag ist die Gesamtfläche aller Bildschirme.
                 return [
                     {
@@ -194,7 +194,7 @@ class ScreenCapture:
         mit_pillow = self.has_pillow()
 
         try:
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 available = len(sct.monitors)
                 if monitor < 0 or monitor >= available:
                     return Capture(
