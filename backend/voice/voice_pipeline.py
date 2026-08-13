@@ -51,6 +51,7 @@ from backend.system.logging_setup import get_logger
 from backend.diktat.diktat import KALIBRIERSATZ, Diktierer
 from backend.tts.tts_manager import TtsManager
 from backend.voice.speaker_id import Stimmerkennung, Urteil
+from backend.voice.human_speech import HumanSpeechPolicy
 from backend.whisper.transcriber import Transcriber, Transcript
 from backend.whisper.wake_word import WakeWordDetector
 
@@ -444,7 +445,19 @@ class VoicePipeline:
 
         self._tts = TtsManager()
 
+        self._human_speech = HumanSpeechPolicy(
+            enabled=bool(config.get("voice.output.human_timing.enabled", True)),
+            fillers_enabled=bool(config.get("voice.output.human_timing.fillers_enabled", True)),
+            cooldown_seconds=float(config.get("voice.output.human_timing.filler_cooldown_seconds", 38)),
+            minimum_words=int(config.get("voice.output.human_timing.minimum_words", 9)),
+        )
+        self._adapt_to_user_rhythm = bool(
+            config.get("voice.output.human_timing.adapt_to_user_rhythm", True)
+        )
+
         self._player = AudioPlayer(
+            normalize_volume=bool(config.get("voice.output.normalize_volume", True)),
+            target_rms=float(config.get("voice.output.target_rms", 0.14)),
             on_level=self._on_playback_level,
             on_started=self._on_playback_started,
             on_finished=self._on_playback_finished,
@@ -503,6 +516,7 @@ class VoicePipeline:
         self._sentence_pause = max(
             0.0, float(config.get("voice.output.sentence_pause_ms", 180)) / 1000.0
         )
+        self._apply_learned_speech_style()
         self._history: list[VoiceTurn] = []
         self._max_history = int(config.get("voice.max_history", 50))
         self._last_error = ""
@@ -531,6 +545,11 @@ class VoicePipeline:
         """Ob der Orb gerade auf Anweisungen hört."""
 
         return self._state in (VoiceState.LISTENING, VoiceState.THINKING, VoiceState.SPEAKING)
+
+    def set_offline_mode(self, enabled: bool) -> None:
+        """Koppelt den Modellmodus an eine garantiert lokale Stimme."""
+
+        self._tts.set_offline_mode(enabled)
 
     async def start(self) -> bool:
         """Startet die Sprachsteuerung.
@@ -947,6 +966,13 @@ class VoicePipeline:
                 await self._event_bus.publish("voice.speaker.rejected", urteil.to_dict())
                 return
 
+            if (
+                self._adapt_to_user_rhythm
+                and urteil.geprueft
+                and self._stimme.rhythmus_aktualisieren(path)
+            ):
+                self._apply_learned_speech_style()
+
             # Ab hier ist klar: Der Benutzer hat gesprochen, und es ist
             # wirklich er. Was er vorher unterbrochen hat, ist damit
             # abgeschlossen - die naechste Rede darf wieder sprechen.
@@ -1062,6 +1088,19 @@ class VoicePipeline:
         status["benoetigt"] = max(2, self._stimme_anzahl)
         return status
 
+    def _apply_learned_speech_style(self) -> None:
+        """Übernimmt nur Rhythmuswerte aus dem lokalen Stimmprofil."""
+
+        if not getattr(self, "_adapt_to_user_rhythm", False):
+            return
+        style = self._stimme.sprechstil
+        tempo = float(style.get("tempo", 1.0))
+        pause_ms = int(style.get("pause_ms", 180))
+        # Das konfigurierte Grundtempo bleibt die Mitte; das Benutzerprofil
+        # verändert es höchstens um zwölf Prozent.
+        self._tts.set_rhythm_speed(max(0.88, min(1.12, tempo)))
+        self._sentence_pause = max(0.13, min(0.42, pause_ms / 1000.0))
+
     async def _stimme_sammeln(self, path: Path) -> None:
         """Nimmt eine Probe entgegen und lernt, sobald genug beisammen sind."""
 
@@ -1142,6 +1181,8 @@ class VoicePipeline:
 
         proben = list(self._stimme_lernt)
         geklappt, meldung = self._stimme.lernen(proben)
+        if geklappt:
+            self._apply_learned_speech_style()
         self._stimme_aufraeumen()
 
         await self._event_bus.publish("voice.speaker.enrolled", self._stimme.status())
@@ -1577,11 +1618,20 @@ class VoicePipeline:
         """Holt eine Antwort und spricht sie."""
 
         self._processing = True
+        response_completed = False
         # Die eigene Aufgabe merken: Ein "Stop" waehrend des Denkens bricht
         # genau sie ab (siehe verarbeitung_abbrechen).
         self._antwort_task = asyncio.current_task()
         try:
             await self._set_state(VoiceState.THINKING)
+            cue = self._human_speech.thinking_cue(text)
+            if cue:
+                # Nicht in den Antworttext mischen: Der Denklaut ist eine
+                # zeitliche Reaktion und bleibt dadurch auch bei Streaming
+                # genau einmal und vor der eigentlichen Antwort.
+                await self._say(cue, emotion="nachdenklich")
+                await asyncio.sleep(min(0.42, max(0.14, self._sentence_pause)))
+                await self._set_state(VoiceState.THINKING)
 
             # Der Fluss-Weg, wenn er bereitsteht: denken, sprechen,
             # weiterdenken, weitersprechen. Er kommt zuerst, weil er das
@@ -1589,6 +1639,7 @@ class VoicePipeline:
             if self._stream_speech and self._answer_stream is not None:
                 spoke = await self._respond_streaming(text, turn)
                 if spoke:
+                    response_completed = True
                     return
 
             # Der gewöhnliche Weg – aber nicht mehr stumm bis zum Schluss:
@@ -1611,16 +1662,29 @@ class VoicePipeline:
             if gesprochen:
                 # Schon im Fluss gesagt. Ein zweites Vorlesen wäre kein
                 # Nachdruck, sondern ein Fehler.
+                response_completed = True
                 return
 
             if not answer.strip():
                 answer = "Dazu fällt mir gerade nichts ein."
 
-            await self._say(answer)
+            response_completed = await self._say(answer)
         finally:
             self._processing = False
             self._antwort_task = None
             self._wake()
+            # Satzweises Sprechen erzeugt mehrere tts.finished-Ereignisse.
+            # Keines davon ist das Ende der ganzen Antwort. Erst hier ist
+            # sicher, dass wirklich alle Sätze gesprochen wurden. Dadurch
+            # wechseln Augen und Farbe einmal sauber auf Erfolg/Fehler,
+            # statt zwischen jedem Satz zu flackern oder zu früh auf Idle
+            # zurückzuspringen.
+            if turn.answered and not self._interrupted.is_set():
+                await self._set_state(VoiceState.LISTENING)
+                await self._event_bus.publish(
+                    "voice.response.finished",
+                    {"completed": response_completed},
+                )
 
     async def _sprich_satz(self, satz: str) -> bool:
         """Spricht einen einzelnen, fertig gedachten Satz.
@@ -1828,7 +1892,13 @@ class VoicePipeline:
             self._capture.mute(False)
             await self._event_bus.publish(
                 event_types.TTS_FINISHED,
-                {"completed": completed, "interrupted": interrupted},
+                {
+                    "completed": completed,
+                    "interrupted": interrupted,
+                    # Während einer Antwort ist dies nur ein Satz/Abschnitt.
+                    # Standalone-Meldungen (Begrüßung, Rückfrage) sind final.
+                    "final": not self._processing,
+                },
             )
 
         if interrupted:

@@ -21,6 +21,24 @@
       Keine Schaltflächen, keine Rahmen, keine HTML-Bedienelemente.
     -->
     <canvas id="orb-canvas"></canvas>
+    <nav id="orb-menu" class="orb-menu" hidden aria-label="Orb-Menü">
+      <button type="button" data-action="chat" aria-label="Chat öffnen">💬<span>Chat</span></button>
+      <button type="button" data-action="screenshot" aria-label="Screenshot machen">▣<span>Bild</span></button>
+      <button type="button" data-action="search" aria-label="Suche starten">⌕<span>Suche</span></button>
+      <button type="button" data-action="files" aria-label="Dateien öffnen">▢<span>Dateien</span></button>
+      <button type="button" data-action="settings" aria-label="Einstellungen öffnen">⚙<span>Einstellungen</span></button>
+      <div id="orb-info" class="orb-info" aria-live="polite">Bereit</div>
+    </nav>
+    <section id="chat-panel" class="chat-panel" hidden aria-label="Chat mit AI-Orb">
+      <header><strong>AI-Orb Chat</strong><button id="chat-close" type="button" aria-label="Chat schließen">×</button></header>
+      <div id="chat-messages" class="chat-messages" aria-live="polite">
+        <div class="chat-message chat-message--orb">Hallo! Wie kann ich dir helfen?</div>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" autocomplete="off" placeholder="Nachricht schreiben …" aria-label="Nachricht" />
+        <button type="submit" aria-label="Senden">➤</button>
+      </form>
+    </section>
     <aside id="diagnostics" class="diagnostics" hidden aria-live="polite">
       <div class="diagnostics__header">
         <span>AI-Orb Diagnose</span>

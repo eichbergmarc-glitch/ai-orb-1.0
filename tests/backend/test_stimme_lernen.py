@@ -24,6 +24,7 @@ entscheidende Teil - mit ungleich lauten Woertern.
 
 from __future__ import annotations
 
+import json
 import math
 import wave
 from pathlib import Path
@@ -36,6 +37,7 @@ from backend.voice.speaker_id import (
     Stimmerkennung,
     abdruck,
     merkmale,
+    sprechrhythmus,
 )
 
 import numpy as np  # noqa: E402 - erst nach dem Modul, das ihn ohnehin braucht.
@@ -184,6 +186,16 @@ def test_ungleich_laute_woerter_ergeben_trotzdem_einen_abdruck(tmp_path: Path):
     assert abdruck(pfad) is not None, "kein Abdruck aus einer gewoehnlichen Aeusserung"
 
 
+def test_sprechrhythmus_lernt_nur_moderates_tempo_und_pausen(tmp_path: Path):
+    rhythmus = sprechrhythmus(
+        _stimme(tmp_path / "rhythmus.wav", [0.40, 0.18, 0.30, 0.12])
+    )
+    assert rhythmus is not None
+    tempo, pause_ms = rhythmus
+    assert 0.88 <= tempo <= 1.08
+    assert 130 <= pause_ms <= 420
+
+
 def test_die_pausen_fallen_trotzdem_weg(tmp_path: Path):
     """Sonst haette man das Gegenteil erreicht: In den Pausen steht der
     Klang des Raumes, nicht der der Person."""
@@ -238,6 +250,29 @@ def test_die_eigene_stimme_wird_wiedererkannt(tmp_path: Path):
         f"die eigene Stimme wurde abgewiesen (Aehnlichkeit {urteil.aehnlichkeit:.3f}, "
         f"Schwelle {urteil.schwelle:.3f})"
     )
+
+
+def test_gelernter_sprechrhythmus_passt_sich_ohne_audioablage_weiter_an(
+    tmp_path: Path, monkeypatch
+):
+    profil = tmp_path / "stimme.json"
+    erkennung = Stimmerkennung(profil_pfad=profil)
+    proben = [
+        _stimme(tmp_path / f"lernen-{i}.wav", [0.40, 0.12, 0.25, 0.09], saat=i)
+        for i in range(1, 4)
+    ]
+    assert erkennung.lernen(proben)[0]
+    vorher = dict(erkennung.sprechstil)
+    alltag = _stimme(tmp_path / "alltag.wav", [0.42, 0.28, 0.36, 0.22], saat=8)
+    monkeypatch.setattr(
+        "backend.voice.speaker_id.sprechrhythmus", lambda _pfad: (0.88, 420)
+    )
+
+    assert erkennung.rhythmus_aktualisieren(alltag)
+    nachher = erkennung.sprechstil
+    assert nachher != vorher
+    gespeichert = json.loads(profil.read_text(encoding="utf-8"))
+    assert set(gespeichert["sprechstil"]) == {"tempo", "pause_ms"}
 
 
 def test_eine_deutlich_andere_stimme_wird_abgewiesen(tmp_path: Path):

@@ -86,6 +86,7 @@ class ProviderHealth:
         self._task: asyncio.Task[None] | None = None
         self._providers: dict[str, BaseProvider] = {}
         self._on_change: Any | None = None
+        self._allowed_names: set[str] | None = None
 
     def register(self, provider: BaseProvider) -> None:
         """Nimmt einen Provider in die Überwachung auf."""
@@ -101,6 +102,15 @@ class ProviderHealth:
         """
 
         self._on_change = callback
+
+    def set_allowed_providers(self, names: list[str] | None) -> None:
+        """Begrenzt aktive Pruefungen, etwa auf lokale Offline-Provider.
+
+        ``None`` hebt die Begrenzung auf. Nicht erlaubte Provider werden
+        weder kontaktiert noch als fehlgeschlagen markiert.
+        """
+
+        self._allowed_names = set(names) if names is not None else None
 
     def record(self, name: str) -> HealthRecord:
         """Gibt den Gesundheitseintrag eines Providers zurück."""
@@ -147,6 +157,8 @@ class ProviderHealth:
         jetzt = time.time()
 
         for name, provider in self._providers.items():
+            if self._allowed_names is not None and name not in self._allowed_names:
+                continue
             entry = self.record(name)
             previous = entry.available
 

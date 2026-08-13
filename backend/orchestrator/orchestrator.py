@@ -59,6 +59,74 @@ _SUCHAUFTRAEGE: tuple[str, ...] = (
     "google", "im internet", "im netz", "nachschlagen", "nachsehen",
 )
 
+_PERSOENLICHE_JETZT_FRAGEN: tuple[str, ...] = (
+    "wie geht es dir", "wie geht's dir", "wie gehts dir",
+    "was machst du", "was tust du", "woran arbeitest du",
+    "bist du gerade", "bist du heute",
+)
+
+
+def provider_mode_command(text: str) -> str:
+    """Erkennt einen ausdruecklichen Sprachbefehl zum Modellbetrieb.
+
+    Die Erkennung bleibt absichtlich regelbasiert und lokal. Der Befehl,
+    der die Cloud abschaltet, darf nicht erst an ein Cloud-Modell geschickt
+    werden. Rueckgabe: ``offline``, ``auto``, ``status`` oder ``""``.
+    """
+
+    normalized = " ".join((text or "").lower().replace("-", " ").split())
+    normalized = (
+        normalized.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+    )
+    words = {word.strip(".,!?;:") for word in normalized.split()}
+    offline_target = any(
+        marker in normalized
+        for marker in (
+            "offlinebetrieb", "offline betrieb", "offline modus", "offline mode",
+            "of line betrieb", "lokales modell", "lokale modell", "lokaler ki",
+            "lokale ki",
+        )
+    ) or "offline" in words
+    online_target = any(
+        marker in normalized
+        for marker in (
+            "onlinebetrieb", "online betrieb", "online modus", "online mode",
+            "cloud modell", "automatische modellauswahl", "automatikbetrieb",
+        )
+    ) or "online" in words
+    action = any(
+        marker in normalized
+        for marker in (
+            "schalt", "wechsel", "wechsle", "aktivier", "geh ", "gehe ",
+            "arbeite", "nutze", "benutze", "verwende", "stell ", "stelle ",
+        )
+    )
+    disable_offline = offline_target and any(
+        marker in normalized
+        for marker in (
+            "ausschalt", "aus schalt", "deaktivier", "beende", "verlass",
+            "zurueck online", "wieder online", "nicht mehr offline",
+        )
+    )
+    disable_offline = disable_offline or (
+        offline_target
+        and action
+        and (normalized.endswith(" aus") or " modus aus" in normalized)
+    )
+    if disable_offline or (online_target and action):
+        return "auto"
+    if offline_target and action:
+        return "offline"
+    if (offline_target or online_target) and any(
+        marker in normalized
+        for marker in ("bist du", "sind wir", "ist der", "welcher modus", "status")
+    ):
+        return "status"
+    return ""
+
 
 def braucht_aktuelles(text: str) -> bool:
     """Ob eine Frage Wissen von JETZT verlangt.
@@ -76,6 +144,11 @@ def braucht_aktuelles(text: str) -> bool:
     knapp = " " + " ".join(text.lower().split()) + " "
     if any(f" {wort}" in knapp for wort in _SUCHAUFTRAEGE):
         return True
+    # "Wie geht es dir heute?" und "Was machst du gerade?" fragen nach
+    # dem Orb, nicht nach dem Weltgeschehen. Zuvor starteten sie sechs
+    # Nachrichtensuchen und lieferten anschließend fremde Webseiten.
+    if any(wendung in knapp for wendung in _PERSOENLICHE_JETZT_FRAGEN):
+        return False
     return any(wort in knapp for wort in _JETZT_WOERTER)
 
 
@@ -405,6 +478,41 @@ class Orchestrator:
 
         if project_id is not None:
             self.conversations.set_project(project_id)
+
+        # Der Wechsel in den Offlinebetrieb muss VOR Intent-Erkennung und
+        # erst recht vor jeder Modellanfrage geschehen. So verlaesst selbst
+        # der Umschaltbefehl den Rechner nicht und funktioniert auch dann,
+        # wenn gerade kein Cloud-Provider erreichbar ist.
+        mode_command = provider_mode_command(text)
+        if mode_command:
+            if mode_command == "status":
+                provider_status = self._providers.status()
+                mode = str(provider_status.get("mode", "auto"))
+                active = str(provider_status.get("active") or "kein Modell")
+                model = str(provider_status.get("active_model") or "")
+                response = (
+                    f"Der Offlinebetrieb ist {'aktiv' if mode == 'offline' else 'nicht aktiv'}. "
+                    f"Aktuell verwende ich {active}{f' mit {model}' if model else ''}."
+                )
+                data = {"success": True, **provider_status}
+            else:
+                data = await self._providers.set_operating_mode(mode_command)
+                response = str(data.get("message", "Der Betriebsmodus wurde geaendert."))
+
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response,
+                intent="provider_modus",
+                used_llm=False,
+                provider=str(data.get("provider") or self._providers.active_name or "") or None,
+                model=str(data.get("model") or "") or None,
+                module="provider_manager",
+                data=data,
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
 
         intent = self.classifier.classify(text)
         await self._publish("ai.intent.classified", intent.to_dict())

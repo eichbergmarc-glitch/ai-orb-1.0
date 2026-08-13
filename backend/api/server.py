@@ -55,6 +55,14 @@ def build_router(runtime: Runtime) -> ApiRouter:
     router.get("/status", status)
     router.get("/config", config_view)
 
+    def provider_mode(body: dict[str, Any]) -> dict[str, Any]:
+        """Schaltet denselben Modus wie der Sprachbefehl ueber die lokale API."""
+
+        mode = str(body.get("mode", "")).strip()
+        return runtime.run(runtime.providers.set_operating_mode(mode))
+
+    router.post("/providers/mode", provider_mode)
+
     # --- Gespräch --------------------------------------------------------------
 
     def ask(body: dict[str, Any]) -> dict[str, Any]:

@@ -48,6 +48,11 @@ export class DiagnosticsPanel {
     const tools = status.tools ?? {};
     const tasks = Array.isArray(status.background_tasks) ? status.background_tasks : [];
     this.content.innerHTML = [
+      this.row(
+        "Betriebsmodus",
+        providers.offline ? "Offline · Modell und Stimme lokal" : "Automatische Modellauswahl",
+        Boolean(providers.active),
+      ),
       this.row("Provider", `${providers.active ?? "–"}${providers.active_model ? ` · ${providers.active_model}` : ""}`, Boolean(providers.active)),
       this.row("Mikrofon", voice.running ? `aktiv · ${voice.state}` : (voice.enabled ? "bereit" : "deaktiviert"), !voice.last_error),
       this.row("Hintergrundaufgaben", String(tasks.length), true),

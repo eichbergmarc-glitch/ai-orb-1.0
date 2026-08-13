@@ -313,6 +313,43 @@ def aehnlichkeit(einer, anderer) -> float:
     return float(np.clip(np.dot(einer, anderer), -1.0, 1.0))
 
 
+def sprechrhythmus(pfad: Path) -> tuple[float, int] | None:
+    """Misst relative Sprechdichte und typische Pausen, niemals Klangfarbe."""
+
+    np = _numpy()
+    proben, rate = lese_wav(pfad)
+    if proben.size < rate:
+        return None
+    frame = max(1, int(rate * 0.02))
+    usable = (proben.size // frame) * frame
+    frames = proben[:usable].reshape(-1, frame)
+    rms = np.sqrt(np.mean(frames * frames, axis=1) + 1e-12)
+    db = 20.0 * np.log10(np.maximum(rms, 1e-8))
+    threshold = max(float(np.percentile(db, 55.0)), float(np.max(db)) - 28.0)
+    active = db >= threshold
+    active_ratio = float(np.mean(active))
+    if active_ratio < 0.12:
+        return None
+
+    pauses: list[int] = []
+    start = 0
+    while start < len(active):
+        if active[start]:
+            start += 1
+            continue
+        end = start
+        while end < len(active) and not active[end]:
+            end += 1
+        milliseconds = (end - start) * 20
+        if start > 0 and end < len(active) and 80 <= milliseconds <= 1200:
+            pauses.append(milliseconds)
+        start = end
+
+    pause_ms = int(round(float(np.median(pauses)))) if pauses else 180
+    tempo = max(0.88, min(1.08, 0.90 + active_ratio * 0.30))
+    return round(tempo, 3), max(130, min(420, pause_ms))
+
+
 # --- Das Profil -----------------------------------------------------------------
 
 
@@ -325,6 +362,10 @@ class Stimmprofil:
     schwelle: float = 0.0
     #: Wie viele Aufnahmen eingeflossen sind.
     aufnahmen: int = 0
+    #: Ausschliesslich Rhythmuswerte; daraus laesst sich keine Stimme
+    #: rekonstruieren. 1.0 bedeutet das normale TTS-Tempo.
+    sprechtempo: float = 1.0
+    pause_ms: int = 180
 
     @property
     def gelernt(self) -> bool:
@@ -335,14 +376,21 @@ class Stimmprofil:
             "abdruecke": self.abdruecke,
             "schwelle": self.schwelle,
             "aufnahmen": self.aufnahmen,
+            "sprechstil": {
+                "tempo": round(self.sprechtempo, 3),
+                "pause_ms": self.pause_ms,
+            },
         }
 
     @classmethod
     def from_dict(cls, daten: dict[str, Any]) -> "Stimmprofil":
+        stil = daten.get("sprechstil", {}) or {}
         return cls(
             abdruecke=[list(map(float, eintrag)) for eintrag in daten.get("abdruecke", [])],
             schwelle=float(daten.get("schwelle", 0.0)),
             aufnahmen=int(daten.get("aufnahmen", 0)),
+            sprechtempo=float(stil.get("tempo", 1.0)),
+            pause_ms=int(stil.get("pause_ms", 180)),
         )
 
 
@@ -383,6 +431,7 @@ class Stimmerkennung:
         self._abstand = sicherheitsabstand
         self._aktiv = aktiv
         self._profil = self._laden()
+        self._rhythmus_updates = 0
 
     # --- Zustand ----------------------------------------------------------------
 
@@ -404,7 +453,46 @@ class Stimmerkennung:
             "gelernt": self.gelernt,
             "aufnahmen": self._profil.aufnahmen,
             "schwelle": round(self._profil.schwelle, 3),
+            "sprechstil": {
+                "tempo": round(self._profil.sprechtempo, 3),
+                "pause_ms": self._profil.pause_ms,
+            },
         }
+
+    @property
+    def sprechstil(self) -> dict[str, float | int]:
+        return {
+            "tempo": self._profil.sprechtempo if self.gelernt else 1.0,
+            "pause_ms": self._profil.pause_ms if self.gelernt else 180,
+        }
+
+    def rhythmus_aktualisieren(self, pfad: Path) -> bool:
+        """Lernt nach sicherer Erkennung nur Tempo/Pausen gleitend weiter."""
+
+        if not self.gelernt:
+            return False
+        try:
+            gemessen = sprechrhythmus(pfad)
+        except Exception as fehler:  # noqa: BLE001 - Stil darf Erkennung nie stören.
+            logger.debug("Sprechrhythmus nicht messbar: %s", fehler)
+            return False
+        if gemessen is None:
+            return False
+        tempo, pause_ms = gemessen
+        anteil = 0.18
+        self._profil.sprechtempo = max(
+            0.88,
+            min(1.08, self._profil.sprechtempo * (1.0 - anteil) + tempo * anteil),
+        )
+        self._profil.pause_ms = max(
+            130,
+            min(420, round(self._profil.pause_ms * (1.0 - anteil) + pause_ms * anteil)),
+        )
+        self._rhythmus_updates += 1
+        # Erste Beobachtung sichern, danach gebündelt statt bei jedem Satz.
+        if self._rhythmus_updates == 1 or self._rhythmus_updates % 4 == 0:
+            self._speichern()
+        return True
 
     # --- Lernen -----------------------------------------------------------------
 
@@ -420,6 +508,7 @@ class Stimmerkennung:
         """
 
         neue: list[Any] = []
+        rhythmen: list[tuple[float, int]] = []
         zu_kurz = 0
         for pfad in aufnahmen:
             try:
@@ -431,6 +520,9 @@ class Stimmerkennung:
                 zu_kurz += 1
                 continue
             neue.append(vektor)
+            rhythmus = sprechrhythmus(pfad)
+            if rhythmus is not None:
+                rhythmen.append(rhythmus)
 
         if len(neue) < 2:
             fehlend = "zu kurz" if zu_kurz else "nicht auswertbar"
@@ -440,10 +532,15 @@ class Stimmerkennung:
                 "ein paar Sekunden lang."
             )
 
+        np = _numpy()
+        tempo = float(np.median([wert[0] for wert in rhythmen])) if rhythmen else 1.0
+        pause_ms = int(round(float(np.median([wert[1] for wert in rhythmen])))) if rhythmen else 180
         self._profil = Stimmprofil(
             abdruecke=[list(map(float, vektor)) for vektor in neue],
             schwelle=self._schwelle_aus(neue),
             aufnahmen=len(neue),
+            sprechtempo=max(0.88, min(1.08, tempo)),
+            pause_ms=max(130, min(420, pause_ms)),
         )
         self._speichern()
 
@@ -454,7 +551,8 @@ class Stimmerkennung:
         )
         return True, (
             f"Ich habe mir deine Stimme aus {len(neue)} Aufnahmen gemerkt. "
-            "Ab jetzt höre ich nur noch auf dich."
+            "Ab jetzt höre ich nur noch auf dich und passe meinen "
+            "Sprechrhythmus behutsam an deinen an."
         )
 
     def vergessen(self) -> str:

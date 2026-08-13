@@ -85,6 +85,7 @@ let windowManager: WindowManager | null = null;
 let monitorManager: MonitorManager | null = null;
 let desktopManager: DesktopManager | null = null;
 let mouseTimer: NodeJS.Timeout | null = null;
+let gazeTimer: NodeJS.Timeout | null = null;
 
 /**
  * Liest einen verschachtelten Konfigurationswert.
@@ -748,6 +749,16 @@ function registerIpcHandlers(): void {
     orbOffset = { x, y };
   });
 
+  ipcMain.on("orb:menu-action", (_event, { action }: { action: string }) => {
+    if (action === "files") {
+      void shell.openPath(app.getPath("documents"));
+    } else if (action === "settings") {
+      void shell.openPath(getConfigPath());
+    } else if (action === "chat" || action === "search") {
+      sendToRenderer("orb.listen.toggle", { source: action });
+    }
+  });
+
   ipcMain.on("window:ignore-mouse", (_event, { ignore }: { ignore: boolean }) => {
     if (orbWindow === null || orbWindow.isDestroyed()) return;
     // `forward: true` sorgt dafür, dass der Renderer weiterhin
@@ -948,6 +959,23 @@ if (!app.requestSingleInstanceLock()) {
 
     orbWindow = createOrbWindow();
     setupSmartDesktop(orbWindow);
+    // Globale Blickdaten nur senden, wenn der Zeiger sich wirklich bewegt.
+    // Die Augen glaetten selbst; 20 Hz Eingabe wirkt deshalb fluessig, ohne
+    // Haupt- und Rendererprozess mit dauernden IPC-Nachrichten zu belasten.
+    let lastCursorX = Number.NaN;
+    let lastCursorY = Number.NaN;
+    gazeTimer = setInterval(() => {
+      if (orbWindow === null || orbWindow.isDestroyed()) return;
+      const cursor = screen.getCursorScreenPoint();
+      if (cursor.x === lastCursorX && cursor.y === lastCursorY) return;
+      lastCursorX = cursor.x;
+      lastCursorY = cursor.y;
+      const bounds = orbWindow.getBounds();
+      orbWindow.webContents.send("pointer:global", {
+        x: cursor.x - bounds.x,
+        y: cursor.y - bounds.y,
+      });
+    }, 50);
     createTray();
 
     // Beim Start ist das Fenster außerhalb des Orb klickdurchlässig.
@@ -976,6 +1004,10 @@ if (!app.requestSingleInstanceLock()) {
     if (mouseTimer !== null) {
       clearInterval(mouseTimer);
       mouseTimer = null;
+    }
+    if (gazeTimer !== null) {
+      clearInterval(gazeTimer);
+      gazeTimer = null;
     }
     desktopManager?.stop();
     tray?.destroy();

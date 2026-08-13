@@ -5,9 +5,9 @@
  * 60 Bilder pro Sekunde, misst laufend die tatsächliche Bildrate und senkt
  * bei Bedarf automatisch die Qualität, um die Auslastung gering zu halten.
  *
- * Bei Inaktivität wird die Bildrate reduziert (Energiesparen); sobald der
- * Benutzer wieder mit dem Orb arbeitet, wird sofort auf volle Qualität
- * zurückgeschaltet.
+ * Die mitgelieferte Konfiguration hält auch bei Inaktivität die volle
+ * Bildrate. Eine niedrigere Leerlauf-Bildrate bleibt optional möglich,
+ * führt bei den langsam wandernden Energieringen aber sichtbar zu Stufen.
  */
 
 /** Die Rückrufe der Animationsschleife. */
@@ -36,7 +36,7 @@ export interface AnimationOptions {
 export const DEFAULT_ANIMATION: AnimationOptions = {
   targetFps: 60,
   adaptiveQuality: true,
-  idleFps: 24,
+  idleFps: 60,
   idleAfterSeconds: 45,
 };
 
@@ -122,8 +122,11 @@ export class AnimationLoop {
     const targetFps = this.isIdle ? this.options.idleFps : this.options.targetFps;
     const minimumFrameTime = 1000 / targetFps;
 
-    // Bilder überspringen, wenn die Zielbildrate bereits erreicht ist.
-    if (rawDelta < minimumFrameTime - 0.5) {
+    // Bei 60 FPS zeichnet requestAnimationFrame genau im Takt des Monitors.
+    // Ein eigener 60-FPS-Begrenzer erzeugt auf 90/144-Hz-Bildschirmen ein
+    // ungleichmäßiges 2/3-Frame-Muster und lässt gerade langsame Ringe
+    // stocken. Nur ausdrücklich niedrige Sparraten werden noch gedrosselt.
+    if (targetFps < 55 && rawDelta < minimumFrameTime - 0.5) {
       return;
     }
 

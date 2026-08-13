@@ -38,6 +38,11 @@ body[data-theme="green"] {
   --orb-deep: #0c4a30;
 }
 
+body[data-theme="yellow"] { --orb-base: #ffd327; --orb-accent: #fff3a6; --orb-deep: #6b4e05; }
+body[data-theme="orange"] { --orb-base: #ff921f; --orb-accent: #ffd09a; --orb-deep: #692400; }
+body[data-theme="pink"] { --orb-base: #ff3ca6; --orb-accent: #ffbde1; --orb-deep: #68103f; }
+body[data-theme="neon"] { --orb-base: #238cff; --orb-accent: #8fe8ff; --orb-deep: #071b52; }
+
 body[data-theme="red"] {
   --orb-base: #ff5f6d;
   --orb-accent: #ffc9cd;

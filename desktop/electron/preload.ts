@@ -71,6 +71,18 @@ const api = {
     ipcRenderer.send("orb:offset-report", { x, y });
   },
 
+  /** Globale Mausposition, auch wenn der Zeiger ausserhalb des Orb-Fensters liegt. */
+  onGlobalPointer: (callback: (position: { x: number; y: number }) => void): void => {
+    ipcRenderer.on("pointer:global", (_event, data) => {
+      callback(data as { x: number; y: number });
+    });
+  },
+
+  /** Fuehrt eine Aktion des sichtbaren Ringmenues im Hauptprozess aus. */
+  performMenuAction: (action: string): void => {
+    ipcRenderer.send("orb:menu-action", { action });
+  },
+
   /**
    * Verschiebt das Fenster um ein Delta.
    *

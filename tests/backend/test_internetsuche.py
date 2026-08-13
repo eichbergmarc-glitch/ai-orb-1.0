@@ -92,6 +92,34 @@ def test_der_grobe_weg_nimmt_keine_navigationslinks():
     assert "/help" not in adressen
 
 
+def test_rss_weg_liefert_echte_treffer_mit_beschreibung_und_datum():
+    rss = """<?xml version="1.0"?><rss><channel><item>
+      <title>Neue Entwicklung bei OpenAI</title>
+      <link>https://beispiel.de/news/openai</link>
+      <description>Das neue Modell wurde heute vorgestellt.</description>
+      <pubDate>Thu, 13 Aug 2026 08:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+    treffer = web_tools._rss_treffer(rss, 5)
+    assert treffer == [{
+        "titel": "Neue Entwicklung bei OpenAI",
+        "url": "https://beispiel.de/news/openai",
+        "beschreibung": (
+            "Das neue Modell wurde heute vorgestellt. "
+            "[Thu, 13 Aug 2026 08:00:00 GMT]"
+        ),
+    }]
+
+
+def test_bing_news_rss_umleitung_wird_zur_quelladresse():
+    link = (
+        "http://www.bing.com/news/apiclick.aspx?ref=FexRss&"
+        "url=https%3A%2F%2Ftagesschau.de%2Fwirtschaft%2Fopenai-100.html"
+    )
+    assert web_tools._zieladresse(link) == (
+        "https://tagesschau.de/wirtschaft/openai-100.html"
+    )
+
+
 def test_die_hoechstzahl_wird_eingehalten():
     assert len(web_tools._treffer_aus_seite(_OHNE_KLASSEN, 1)) == 1
     assert len(web_tools._treffer_aus_seite(_MIT_KLASSEN, 1)) == 1

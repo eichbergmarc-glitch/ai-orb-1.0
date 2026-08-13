@@ -62,6 +62,15 @@ def test_geschichtsfragen_loesen_keine_suche_aus():
         assert not braucht_aktuelles(frage), frage
 
 
+def test_persoenliche_gegenwartsfragen_suchen_nicht_im_internet():
+    for frage in (
+        "Wie geht es dir heute?",
+        "Was machst du gerade?",
+        "Woran arbeitest du momentan?",
+    ):
+        assert not braucht_aktuelles(frage), frage
+
+
 def test_die_vorabsuche_haengt_am_werkzeug_und_nicht_am_zureden():
     """Was festverdrahtet werden kann, soll nicht ueberredet werden."""
 

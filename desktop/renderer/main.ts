@@ -14,7 +14,11 @@ import * as THREE from "three";
 
 import { AnimationLoop } from "./animation";
 import { BackendClient, type BackendEvent } from "./api";
-import { EnergyOrb } from "./energy_orb";
+import {
+  EnergyOrb,
+  type OrbEmotionName,
+  type OrbVisualStyle,
+} from "./energy_orb";
 import { DiagnosticsPanel } from "./diagnostics";
 import { InteractionController } from "./interaction";
 import { Orb } from "./orb";
@@ -31,6 +35,8 @@ interface AiOrbBridge {
     callback: (offset: { x: number; y: number; immediate: boolean }) => void
   ): void;
   reportOrbOffset(x: number, y: number): void;
+  onGlobalPointer(callback: (position: { x: number; y: number }) => void): void;
+  performMenuAction(action: string): void;
   moveWindowBy(dx: number, dy: number): void;
   commitWindowPosition(manual: boolean): void;
   showContextMenu(): void;
@@ -74,6 +80,7 @@ async function bootstrap(): Promise<void> {
   // --- Konfigurationswerte ------------------------------------------------
   const theme = readConfig(config, "orb.theme", "blue");
   const targetFps = readConfig(config, "orb.target_fps", 60);
+  const idleFps = readConfig(config, "orb.idle_fps", targetFps);
   const adaptiveQuality = readConfig(config, "orb.adaptive_quality", true);
   const particlesEnabled = readConfig(config, "orb.particles_enabled", true);
   // Der gerechnete Kristallhaufen im Inneren. Auf false gestellt kommt der
@@ -101,7 +108,10 @@ async function bootstrap(): Promise<void> {
     bloomStrength: readConfig(config, "orb.bloom_strength", 1.18),
     bloomRadius: readConfig(config, "orb.bloom_radius", 0.46),
     bloomThreshold: readConfig(config, "orb.bloom_threshold", 0.18),
-    maxPixelRatio: 2,
+    // Bei einem sichtbaren Orb von rund 90 Pixeln ist mehr als 1,5-fache
+    // Renderauflösung optisch ohne Nutzen, vervielfacht aber die Kosten des
+    // Bloom-Effekts und kann auf integrierten GPUs Frames auslassen.
+    maxPixelRatio: readConfig(config, "orb.max_pixel_ratio", 1.5),
   });
 
   // Die veränderbaren Animationswerte aus orb.animation. Fehlt einer,
@@ -134,6 +144,12 @@ async function bootstrap(): Promise<void> {
         renderer.renderer.getPixelRatio()
       );
   const energyOrb = orb instanceof EnergyOrb ? orb : null;
+  const orbMenu = document.getElementById("orb-menu") as HTMLElement | null;
+  const orbInfo = document.getElementById("orb-info") as HTMLElement | null;
+  const chatPanel = document.getElementById("chat-panel") as HTMLElement | null;
+  const chatMessages = document.getElementById("chat-messages") as HTMLElement | null;
+  const chatForm = document.getElementById("chat-form") as HTMLFormElement | null;
+  const chatInput = document.getElementById("chat-input") as HTMLInputElement | null;
 
   // Der Orb hängt in einer Trägergruppe: Die Präsenz-Engine bewegt den Orb
   // selbst (Atmen, Mikrobewegungen), die Bewegungs-Engine den Träger
@@ -149,6 +165,7 @@ async function bootstrap(): Promise<void> {
 
   const movement = new MovementEngine(movementSpeed);
   movement.reset({ x: 0, y: 0 });
+  let renderedOrbOffset = { x: 0, y: 0 };
 
   /**
    * Umrechnung von Bildschirmpixeln in Weltkoordinaten.
@@ -195,15 +212,20 @@ async function bootstrap(): Promise<void> {
     if (energyOrb === null || !event.event.startsWith("task.")) return;
     if (event.event === "task.started") {
       energyOrb.setProgress(0.0, true);
+      if (orbInfo !== null) orbInfo.textContent = "Arbeite …";
       return;
     }
     if (event.event === "task.progress") {
       const raw = Number(event.payload.progress ?? event.payload.percent);
       energyOrb.setProgress(Number.isFinite(raw) ? (raw > 1 ? raw / 100 : raw) : 0.0, !Number.isFinite(raw));
+      if (orbInfo !== null && Number.isFinite(raw)) {
+        orbInfo.textContent = `${Math.round((raw > 1 ? raw / 100 : raw) * 100)} %`;
+      }
       return;
     }
     if (event.event === "task.finished") {
       energyOrb.setProgress(1.0);
+      if (orbInfo !== null) orbInfo.textContent = event.payload.ok === false ? "Fehler" : "Fertig";
       window.clearTimeout(progressHideTimer);
       progressHideTimer = window.setTimeout(() => energyOrb.setProgress(null), 550);
     }
@@ -212,33 +234,76 @@ async function bootstrap(): Promise<void> {
   backend.onEvent((event) => {
     stimmpegel = pegelAus(event, stimmpegel);
     handleProgress(event);
+    handleEmotionEvent(event, energyOrb);
     handleBackendEvent(event, states);
   });
   window.aiOrb.onBackendEvent((event) => {
     stimmpegel = pegelAus(event, stimmpegel);
     handleProgress(event);
+    handleEmotionEvent(event, energyOrb);
     handleBackendEvent(event, states);
   });
 
   // --- Interaktion ------------------------------------------------------------
   let hoverBoost = 1.0;
   let dragging = false;
+  let menuOpen = false;
+  let chatOpen = false;
+  let lastMousePassthrough: boolean | null = null;
+
+  const setMousePassthrough = (ignore: boolean): void => {
+    if (ignore === lastMousePassthrough) return;
+    lastMousePassthrough = ignore;
+    window.aiOrb.setIgnoreMouseEvents(ignore);
+  };
+
+  const updateOverlayInput = (): void => {
+    setMousePassthrough(!menuOpen && !chatOpen && !dragging);
+  };
+
+  const showMenu = (show: boolean): void => {
+    menuOpen = show;
+    if (orbMenu !== null) orbMenu.hidden = !show;
+    updateOverlayInput();
+  };
+
+  const showChat = (show: boolean): void => {
+    chatOpen = show;
+    if (chatPanel !== null) chatPanel.hidden = !show;
+    updateOverlayInput();
+    if (show) window.setTimeout(() => chatInput?.focus(), 0);
+  };
+
+  const addChatMessage = (text: string, kind: "user" | "orb" | "pending"): HTMLDivElement | null => {
+    if (chatMessages === null) return null;
+    const message = document.createElement("div");
+    message.className = `chat-message chat-message--${kind}`;
+    message.textContent = text;
+    chatMessages.appendChild(message);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return message;
+  };
+
+  const orbHitRadiusPixels = (): number =>
+    (1.05 * orbScale * states.appearance.scale) / worldPerPixel();
 
   const interaction = new InteractionController(
     canvas,
     {
       onActivate: () => {
         loop.noteActivity();
+        energyOrb?.react("click");
         states.setState(states.current === "listening" ? "idle" : "listening");
         void backend.reportInteraction("aktivieren");
       },
       onContextMenu: () => {
         loop.noteActivity();
-        window.aiOrb.showContextMenu();
+        showMenu(!menuOpen);
         void backend.reportInteraction("kontextmenü");
       },
       onDoubleClick: () => {
         loop.noteActivity();
+        energyOrb?.setEmotion("surprised", 2.0);
         window.aiOrb.triggerDoubleClickAction();
         void backend.reportInteraction("doppelklick");
       },
@@ -267,9 +332,52 @@ async function bootstrap(): Promise<void> {
       // Die Trefferfläche folgt der tatsächlichen Größe des Orb, nicht der
       // des Fensters – sonst würde das ganze (viel größere) Fenster auf
       // Klicks reagieren.
-      hitRadius: () => (1.05 * orbScale * states.appearance.scale) / worldPerPixel(),
+      hitRadius: orbHitRadiusPixels,
     }
   );
+
+  orbMenu?.querySelectorAll<HTMLButtonElement>("button[data-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.action ?? "";
+      loop.noteActivity();
+      energyOrb?.react("click");
+      if (action === "chat") {
+        showChat(true);
+        showMenu(false);
+        return;
+      }
+      if (action === "screenshot") {
+        states.setState("thinking");
+        void backend.ask("Mach einen Screenshot und beschreibe kurz, was darauf zu sehen ist.");
+      } else {
+        window.aiOrb.performMenuAction(action);
+      }
+      void backend.reportInteraction(`menü:${action}`);
+      showMenu(false);
+    });
+  });
+
+  document.getElementById("chat-close")?.addEventListener("click", () => showChat(false));
+  chatForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = chatInput?.value.trim() ?? "";
+    if (text === "") return;
+    if (chatInput !== null) chatInput.value = "";
+    addChatMessage(text, "user");
+    const pending = addChatMessage("AI-Orb denkt nach …", "pending");
+    states.setState("thinking");
+    void backend.ask(text).then((answer) => {
+      pending?.remove();
+      if (answer === null) {
+        addChatMessage("Ich konnte das Backend gerade nicht erreichen.", "orb");
+        states.setState("offline");
+        return;
+      }
+      addChatMessage(answer.response, "orb");
+      states.setState("success");
+      chatInput?.focus();
+    });
+  });
 
   // --- Animationsschleife --------------------------------------------------------
   const loop = new AnimationLoop(
@@ -281,7 +389,7 @@ async function bootstrap(): Promise<void> {
         // Die Zustandsgeschwindigkeit gilt dem *Inneren*, nicht dem Körper.
         //
         // Vorher skalierte sie die gesamte Animation – und wurde dabei
-        // zweimal angewandt: einmal in `scaledElapsed`, und im
+        // zweimal angewandt: einmal über eine skalierte absolute Zeit, und im
         // Eigenbewegungsmodul noch einmal als eigener Faktor. Beim
         // Zuhören (Geschwindigkeit 1.35) schwebte und atmete der Orb
         // dadurch nicht 1.35-fach, sondern 1.82-fach so schnell, beim
@@ -292,13 +400,14 @@ async function bootstrap(): Promise<void> {
         // die kleinen Eigenbewegungen bleiben in jedem Zustand gleich
         // ruhig. Schneller wird nur der Nebel im Inneren – dort gehört
         // die Aufregung hin.
-        const scaledElapsed = elapsed * appearance.speed;
-
         presence.update(orb.group, elapsed, delta, 1.0);
 
         // Ausweichbewegung: rein grafisch, dadurch flüssig.
         const position = movement.update(delta);
         if (position !== null) {
+          renderedOrbOffset = { x: position.x, y: position.y };
+          orbMenu?.style.setProperty("--orb-x", `${position.x}px`);
+          orbMenu?.style.setProperty("--orb-y", `${position.y}px`);
           const scale = worldPerPixel();
           // Bildschirm-Y zeigt nach unten, Welt-Y nach oben.
           carrier.position.set(position.x * scale, -position.y * scale, 0);
@@ -309,7 +418,7 @@ async function bootstrap(): Promise<void> {
 
         // Grundgröße × Zustandsgröße × Atmung × Hover.
         //
-        // Die Atmung bekommt bewusst `elapsed` und nicht `scaledElapsed`:
+        // Die Atmung bekommt bewusst die unveränderte reale Laufzeit:
         // Ein Mensch, der aufmerksam zuhört, atmet nicht schneller. Er
         // wird ruhiger.
         orb.setBaseScale(
@@ -321,7 +430,11 @@ async function bootstrap(): Promise<void> {
           // Der Boden-Glow atmet mit der Schwebehöhe der Präsenz-Engine.
           energyOrb.setFloatHeight(presence.currentOffset.y);
         }
-        orb.update(scaledElapsed, delta, appearance);
+        // Die absolute Zeit darf nie mit einem gerade überblendeten
+        // Zustands-Tempo multipliziert werden. Nach längerer Laufzeit würde
+        // schon eine kleine Tempoänderung die Ringe sichtbar vorspringen
+        // lassen. Der Energy-Orb integriert seine Zustandstempi selbst.
+        orb.update(elapsed, delta, appearance);
 
         // Der Pegel verfaellt von selbst. Bleibt die naechste Meldung aus -
         // weil das Sprechen endet oder die Verbindung stockt -, laeuft der
@@ -336,7 +449,7 @@ async function bootstrap(): Promise<void> {
         orb.setQuality(level);
       },
     },
-    { targetFps, adaptiveQuality }
+    { targetFps, idleFps, adaptiveQuality }
   );
 
   const diagnostics = new DiagnosticsPanel(backend, loop);
@@ -362,6 +475,22 @@ async function bootstrap(): Promise<void> {
   states.onChange((state) => {
     interaction.setEnabled(state !== "sleep");
     void backend.reportState(state);
+    const automaticStyles: Record<OrbStateName, OrbVisualStyle> = {
+      idle: "standard", listening: "nature", thinking: "galactic",
+      speaking: "standard", busy: "fire", error: "fire", sleep: "minimal",
+      executing: "fire", waiting: "ice", success: "nature",
+      warning: "fire", offline: "minimal",
+    };
+    energyOrb?.setVisualStyle(automaticStyles[state]);
+    if (orbInfo !== null) {
+      const labels: Record<OrbStateName, string> = {
+        idle: "Bereit", listening: "Hört zu", thinking: "Denkt nach",
+        speaking: "Antwortet", busy: "Bewegt", error: "Fehler", sleep: "Schläft",
+        executing: "Arbeitet", waiting: "Wartet", success: "Erfolg",
+        warning: "Warnung", offline: "Offline",
+      };
+      orbInfo.textContent = labels[state];
+    }
 
     const impuls = eintrittsImpulse[state];
     if (energyOrb !== null && impuls !== undefined) {
@@ -380,17 +509,22 @@ async function bootstrap(): Promise<void> {
   });
 
   // --- Subtile Mausreaktion --------------------------------------------------
-  // Der Blick der Augen folgt der Maus minimal; ein Klick gibt einen
-  // kleinen Energieimpuls. Der Orb jagt der Maus nicht hinterher.
+  // Der Blick der Augen folgt der Maus sichtbar; ein Klick gibt einen
+  // kleinen Energieimpuls. Normiert wird relativ zur sichtbaren Orb-Groesse
+  // und zu seiner bewegten Position, nicht zum viel groesseren Fenster.
   if (energyOrb !== null) {
-    window.addEventListener("pointermove", (ev) => {
-      const dx = (ev.clientX - window.innerWidth / 2) / (window.innerWidth / 2);
-      const dy = -(ev.clientY - window.innerHeight / 2) / (window.innerHeight / 2);
-      const nah = Math.hypot(dx, dy) < 0.6;
-      energyOrb.setPointer(dx, dy, nah);
-    });
+    const updateGaze = (x: number, y: number): void => {
+      const centerX = window.innerWidth / 2 + renderedOrbOffset.x;
+      const centerY = window.innerHeight / 2 + renderedOrbOffset.y;
+      const gazeRange = Math.max(44, orbHitRadiusPixels() * 1.35);
+      const dx = (x - centerX) / gazeRange;
+      const dy = -(y - centerY) / gazeRange;
+      energyOrb.setPointer(dx, dy, true);
+    };
+    window.aiOrb.onGlobalPointer((position) => updateGaze(position.x, position.y));
+    window.addEventListener("pointermove", (ev) => updateGaze(ev.clientX, ev.clientY));
     canvas.addEventListener("pointerdown", () => {
-      energyOrb.flash(0.35);
+      energyOrb.react("click");
     });
   }
 
@@ -418,7 +552,7 @@ async function bootstrap(): Promise<void> {
   // Der Orb reagiert nur dort auf die Maus, wo er tatsächlich sichtbar ist;
   // der übrige Fensterbereich bleibt für Klicks durchlässig.
   window.addEventListener("pointermove", () => {
-    window.aiOrb.setIgnoreMouseEvents(!interaction.isHovering && !dragging);
+    setMousePassthrough(!interaction.isHovering && !dragging && !menuOpen && !chatOpen);
   });
 
   window.addEventListener("beforeunload", () => {
@@ -452,6 +586,23 @@ function pegelAus(event: BackendEvent, bisher: number): number {
   return Math.max(0.0, Math.min(1.0, roh));
 }
 
+function handleEmotionEvent(event: BackendEvent, orb: EnergyOrb | null): void {
+  if (orb === null) return;
+  const aliases: Record<string, OrbEmotionName> = {
+    friendly: "friendly", freundlich: "friendly",
+    curious: "curious", neugierig: "curious",
+    surprised: "surprised", überrascht: "surprised", ueberrascht: "surprised",
+    thoughtful: "thoughtful", nachdenklich: "thoughtful",
+    joyful: "joyful", fröhlich: "joyful", froehlich: "joyful",
+    relaxed: "relaxed", entspannt: "relaxed",
+  };
+  if (event.event === "orb.emotion.changed" || event.event === "presence.emotion.changed") {
+    const raw = String(event.payload.emotion ?? event.payload.mood ?? "").toLowerCase();
+    const emotion = aliases[raw];
+    if (emotion !== undefined) orb.setEmotion(emotion);
+  }
+}
+
 function handleBackendEvent(event: BackendEvent, states: StateMachine): void {
   // Der Orb hat seine eigene Animation geändert (Werte oder Code) und
   // will, dass die Anzeige neu lädt. `location.reload()` lädt index.html
@@ -463,6 +614,65 @@ function handleBackendEvent(event: BackendEvent, states: StateMachine): void {
     return;
   }
 
+  // Zweiter, direkter Weg für den Sprachzustand. Das Backend sendet zwar
+  // zusätzlich orb.state.changed, aber die Augen/Farben dürfen nicht von
+  // genau einem Ereignisnamen abhängen, falls ein Client beim Neuverbinden
+  // eine Meldung verpasst.
+  if (event.event === "voice.state.changed") {
+    const requested = (event.payload as { orb_state?: unknown } | undefined)?.orb_state;
+    if (typeof requested === "string" && ORB_STATES.includes(requested as OrbStateName)) {
+      states.setState(requested as OrbStateName);
+    }
+    return;
+  }
+
+  // Eine Antwort besteht intern aus mehreren TTS-Abschnitten. Erfolg wird
+  // deshalb erst einmal am Ende der GESAMTEN Antwort gezeigt.
+  if (event.event === "voice.response.finished") {
+    const completed = (event.payload as { completed?: unknown } | undefined)?.completed;
+    states.setState(completed === false ? "error" : "success");
+    return;
+  }
+
+  if (event.event === "tts.finished") {
+    window.aiOrb.setSpeaking(false);
+    const final = (event.payload as { final?: unknown } | undefined)?.final;
+    const completed = (event.payload as { completed?: unknown } | undefined)?.completed;
+    if (final !== false) {
+      states.setState(completed === false ? "error" : "success");
+    }
+    return;
+  }
+
+  // Direkte Zustandsmeldungen waren bisher nur eine Einbahnstrasse vom
+  // Renderer zum Backend. Dadurch konnte weder die API noch ein Werkzeug
+  // WAITING, WARNING oder ERROR sichtbar aktivieren. Den gemeldeten Namen
+  // jetzt validiert zurueck in die Zustandsmaschine uebernehmen.
+  if (event.event === "orb.state.changed" || event.event === "orb.state.request") {
+    const requested = (event.payload as { state?: unknown } | undefined)?.state;
+    if (typeof requested === "string" && ORB_STATES.includes(requested as OrbStateName)) {
+      states.setState(requested as OrbStateName);
+    }
+    return;
+  }
+
+  // Ein beendeter Task ist nicht automatisch erfolgreich. Das Backend
+  // liefert das Ergebnis bereits als `ok`; erst dessen Auswertung macht
+  // die gruene Bestaetigung beziehungsweise die roten Fehleraugen wahr.
+  if (event.event === "task.finished") {
+    const ok = (event.payload as { ok?: unknown } | undefined)?.ok;
+    states.setState(ok === false ? "error" : "success");
+    return;
+  }
+
+  // Eine verweigerte oder abgelaufene Freigabe ist eine Warnung, kein
+  // technischer Fehler. Genau hier erscheint das orange Ausrufezeichen.
+  if (event.event === "security.consent.resolved") {
+    const granted = (event.payload as { granted?: unknown } | undefined)?.granted;
+    states.setState(granted === false ? "warning" : "idle");
+    return;
+  }
+
   const mapping: Record<string, OrbStateName> = {
     "system.ready": "idle",
     "audio.recorded": "thinking",
@@ -470,17 +680,21 @@ function handleBackendEvent(event: BackendEvent, states: StateMachine): void {
     "ai.request": "thinking",
     "ai.intent.classified": "thinking",
     "ai.response": "speaking",
+    "task.started": "executing",
+    "task.progress": "executing",
+    "task.failed": "error",
+    "action.failed": "error",
+    "system.warning": "warning",
     "cognitive.response": "speaking",
     "cognitive.clarification": "listening",
     // Der Orb wartet sichtbar auf den Benutzer, wenn eine Freigabe oder
     // Bestätigung aussteht - das ist WAITING, nicht Zuhören.
     "cognitive.confirmation_required": "waiting",
     "security.consent.requested": "waiting",
-    "security.consent.resolved": "idle",
+    "security.consent.revoked": "warning",
     "tts.started": "speaking",
     // Nach der Antwort eine ruhige Bestätigung (Erfolgsimpuls), dann kehrt
     // der Orb von selbst in den Ruhezustand zurück (siehe onChange).
-    "tts.finished": "success",
     "system.error": "error",
   };
 
@@ -493,14 +707,6 @@ function handleBackendEvent(event: BackendEvent, states: StateMachine): void {
       window.aiOrb.setSpeaking(true);
     } else if (event.event === "tts.finished") {
       window.aiOrb.setSpeaking(false);
-    }
-    // Nach einer Antwort kehrt der Orb von selbst in den Ruhezustand zurück.
-    if (next === "speaking") {
-      window.setTimeout(() => {
-        if (states.current === "speaking") {
-          states.setState("idle");
-        }
-      }, 2600);
     }
   }
 }

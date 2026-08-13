@@ -28,6 +28,7 @@ export class OrbRenderer {
   public readonly post: PostProcessing;
 
   private canvas: HTMLCanvasElement;
+  private readonly maxPixelRatio: number;
 
   /**
    * @param canvas Das Canvas-Element, in das gerendert wird.
@@ -35,6 +36,7 @@ export class OrbRenderer {
    */
   constructor(canvas: HTMLCanvasElement, options: SceneOptions) {
     this.canvas = canvas;
+    this.maxPixelRatio = Math.max(1, Math.min(2, options.maxPixelRatio));
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -45,7 +47,7 @@ export class OrbRenderer {
     });
     // Vollständig transparenter Hintergrund: kein Schwarz, kein Weiß.
     this.renderer.setClearColor(0x000000, 0);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, options.maxPixelRatio));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.maxPixelRatio));
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
@@ -95,7 +97,11 @@ export class OrbRenderer {
    * @param level 0 = niedrig, 1 = mittel, 2 = hoch.
    */
   public setQuality(level: number): void {
-    const ratios = [1.0, Math.min(1.5, window.devicePixelRatio), window.devicePixelRatio];
+    const ratios = [
+      1.0,
+      Math.min(1.35, window.devicePixelRatio, this.maxPixelRatio),
+      Math.min(window.devicePixelRatio, this.maxPixelRatio),
+    ];
     this.renderer.setPixelRatio(ratios[Math.max(0, Math.min(2, level))]);
     this.handleResize();
   }

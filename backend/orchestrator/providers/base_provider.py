@@ -82,6 +82,18 @@ class BaseProvider(abc.ABC):
 
         return self._settings
 
+    @property
+    def is_local(self) -> bool:
+        """Ob Anfragen dieses Providers den Rechner nicht verlassen.
+
+        Cloud-Provider erben bewusst ``False``. Lokale Provider muessen
+        diese Eigenschaft ausdruecklich ueberschreiben; dadurch kann ein
+        erzwungener Offlinebetrieb niemals versehentlich einen neuen,
+        unbekannten Cloud-Provider als lokal behandeln.
+        """
+
+        return False
+
     # --- Von Unterklassen zu implementieren ---------------------------------
 
     @abc.abstractmethod

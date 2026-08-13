@@ -116,7 +116,9 @@ orb:
   energie: true
   # Dauer eines Zustandsuebergangs in Sekunden (alle Werte werden weich
   # ueberblendet, es gibt keine harten Wechsel).
-  transition_seconds: 0.9
+  # Kurz genug, dass auch ein schnelles Werkzeug sichtbar orange/gruen/rot
+  # wird; weiterhin weich genug, dass Farbe und Augen nicht hart springen.
+  transition_seconds: 0.35
 
   # ---------------------------------------------------------------------------
   # Die Animation – vom Orb selbst veränderbar
@@ -161,6 +163,12 @@ orb:
   theme: "neon"
   # Zielbildrate der Orb-Animation.
   target_fps: 60
+  # Auch ohne Mausbewegung flüssig bleiben. Die frühere Absenkung auf
+  # 24 FPS ließ die langsamen Energieringe sichtbar stocken.
+  idle_fps: 60
+  # Begrenzte interne Renderauflösung: Bei dem kompakten Orb nicht sichtbar,
+  # entlastet aber Bloom und integrierte Grafikkarten deutlich.
+  max_pixel_ratio: 1.5
   # Automatische Qualitätsanpassung bei geringer Leistung.
   adaptive_quality: true
   # Intensität des Bloom-Postprocessing-Effekts (0.0 – 3.0).
@@ -421,6 +429,12 @@ routing:
   # "auto" folgt der Leitregel. "privacy" haelt alles lokal. "offline" nimmt
   # nur lokale Modelle. "quality" nimmt immer das staerkste.
   mode: "auto"
+  # Dieser Wert ist die Voreinstellung. Zur Laufzeit kannst du sagen:
+  #   "Schalte in den Offlinebetrieb" / "Nutze das lokale Modell"
+  #   "Schalte wieder online" / "Beende den Offlinebetrieb"
+  # Die Sprachwahl wird lokal in data/provider_mode.json gespeichert und
+  # bleibt deshalb auch nach einem Neustart erhalten. Offline bedeutet:
+  # kein Cloud-Modell und nur lokale Sprachausgabe.
 
   # Ein lokales Modell darf eine Aufgabe beginnen. Reicht die Qualitaet
   # nicht, uebernimmt ein staerkeres (Eskalation, Abschnitt 15).
@@ -1256,9 +1270,26 @@ voice:
     # sprechen - bei 1.0 wirkte er teils gehetzt und schwer verstaendlich.
     speed: 0.92
     volume: 1.0
+    # Ausdruck verändert Tempo und Tonhöhe, nicht die wahrgenommene
+    # Lautstärke. Zusätzlich werden getrennt erzeugte Sätze beim Abspielen
+    # auf einen gemeinsamen, moderaten RMS-Pegel gebracht.
+    stable_volume: true
+    normalize_volume: true
+    target_rms: 0.14
     # Atempause zwischen zwei Saetzen. Ohne sie kleben die Saetze
     # aneinander und die Rede wirkt gehetzt.
     sentence_pause_ms: 180
+    # Menschlicher Sprechrhythmus: gelegentlicher Denklaut vor komplexeren
+    # Antworten und behutsame Anpassung an Tempo/Pausen der lokal gelernten
+    # Benutzerstimme. Klangfarbe und Stimme selbst werden nicht kopiert.
+    human_timing:
+      enabled: true
+      fillers_enabled: true
+      # Ein "Hm" höchstens etwa einmal pro 38 Sekunden und nur bei
+      # ausreichend komplexen Fragen – sonst würde es schnell künstlich.
+      filler_cooldown_seconds: 38
+      minimum_words: 9
+      adapt_to_user_rhythm: true
     # Gefuehlslage der Stimme aus Zustand und Text ableiten.
     emotions_enabled: true
     # Erzeugte Sprache wiederverwenden, statt sie neu zu berechnen.

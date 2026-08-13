@@ -409,7 +409,10 @@ const EYES_FRAG = /* glsl */ `
 
   void main() {
     vec2 p = (vUv - 0.5) * vec2(0.62, 0.42);
-    p -= uLook * 0.03;
+    // Die leuchtenden Kapseln besitzen keine separaten Pupillen. Deshalb
+    // bewegt sich das Augenpaar selbst innerhalb des Kerns. 0.045 ist
+    // deutlich lesbar, bleibt aber kleiner als der halbe Augenabstand.
+    p -= uLook * 0.045;
     vec2 pr = p - vec2(uDx, 0.0);
     vec2 pl = p + vec2(uDx, 0.0);
     // Neugier hebt ein Auge leicht an; Unsicherheit kippt die Augenhöhe
@@ -439,6 +442,11 @@ const PLANE_VERT = /* glsl */ `
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
+
+export type OrbEmotionName =
+  | "friendly" | "curious" | "surprised"
+  | "thoughtful" | "joyful" | "relaxed";
+export type OrbVisualStyle = "standard" | "galactic" | "minimal" | "nature" | "fire" | "ice";
 
 /** Boden-Glow: weiche, elliptische Lichtlache. */
 const GROUND_FRAG = /* glsl */ `
@@ -530,6 +538,8 @@ interface RingBundle {
   seed: number;
   precession: number;
   warmth: number;
+  baseTiltX: number;
+  baseTiltZ: number;
 }
 
 /**
@@ -567,6 +577,17 @@ export class EnergyOrb {
   private voiceTarget = 0.0;
   private pointer = new THREE.Vector2(0, 0);
   private pointerActive = false;
+  private emotion: OrbEmotionName | null = null;
+  private emotionUntil = 0;
+  private reactionAge = 99.0;
+  private reactionKind: "click" | "surprise" = "click";
+  private styleRingGain = 1.0;
+  private styleParticleGain = 1.0;
+  /** Integrierte Phasen bleiben auch während Zustandsübergängen stetig. */
+  private plasmaPhase = 0.0;
+  private ringPhase = 0.0;
+  private particlePhase = 0.0;
+  private dustPhase = 0.0;
 
   /** Blinzeln: Uhr bis zum nächsten Lidschlag und dessen Fortschritt. */
   private blinkIn = 3.5;
@@ -692,6 +713,8 @@ export class EnergyOrb {
         seed: index * 0.731 + 0.17,
         precession: (index + 1) * 0.021 * (index % 2 === 0 ? 1 : -1),
         warmth: def.warmth,
+        baseTiltX: def.tiltX,
+        baseTiltZ: def.tiltZ,
       });
     });
 
@@ -845,6 +868,28 @@ export class EnergyOrb {
     this.pointerActive = active;
   }
 
+  /** Zeigt einen der sechs Ausdruecke aus der Referenz fuer kurze Zeit. */
+  public setEmotion(emotion: OrbEmotionName | null, seconds = 2.4): void {
+    this.emotion = emotion;
+    this.emotionUntil = emotion === null ? 0 : performance.now() + seconds * 1000;
+    if (emotion === "surprised") this.react("surprise");
+  }
+
+  /** Kurze koerperliche Antwort auf Klick beziehungsweise Ueberraschung. */
+  public react(kind: "click" | "surprise"): void {
+    this.reactionKind = kind;
+    this.reactionAge = 0;
+    this.flash(kind === "surprise" ? 0.75 : 0.38);
+  }
+
+  public setVisualStyle(style: OrbVisualStyle): void {
+    const values: Record<OrbVisualStyle, [number, number]> = {
+      standard: [1.0, 1.0], galactic: [1.35, 1.45], minimal: [0.38, 0.18],
+      nature: [0.92, 1.15], fire: [1.22, 1.35], ice: [0.82, 1.0],
+    };
+    [this.styleRingGain, this.styleParticleGain] = values[style];
+  }
+
   /** Löst einen kurzen Lichtimpuls aus (Aufwachen, Erfolg, Fehler). */
   public flash(strength = 1.0): void {
     this.flashAge = 0.0;
@@ -868,6 +913,17 @@ export class EnergyOrb {
     const glow = this.farbhilfeB.setHex(a.glowColor);
     const particle = this.farbhilfeC.setHex(a.particleColor);
     const bright = this.brightFactor;
+
+    if (this.emotion !== null && performance.now() >= this.emotionUntil) {
+      this.emotion = null;
+    }
+    if (this.emotion === "joyful") {
+      core.lerp(new THREE.Color(0x35d97a), 0.72);
+      glow.lerp(new THREE.Color(0xbcffd9), 0.72);
+      particle.lerp(new THREE.Color(0x7dffb5), 0.72);
+    } else if (this.emotion === "friendly") {
+      glow.lerp(new THREE.Color(0xb47cff), 0.38);
+    }
 
     this.coreMaterial.uniforms.uGlow.value.copy(glow);
     this.coreMaterial.uniforms.uGlowStrength.value =
@@ -897,26 +953,37 @@ export class EnergyOrb {
         this.warmesBahnlicht,
         ring.warmth
       );
-      ring.material.uniforms.uIntensity.value = ring.gain * a.ringIntensity * bright;
+      ring.material.uniforms.uIntensity.value =
+        ring.gain * a.ringIntensity * bright * this.styleRingGain;
       ring.particleMaterial.uniforms.uColor.value.copy(particle);
       ring.particleMaterial.uniforms.uIntensity.value =
-        ring.gain * a.particleIntensity * bright;
+        ring.gain * a.particleIntensity * bright * this.styleParticleGain;
     }
 
     this.dustMaterial.uniforms.uColor.value.copy(particle);
-    this.dustMaterial.uniforms.uIntensity.value = 0.5 * a.particleIntensity * bright;
+    this.dustMaterial.uniforms.uIntensity.value =
+      0.5 * a.particleIntensity * bright * this.styleParticleGain;
 
     this.eyesMaterial.uniforms.uColor.value.copy(glow).lerp(this.weiss, 0.55);
-    this.eyesMaterial.uniforms.uOpen.value = a.eyeOpen;
-    this.eyesMaterial.uniforms.uHappy.value = a.eyeHappy;
-    this.eyesMaterial.uniforms.uSquint.value = a.eyeSquint;
-    this.eyesMaterial.uniforms.uAngry.value = a.eyeAngry;
+    const emotionEyes: Partial<Record<OrbEmotionName, [number, number, number, number, number, number, number]>> = {
+      friendly: [0.72, 0.62, 0.0, 0.0, 0.2, 0.0, 0.0],
+      curious: [1.12, 0.0, 0.0, 0.0, 1.0, 0.15, 0.0],
+      surprised: [1.32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+      thoughtful: [0.70, 0.25, 0.32, 0.0, 0.0, 0.0, 0.9],
+      joyful: [0.95, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      relaxed: [0.34, 0.92, 0.08, 0.0, 0.0, 0.0, 0.18],
+    };
+    const expression = this.emotion === null ? undefined : emotionEyes[this.emotion];
+    this.eyesMaterial.uniforms.uOpen.value = expression?.[0] ?? a.eyeOpen;
+    this.eyesMaterial.uniforms.uHappy.value = expression?.[1] ?? a.eyeHappy;
+    this.eyesMaterial.uniforms.uSquint.value = expression?.[2] ?? a.eyeSquint;
+    this.eyesMaterial.uniforms.uAngry.value = expression?.[3] ?? a.eyeAngry;
     this.eyesMaterial.uniforms.uBright.value = a.eyeBright * bright;
     this.eyesMaterial.uniforms.uQuestion.value = a.eyeQuestion;
     this.eyesMaterial.uniforms.uAlert.value = a.eyeAlert;
-    this.eyesMaterial.uniforms.uCurious.value = a.eyeCurious;
-    this.eyesMaterial.uniforms.uSurprised.value = a.eyeSurprised;
-    this.eyesMaterial.uniforms.uUncertain.value = a.eyeUncertain;
+    this.eyesMaterial.uniforms.uCurious.value = expression?.[4] ?? a.eyeCurious;
+    this.eyesMaterial.uniforms.uSurprised.value = expression?.[5] ?? a.eyeSurprised;
+    this.eyesMaterial.uniforms.uUncertain.value = expression?.[6] ?? a.eyeUncertain;
 
     this.groundMaterial.uniforms.uColor.value.copy(core);
     this.waveMaterial.uniforms.uColor.value.copy(glow);
@@ -929,6 +996,10 @@ export class EnergyOrb {
    */
   public update(elapsed: number, delta: number, a: StateAppearance): void {
     const t = elapsed * this.tempoFactor;
+    this.plasmaPhase += delta * this.tempoFactor * (0.7 + a.speed * 0.5);
+    this.ringPhase += delta * this.tempoFactor * a.ringSpeed;
+    this.particlePhase += delta * this.tempoFactor * a.particleSpeed;
+    this.dustPhase += delta * this.tempoFactor * (0.6 + a.speed * 0.4);
 
     // Sprechpegel: schnell hinauf, langsam hinunter (wie bisher).
     const anstieg = 1.0 - Math.exp(-delta * 24.0);
@@ -967,23 +1038,25 @@ export class EnergyOrb {
     this.coreMaterial.uniforms.uTime.value = t;
     this.coreMaterial.uniforms.uBoost.value = coreBoost + audio * 0.4;
     // Plasma läuft mit der Zustandsgeschwindigkeit – hier arbeitet die Energie.
-    this.plasmaMaterial.uniforms.uTime.value = t * (0.7 + a.speed * 0.5);
+    this.plasmaMaterial.uniforms.uTime.value = this.plasmaPhase;
     this.plasmaMaterial.uniforms.uAudio.value = audio + plasmaBoost;
 
     for (const ring of this.rings) {
-      ring.material.uniforms.uTime.value = t * a.ringSpeed;
+      ring.material.uniforms.uTime.value = this.ringPhase;
       ring.material.uniforms.uIntensity.value =
-        ring.gain * a.ringIntensity * this.brightFactor * ringDamp;
-      ring.particleMaterial.uniforms.uTime.value = t * a.particleSpeed;
+        ring.gain * a.ringIntensity * this.brightFactor * ringDamp * this.styleRingGain;
+      ring.particleMaterial.uniforms.uTime.value = this.particlePhase;
 
       // Räumliche Präzession: Jede Bahn dreht langsam um eine eigene,
       // leicht wandernde Achse – die Bewegung wiederholt sich nie sichtbar.
-      ring.group.rotation.y += delta * ring.precession * a.ringSpeed * this.tempoFactor;
-      ring.group.rotation.x += Math.sin(t * 0.043 + ring.seed * 20.0) * delta * 0.007;
-      ring.group.rotation.z += Math.cos(t * 0.037 + ring.seed * 31.0) * delta * 0.006;
+      ring.group.rotation.y = this.ringPhase * ring.precession;
+      ring.group.rotation.x = ring.baseTiltX
+        + Math.sin(t * 0.043 + ring.seed * 20.0) * 0.026;
+      ring.group.rotation.z = ring.baseTiltZ
+        + Math.cos(t * 0.037 + ring.seed * 31.0) * 0.022;
     }
 
-    this.dustMaterial.uniforms.uTime.value = t * (0.6 + a.speed * 0.4);
+    this.dustMaterial.uniforms.uTime.value = this.dustPhase;
     this.progressMaterial.uniforms.uTime.value = t;
 
     // --- Augen: Blinzeln und Blick -------------------------------------------
@@ -1007,10 +1080,12 @@ export class EnergyOrb {
     }
     this.eyesMaterial.uniforms.uBlink.value = blink;
 
-    // Blick: sehr dezent zur Maus, sonst langsames Umherschauen.
+    // Blick: klar zur Maus, sonst langsames Umherschauen. Die Eingabe ist
+    // bereits relativ zur tatsaechlichen Orb-Groesse normiert; hier muss
+    // sie deshalb nicht noch einmal abgeschwaecht werden.
     const look = this.eyesMaterial.uniforms.uLook.value as THREE.Vector2;
     if (this.pointerActive) {
-      look.lerp(this.pointer, Math.min(1, delta * 4.0));
+      look.lerp(this.pointer, Math.min(1, delta * 7.0));
     } else {
       look.x += (Math.sin(t * 0.11) * 0.4 - look.x) * Math.min(1, delta * 0.8);
       look.y += (Math.sin(t * 0.073 + 1.7) * 0.25 - look.y) * Math.min(1, delta * 0.8);
@@ -1030,9 +1105,23 @@ export class EnergyOrb {
     }
 
     // Gesamtgröße: Grundgröße × sehr subtile Eigenpulsation.
+    this.reactionAge += delta;
+    let reactionScale = 1.0;
+    if (this.reactionAge < 0.72) {
+      if (this.reactionKind === "surprise") {
+        const p = this.reactionAge / 0.72;
+        this.group.position.y += Math.sin(p * Math.PI) * 0.18;
+        reactionScale += Math.sin(p * Math.PI * 2.0) * 0.055 * (1.0 - p);
+      } else {
+        reactionScale += Math.sin(this.reactionAge * 18.0) * 0.045
+          * Math.exp(-this.reactionAge * 6.0);
+      }
+    }
+
     const pulse = 1.0 + Math.sin(t * 1.07) * a.pulseAmount * 0.5
       + Math.sin(t * 0.61 + 1.3) * a.pulseAmount * 0.3;
-    this.group.scale.setScalar(this.baseScale * pulse * (1.0 + coreBoost * 0.05));
+    const totalScale = this.baseScale * pulse * reactionScale * (1.0 + coreBoost * 0.05);
+    this.group.scale.setScalar(totalScale);
 
     // Der Pegel verfällt von selbst (wie bisher im alten Orb).
     this.voiceTarget = Math.max(0.0, this.voiceTarget - delta * 1.8);

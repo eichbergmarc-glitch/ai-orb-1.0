@@ -11,7 +11,10 @@ prüfen und ist deshalb hier ausgespart.
 from __future__ import annotations
 
 import math
+import wave
+from pathlib import Path
 
+from backend.audio.player import AudioPlayer
 from backend.audio.vad import VadState, VoiceActivityDetector, rms
 from backend.tts import emotion
 from backend.tts.base_engine import SpeechRequest
@@ -209,6 +212,32 @@ def test_speech_request_cache_key_is_stable() -> None:
 
     assert first.cache_key() == second.cache_key()
     assert first.cache_key() != third.cache_key()
+
+
+def _write_tone(path: Path, amplitude: int) -> Path:
+    values = _tone(amplitude, count=16000)
+    import array
+
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(array.array("h", values).tobytes())
+    return path
+
+
+def test_wiedergabe_gleicht_unterschiedliche_tts_pegel_behutsam_aus(tmp_path: Path) -> None:
+    player = AudioPlayer(normalize_volume=True, target_rms=0.14)
+    leise = player._normalization_gain(_write_tone(tmp_path / "leise.wav", 3500))
+    laut = player._normalization_gain(_write_tone(tmp_path / "laut.wav", 12000))
+
+    assert 1.0 < leise <= 1.55
+    assert 0.68 <= laut < 1.0
+
+
+def test_pegelnormalisierung_laesst_sich_abschalten(tmp_path: Path) -> None:
+    player = AudioPlayer(normalize_volume=False)
+    assert player._normalization_gain(_write_tone(tmp_path / "satz.wav", 3500)) == 1.0
 
 
 # --- Gefühlslage -------------------------------------------------------------------

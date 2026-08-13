@@ -18,6 +18,7 @@ from backend.security.security_engine import SecurityEngine
 from backend.tools.base_tool import Tool, ToolResult
 from backend.tools.registry import ToolRegistry
 from backend.tools.tool_engine import ToolEngine, _klingt_nach_ausrede
+from backend.orchestrator.providers.base_provider import ChatMessage
 
 
 class _MerkTool(Tool):
@@ -141,3 +142,26 @@ def test_nachhaken_auch_wenn_werkzeug_nur_benannt_wird():
 
     assert tool.gerufen == 1, "Wird ein Werkzeug nur benannt, muss der Orb nachhaken."
     assert provider.aufrufe >= 1
+
+
+def test_ausdruecklich_verlangtes_werkzeug_wird_nicht_still_ignoriert():
+    provider = _FakeProvider([_AUFRUF, "Auf dem Bild ist ein Dokument."])
+    eng, tool = _engine(provider)
+    messages = [
+        ChatMessage(
+            role="user",
+            content="Benutze bitte ausdrücklich das Werkzeug bildschirm_ansehen.",
+        )
+    ]
+
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(
+            messages=messages,
+            first_reply="Gern, ich beschreibe dir einfach allgemein den Bildschirm.",
+            actor="test",
+        )
+    )
+
+    assert tool.gerufen == 1
+    assert runs and runs[0].result.ok
+    assert "Dokument" in antwort

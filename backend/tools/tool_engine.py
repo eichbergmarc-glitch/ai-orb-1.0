@@ -105,6 +105,29 @@ def _klingt_nach_ausrede(text: str) -> bool:
     return any(wendung in knapp for wendung in _AUSREDEN)
 
 
+def _ausdruecklich_verlangtes_werkzeug(
+    messages: list[Any], names: list[str]
+) -> str:
+    """Erkennt eine ausdrückliche Bitte, ein benanntes Werkzeug zu nutzen."""
+
+    for message in reversed(messages):
+        role = getattr(message, "role", None)
+        content = getattr(message, "content", None)
+        if isinstance(message, dict):
+            role = message.get("role")
+            content = message.get("content")
+        if role != "user":
+            continue
+        knapp = str(content or "").lower()
+        if not any(wort in knapp for wort in ("benutz", "nutz", "verwende", "werkzeug")):
+            return ""
+        for name in names:
+            if name.lower() in knapp:
+                return name
+        return "passendes Werkzeug" if "werkzeug" in knapp else ""
+    return ""
+
+
 def _ist_aufruf(payload: Any) -> bool:
     """Ob ein gelesenes JSON-Gebilde wirklich ein Werkzeugaufruf ist.
 
@@ -601,7 +624,12 @@ class ToolEngine:
                     nennt_werkzeug = any(
                         name and name in text for name in self._registry.names()
                     )
-                    if (_klingt_nach_ausrede(text) or nennt_werkzeug) and not nachgehakt:
+                    verlangt = _ausdruecklich_verlangtes_werkzeug(
+                        history, self._registry.names()
+                    )
+                    if (
+                        _klingt_nach_ausrede(text) or nennt_werkzeug or verlangt
+                    ) and not nachgehakt:
                         # EINMAL nachhaken, statt die Ausrede weiterzureichen.
                         #
                         # Das war die wiederkehrende Klage "die Werkzeuge gehen
@@ -637,7 +665,12 @@ class ToolEngine:
                                     "dem Bildschirm oder in einem Video zu sehen ist, "
                                     "nimm bildschirm_ansehen (es macht ein Standbild "
                                     "und wertet es aus). Nur wenn wirklich kein "
-                                    "Werkzeug passt, antworte ohne eines."
+                                    "Werkzeug passt, antworte ohne eines. "
+                                    + (
+                                        f"Der Benutzer hat ausdrücklich '{verlangt}' "
+                                        "verlangt; ignoriere das nicht."
+                                        if verlangt else ""
+                                    )
                                 ),
                             ),
                         ]

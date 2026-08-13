@@ -32,6 +32,12 @@ class OllamaProvider(BaseProvider):
 
     name = "ollama"
 
+    @property
+    def is_local(self) -> bool:
+        """Ollama laeuft ausschliesslich ueber den lokalen Dienst."""
+
+        return True
+
     def __init__(self, settings: dict[str, Any]) -> None:
         super().__init__(settings)
         self._base_url = str(settings.get("base_url", "http://127.0.0.1:11434")).rstrip("/")

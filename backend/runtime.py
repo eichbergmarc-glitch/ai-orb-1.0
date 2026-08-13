@@ -232,6 +232,10 @@ class Runtime:
             answer=self._answer_spoken,
             answer_stream=self._answer_spoken_stream,
         )
+        # Ein Providerwechsel wird auch auf die Stimme angewendet. Dadurch
+        # nutzt die Bestaetigung "Offlinebetrieb ist aktiv" bereits Piper/
+        # SAPI und nicht versehentlich ElevenLabs.
+        self.event_bus.subscribe("ai.provider.changed", self._sync_provider_mode)
 
         # Die Stimmwerkzeuge erst hier: Sie brauchen die Sprachschicht, und
         # die entsteht nach der Werkzeugliste. Ein Werkzeug ohne seine
@@ -406,9 +410,19 @@ class Runtime:
         da.
         """
 
+        from backend.orchestrator.orchestrator import provider_mode_command
         from backend.orchestrator.providers.base_provider import ChatMessage
 
         self.presence.on_interaction(woke=True)
+
+        # Auch der optionale schnelle Streamingweg muss den Modusbefehl vor
+        # jeder Modellanfrage abfangen. Sonst funktionierte "geh offline"
+        # ausgerechnet dann nicht, wenn stream_speech eingeschaltet ist.
+        if provider_mode_command(text):
+            response = await self.cognitive.process(text, spoken=True)
+            if response.response:
+                yield response.response
+            return
 
         system = (
             "Du bist AI-Orb, ein gesprochener Assistent. Antworte natuerlich "
@@ -504,6 +518,12 @@ class Runtime:
         self._ready.wait(timeout=10.0)
         self._started_at = time.time()
         logger.info("AI-Orb Kern gestartet.")
+
+    async def _sync_provider_mode(self, event: Any) -> None:
+        """Haelt Modell- und Sprach-Offlinebetrieb synchron."""
+
+        payload = getattr(event, "payload", {}) or {}
+        self.voice.set_offline_mode(bool(payload.get("offline", False)))
 
     async def _boot(self) -> None:
         """Führt alle asynchronen Startschritte aus."""

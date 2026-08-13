@@ -51,6 +51,11 @@ ENGINE_CLASSES: dict[str, type[TtsEngine]] = {
     "remote": RemoteTtsEngine,
 }
 
+# Nur diese Verfahren erzeugen Sprache vollstaendig auf dem Rechner.
+# Im Offlinebetrieb werden alle anderen vor jeder Verfuegbarkeitspruefung
+# ausgefiltert, damit nicht einmal ein Probeaufruf die Cloud beruehrt.
+LOCAL_ENGINE_NAMES: frozenset[str] = frozenset({"piper", "sapi", "kokoro"})
+
 #: Satzenden, an denen ein langer Text zerlegt werden darf.
 _SENTENCE_END = re.compile(r"(?<=[.!?:;])\s+")
 
@@ -70,8 +75,10 @@ class TtsManager:
         self._enabled = bool(config.get("voice.output.enabled", True))
         self._cache_enabled = bool(config.get("voice.output.cache_enabled", True))
         self._max_characters = int(config.get("voice.output.max_characters", 1200))
-        self._base_speed = float(config.get("voice.output.speed", 1.0))
+        self._configured_speed = float(config.get("voice.output.speed", 1.0))
+        self._base_speed = self._configured_speed
         self._base_volume = float(config.get("voice.output.volume", 1.0))
+        self._stable_volume = bool(config.get("voice.output.stable_volume", True))
         self._emotions_enabled = bool(config.get("voice.output.emotions_enabled", True))
 
         self._output_directory = get_data_dir() / "tts"
@@ -101,6 +108,7 @@ class TtsManager:
         self._active: TtsEngine | None = None
         self._last_result: SpeechResult | None = None
         self._spoken_count = 0
+        self._offline_mode = False
 
     # --- Verfahrenswahl -------------------------------------------------------------
 
@@ -116,6 +124,29 @@ class TtsManager:
         self._enabled = enabled
         logger.info("Sprachausgabe %s.", "eingeschaltet" if enabled else "ausgeschaltet")
 
+    def set_offline_mode(self, enabled: bool) -> None:
+        """Erzwingt lokale Sprachausgabe ohne Netzwerkverfahren."""
+
+        self._offline_mode = bool(enabled)
+        if self._offline_mode and self._active is not None:
+            if self._active.name not in LOCAL_ENGINE_NAMES:
+                self._active = None
+        logger.info(
+            "Sprachausgabe arbeitet %s.",
+            "ausschliesslich lokal" if self._offline_mode else "wieder im Automatikbetrieb",
+        )
+
+    @property
+    def base_speed(self) -> float:
+        return self._configured_speed
+
+    def set_rhythm_speed(self, factor: float) -> None:
+        """Passt nur das Tempo moderat an, niemals Stimme oder Klangfarbe."""
+
+        self._base_speed = max(
+            0.75, min(1.15, self._configured_speed * float(factor))
+        )
+
     @property
     def active_name(self) -> str:
         """Das zuletzt benutzte Verfahren."""
@@ -125,12 +156,23 @@ class TtsManager:
     def available_engines(self) -> list[TtsEngine]:
         """Die Verfahren, die auf diesem Rechner arbeiten können."""
 
-        return [engine for engine in self._engines if engine.is_available()]
+        return [engine for engine in self._eligible_engines() if engine.is_available()]
+
+    def _eligible_engines(self) -> list[TtsEngine]:
+        if not self._offline_mode:
+            return list(self._engines)
+        return [engine for engine in self._engines if engine.name in LOCAL_ENGINE_NAMES]
 
     def diagnose(self) -> str:
         """Erklärt im Klartext, warum gesprochen wird oder nicht."""
 
-        if not self._engines:
+        eligible = self._eligible_engines()
+        if not eligible:
+            if self._offline_mode:
+                return (
+                    "Im Offlinebetrieb ist keine lokale Stimme konfiguriert. "
+                    "Trage piper, sapi oder kokoro unter 'voice.output.engines' ein."
+                )
             return (
                 "Es ist kein Sprachausgabe-Verfahren eingetragen. Trage unter "
                 "'voice.output.engines' in config.yaml mindestens eines ein."
@@ -142,7 +184,7 @@ class TtsManager:
             return f"Sprachausgabe bereit über: {names}."
 
         lines = ["Kein Sprachausgabe-Verfahren ist einsatzbereit:"]
-        for engine in self._engines:
+        for engine in eligible:
             lines.append(f"  {engine.name}: {engine.installation_hint()}")
         return "\n".join(lines)
 
@@ -274,7 +316,12 @@ class TtsManager:
             voice=voice,
             speed=final_speed,
             pitch=profile.pitch,
-            volume=(volume or self._base_volume) * profile.volume,
+            # Ausdruck ja, Lautstärkesprünge nein. Gefühl bleibt in Tempo,
+            # Tonhöhe und Prosodie; der Grundpegel bleibt über alle Sätze
+            # gleich. Der Player gleicht anschließend kleine Unterschiede
+            # der tatsächlich erzeugten WAV-Dateien aus.
+            volume=(volume or self._base_volume)
+            * (1.0 if self._stable_volume else profile.volume),
             emotion=profile.name,
         )
 
@@ -287,12 +334,13 @@ class TtsManager:
     async def _synthesize_with_fallback(self, request: SpeechRequest) -> SpeechResult:
         """Versucht die Verfahren der Reihe nach."""
 
-        if not self._engines:
+        eligible = self._eligible_engines()
+        if not eligible:
             return SpeechResult(error=self.diagnose())
 
         problems: list[str] = []
 
-        for engine in self._engines:
+        for engine in eligible:
             if not engine.is_available():
                 problems.append(f"{engine.name}: nicht einsatzbereit")
                 continue
@@ -401,11 +449,13 @@ class TtsManager:
 
         return {
             "enabled": self._enabled,
+            "offline_mode": self._offline_mode,
             "active_engine": self.active_name,
             "engines": [engine.status() for engine in self._engines],
             "available": [engine.name for engine in self.available_engines()],
             "spoken_count": self._spoken_count,
             "emotions_enabled": self._emotions_enabled,
+            "stable_volume": self._stable_volume,
             "cache_enabled": self._cache_enabled,
             "cache_directory": str(self._output_directory),
             "diagnosis": self.diagnose(),

@@ -26,6 +26,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from backend.system.logging_setup import get_logger
@@ -84,7 +85,9 @@ class _Maschine:
 #: und damit ist Bing der verlässlichste Zugang – also zuerst. Die anderen
 #: bleiben als Ausweichweg dahinter, falls Bing einmal doch abweist.
 _SUCHMASCHINEN: tuple[_Maschine, ...] = (
-    _Maschine("Bing", "https://www.bing.com/search", "get",
+    # RSS ist eine stabile, strukturierte Trefferliste. Die frühere
+    # HTML-Auswertung erkannte zuletzt nur noch Startseiten als Treffer.
+    _Maschine("Bing", "https://www.bing.com/search", "rss",
               ("bing.com", "microsoft.com", "msn.com", "microsofttranslator.com"),
               zusatz={"setlang": "de", "cc": "de"}),
     _Maschine("Mojeek", "https://www.mojeek.com/search", "get",
@@ -447,6 +450,11 @@ def _resolve_bing_url(href: str) -> str:
     """
 
     parsed = urllib.parse.urlparse(href)
+    # Bing News RSS nutzt eine normale URL-Weiterleitung statt base64.
+    if "bing.com" in parsed.netloc.lower() and parsed.path.endswith("/news/apiclick.aspx"):
+        ziel = urllib.parse.parse_qs(parsed.query).get("url", [""])[0]
+        if ziel.startswith(("http://", "https://")):
+            return ziel
     if "bing.com" not in parsed.netloc.lower() or "/ck/" not in parsed.path:
         return href
     roh = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
@@ -596,6 +604,47 @@ def _treffer_aus_seite(seite: str, limit: int,
     return treffer
 
 
+def _rss_treffer(seite: str, limit: int) -> list[dict[str, str]]:
+    """Liest Bings strukturierte RSS-Treffer ohne HTML-Heuristiken."""
+
+    try:
+        root = ET.fromstring(seite)
+    except ET.ParseError:
+        return []
+
+    gesehen: set[str] = set()
+    treffer: list[dict[str, str]] = []
+    for item in root.findall(".//item"):
+        titel = html.unescape((item.findtext("title") or "").strip())
+        url = _zieladresse(html.unescape((item.findtext("link") or "").strip()))
+        beschreibung = _strip_tags(item.findtext("description") or "")
+        datum = (item.findtext("pubDate") or "").strip()
+        if not titel or not url.startswith(("http://", "https://")):
+            continue
+        if url in gesehen:
+            continue
+        gesehen.add(url)
+        if datum:
+            beschreibung = f"{beschreibung} [{datum}]".strip()
+        treffer.append(
+            {"titel": titel[:200], "url": url, "beschreibung": beschreibung[:700]}
+        )
+        if len(treffer) >= max(1, limit):
+            break
+    return treffer
+
+
+def _ist_nachrichten_suche(query: str) -> bool:
+    knapp = " " + " ".join(query.lower().split()) + " "
+    return "site:" not in knapp and any(
+        wort in knapp
+        for wort in (
+            " news ", " nachricht", " schlagzeil", " presse ",
+            " was gibt es neues ", " aktuelle entwicklungen ",
+        )
+    )
+
+
 def _einmal_suchen(maschine: _Maschine, query: str, limit: int) -> list[dict[str, str]]:
     """Fragt EINE Suchmaschine und liest ihre Treffer. Wirft ``_Suchfehler``."""
 
@@ -606,7 +655,16 @@ def _einmal_suchen(maschine: _Maschine, query: str, limit: int) -> list[dict[str
     else:
         # GET: die Anfrage steht in der Adresse.
         felder = {"q": query, **maschine.zusatz}
-        adresse = maschine.adresse + "?" + urllib.parse.urlencode(felder)
+        if maschine.methode == "rss":
+            felder["format"] = "rss"
+            basis = (
+                "https://www.bing.com/news/search"
+                if _ist_nachrichten_suche(query)
+                else maschine.adresse
+            )
+        else:
+            basis = maschine.adresse
+        adresse = basis + "?" + urllib.parse.urlencode(felder)
         data = None
 
     try:
@@ -630,7 +688,11 @@ def _einmal_suchen(maschine: _Maschine, query: str, limit: int) -> list[dict[str
         _mitschnitt(name, adresse, seite)
         raise _Suchfehler("abgewiesen", f"{name} hat die Anfrage abgewiesen.")
 
-    treffer = _treffer_aus_seite(seite, limit, maschine.eigene)
+    treffer = (
+        _rss_treffer(seite, limit)
+        if maschine.methode == "rss"
+        else _treffer_aus_seite(seite, limit, maschine.eigene)
+    )
     if not treffer:
         # Genau hier steckt das wiederkehrende Suchproblem: Die Maschine
         # ANTWORTET (oft mit zehntausenden Zeichen), aber es wird kein
