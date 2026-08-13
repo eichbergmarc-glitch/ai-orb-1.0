@@ -58,11 +58,33 @@ from backend.utils.paths import get_data_dir
 logger = get_logger(__name__)
 
 #: Meldungen, die auf eine erschöpfte Abo-Nutzungsgrenze hindeuten.
+#:
+#: „session limit" stand hier NICHT, und das war der ganze Ausfall: Die
+#: Befehlszeile meldet im Protokoll des Benutzers wörtlich
+#:
+#:     You've hit your session limit · resets 2:20pm (Etc/GMT-1)
+#:
+#: Kein einziger der bisherigen Marker passt darauf. Die Abkühlpause griff
+#: deshalb nie, der Orb hielt Claude weiter für verfügbar und lief bei
+#: JEDER Frage erneut in dieselbe Wand - bis zu 75 Sekunden Zeitlimit, dann
+#: ein neuer Prozess, wieder dieselbe Meldung. Für den Benutzer sah das aus,
+#: als sei der Orb tot.
+#:
+#: Die Liste ist bewusst großzügig: Ein zu früh erkanntes Limit kostet eine
+#: halbe Stunde lokales Modell, ein nicht erkanntes kostet den Betrieb.
 _LIMIT_MARKERS: tuple[str, ...] = (
     "usage limit",
     "rate limit",
+    "session limit",
     "limit reached",
+    "hit your limit",
+    "hit your session",
+    "credit balance",
+    "insufficient credit",
+    "out of credit",
+    "too many requests",
     "nutzungsgrenze",
+    "kontingent",
     "quota",
 )
 

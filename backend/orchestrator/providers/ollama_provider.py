@@ -101,7 +101,7 @@ class OllamaProvider(BaseProvider):
         }
 
         started = self._now()
-        data = await self._request_json(f"{self._base_url}/api/chat", payload=payload)
+        data = await self._mit_ladegeduld(f"{self._base_url}/api/chat", payload)
         latency = self._now() - started
 
         message = data.get("message") or {}
@@ -117,6 +117,90 @@ class OllamaProvider(BaseProvider):
             finish_reason=data.get("done_reason"),
             raw=data,
         )
+
+    #: Woran ein KALTSTART zu erkennen ist - nicht ein echter Fehler.
+    #:
+    #: Genau das stand im Protokoll des Benutzers an dem Tag, an dem der Orb
+    #: „nicht mehr lief": Claude war am Kontingentende, und der lokale
+    #: Ausweg antwortete mit
+    #:
+    #:     HTTP 500 - {"error":"timed out waiting for llama-server to start"}
+    #:
+    #: Damit war BEIDES weg und der Orb stumm. Der Sache nach ist das aber
+    #: kein Ausfall, sondern Ungeduld: Ollama startet sein Rechenwerk erst
+    #: bei der ersten Frage, und ein 8-Milliarden-Modell braucht dafür auf
+    #: einem beschäftigten Rechner länger als die Vorgabe erlaubt. Beim
+    #: zweiten Versuch liegt das Modell dann meist schon bereit.
+    _KALTSTART: tuple[str, ...] = (
+        "timed out waiting for llama-server",
+        "llama runner process has terminated",
+        "model is being loaded",
+        "loading model",
+    )
+
+    async def _mit_ladegeduld(
+        self, url: str, payload: dict[str, Any], *, versuche: int = 3
+    ) -> dict[str, Any]:
+        """Fragt Ollama und gibt einem Kaltstart die Zeit, die er braucht.
+
+        Ein zweiter Anlauf ist hier keine Rateübung, sondern der Normalfall:
+        Der erste Aufruf STÖSST DAS LADEN AN und läuft dabei in Ollamas
+        eigene Frist; der zweite trifft ein Modell, das bereits lädt oder
+        schon steht. Deshalb wird zwischen den Anläufen auch gewartet statt
+        sofort nachzusetzen.
+        """
+
+        letzter: ProviderError | None = None
+        for versuch in range(1, max(1, versuche) + 1):
+            try:
+                return await self._request_json(url, payload=payload)
+            except ProviderError as fehler:
+                text = str(fehler).lower()
+                if not any(marker in text for marker in self._KALTSTART):
+                    raise
+                letzter = fehler
+                if versuch >= versuche:
+                    break
+                wartezeit = 6.0 * versuch
+                logger.info(
+                    "Ollama lädt das Modell noch (Versuch %d von %d) - es wird "
+                    "%.0f s gewartet und erneut gefragt.",
+                    versuch, versuche, wartezeit,
+                )
+                await asyncio.sleep(wartezeit)
+
+        raise ProviderError(
+            "ollama: Das lokale Modell ließ sich nicht rechtzeitig laden. "
+            "Meist hilft es, einmal 'ollama run " + self._model + "' im "
+            "Terminal auszuführen, damit es geladen bleibt. "
+            f"(Ursprüngliche Meldung: {letzter})"
+        ) from letzter
+
+    async def waermen(self) -> bool:
+        """Lädt das Modell vorsorglich in den Arbeitsspeicher.
+
+        Gedacht für den Augenblick, in dem Claude an seine Grenze stößt: Von
+        da an trägt das lokale Modell den Betrieb, und dann soll es schon
+        stehen - nicht erst geladen werden, während der Benutzer wartet.
+        """
+
+        try:
+            await self._mit_ladegeduld(
+                f"{self._base_url}/api/chat",
+                {
+                    "model": self._model,
+                    "messages": [{"role": "user", "content": "Hallo"}],
+                    "stream": False,
+                    "keep_alive": self._keep_alive,
+                    "options": {"num_predict": 1},
+                },
+                versuche=2,
+            )
+        except ProviderError as fehler:
+            logger.info("Das lokale Modell ließ sich nicht vorwärmen: %s", fehler)
+            return False
+        logger.info("Das lokale Modell '%s' ist vorgewärmt.", self._model)
+        return True
 
     async def chat_stream(
         self,

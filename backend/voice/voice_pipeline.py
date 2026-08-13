@@ -508,6 +508,9 @@ class VoicePipeline:
         self._last_error = ""
         self._speaking_task: asyncio.Task[None] | None = None
         self._processing = False
+        #: Die gerade laufende Antwort-Aufgabe - damit ein "Stop" sie auch
+        #: WAEHREND des Denkens abbrechen kann, nicht erst beim Sprechen.
+        self._antwort_task: asyncio.Task | None = None
 
     # --- Lebenszyklus ------------------------------------------------------------------
 
@@ -893,6 +896,17 @@ class VoicePipeline:
                 return
 
             if self._processing:
+                # Ein kurzes "Stop" bricht den LAUFENDEN Auftrag ab - das
+                # war das Loch, durch das jedes "Stop" während des Denkens
+                # fiel: Die Äußerung wurde hier kommentarlos verworfen, der
+                # Orb dachte weiter und redete Sekunden später los.
+                if await self._ist_kurzer_stop(path, duration):
+                    logger.info(
+                        "Stop-Wort während der Verarbeitung – der laufende "
+                        "Auftrag wird abgebrochen."
+                    )
+                    self.verarbeitung_abbrechen()
+                    return
                 # Während eine Anweisung läuft, wird die nächste verworfen.
                 # Zwei gleichzeitige Aufträge würden nur durcheinandergehen.
                 logger.debug("Äußerung übergangen – es läuft bereits eine.")
@@ -912,6 +926,19 @@ class VoicePipeline:
             # aufgeschrieben.
             urteil = self._stimme.pruefen(path)
             if not urteil.akzeptiert:
+                # Die Notbremse gilt auch hier: Ein kurzer Ausruf wie
+                # "Stop!" liefert zu wenig Stimme für einen verlässlichen
+                # Abdruck und fiel im Protokoll des Benutzers reihenweise
+                # durch die Prüfung (Ähnlichkeit 0.3-0.5). Stoppen ist
+                # gefahrlos - schlimmstenfalls verstummt der Orb -, also
+                # darf es nicht an der Identität scheitern.
+                if await self._ist_kurzer_stop(path, duration):
+                    logger.info(
+                        "Stop-Wort trotz nicht erkannter Stimme – die "
+                        "Notbremse greift."
+                    )
+                    self.verarbeitung_abbrechen()
+                    return
                 logger.info(
                     "Fremde Stimme überhört (Ähnlichkeit %.2f, Schwelle %.2f).",
                     urteil.aehnlichkeit,
@@ -1550,6 +1577,9 @@ class VoicePipeline:
         """Holt eine Antwort und spricht sie."""
 
         self._processing = True
+        # Die eigene Aufgabe merken: Ein "Stop" waehrend des Denkens bricht
+        # genau sie ab (siehe verarbeitung_abbrechen).
+        self._antwort_task = asyncio.current_task()
         try:
             await self._set_state(VoiceState.THINKING)
 
@@ -1589,6 +1619,7 @@ class VoicePipeline:
             await self._say(answer)
         finally:
             self._processing = False
+            self._antwort_task = None
             self._wake()
 
     async def _sprich_satz(self, satz: str) -> bool:
@@ -1999,6 +2030,45 @@ class VoicePipeline:
         # Das Mikrofon wieder freigeben – wer unterbricht, will meist reden.
         self._capture.mute(False)
         logger.info("Sprachausgabe unterbrochen.")
+
+    def verarbeitung_abbrechen(self) -> None:
+        """Die Notbremse: bricht Sprachausgabe UND laufende Verarbeitung ab.
+
+        ``interrupt`` stoppt nur das Sprechen. Sagte der Benutzer aber
+        „Stop", während der Orb noch DACHTE, lief der Auftrag ungerührt
+        weiter und redete Sekunden später los - für den Benutzer sah das
+        aus, als reagiere der Orb auf „Stop" gar nicht. Hier wird deshalb
+        zusätzlich die Antwort-Aufgabe selbst abgebrochen.
+        """
+
+        self.interrupt()
+        task = self._antwort_task
+        if task is not None and not task.done():
+            task.cancel()
+            logger.info("Laufende Verarbeitung auf Stop-Wunsch abgebrochen.")
+
+    async def _ist_kurzer_stop(self, path: Path, duration: float) -> bool:
+        """Ob eine KURZE Äußerung ein Stop-Wort enthält.
+
+        Die schnelle Prüfung für die Notbremse: Nur kurze Ausrufe (bis etwa
+        drei Sekunden) kommen infrage - „Stop!", „Halt!" -, und erkannt
+        wird mit dem kleinen, schnellen Modell. Länge zuerst, damit nicht
+        jede verworfene Äußerung eine Erkennung kostet.
+        """
+
+        if duration > 3.0 or not self._stop_words:
+            return False
+        try:
+            erkennung = (
+                self._transcriber
+                if self._stop_transcriber.load_failed
+                else self._stop_transcriber
+            )
+            transcript = await erkennung.transcribe(path)
+        except Exception:  # noqa: BLE001 - die Notbremse darf nie selbst reissen.
+            logger.debug("Stop-Kurzprüfung nicht möglich.", exc_info=True)
+            return False
+        return self._contains_stop_word(transcript.text)
 
     # --- Zustandsführung ---------------------------------------------------------------------
 

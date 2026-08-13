@@ -18,7 +18,7 @@ app:
   # des Orb, jene im Ladebildschirm - liefen sie auseinander, zeigte das
   # Programm zwei verschiedene Fassungen an, und niemand wusste mehr,
   # welche davon wirklich laeuft. Genau das war passiert.
-  version: "0.26.16"
+  version: "0.26.17"
   # Umgebung: development | production
   environment: "development"
   # Sprache der Oberfläche und von Systemmeldungen.
