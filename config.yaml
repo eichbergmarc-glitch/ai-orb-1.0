@@ -18,7 +18,7 @@ app:
   # des Orb, jene im Ladebildschirm - liefen sie auseinander, zeigte das
   # Programm zwei verschiedene Fassungen an, und niemand wusste mehr,
   # welche davon wirklich laeuft. Genau das war passiert.
-  version: "0.26.17"
+  version: "0.26.19"
   # Umgebung: development | production
   environment: "development"
   # Sprache der Oberfläche und von Systemmeldungen.
@@ -145,7 +145,7 @@ orb:
     # "schneller / langsamer" – Grundtempo der Umkreisung.
     tempo: 1.0
     # "heller / dunkler" – Leuchtkraft.
-    helligkeit: 1.0
+    helligkeit: 1.3
     # "andere Farben" – die zwei Farbtöne (0..1 im Farbkreis, oder ein
     # Name wie rot/blau/grün, den das Werkzeug übersetzt). Rot ist 1.0,
     # damit der Übergang beim Verschmelzen über Violett läuft, nicht Grün.
@@ -211,7 +211,8 @@ states:
   # werden mit dem aktiven Theme kombiniert (siehe desktop/styles/themes.css
   # und desktop/renderer/states.ts).
   idle:
-    speed: 1.0
+    # Ruhige, integrierte Laufzeitbewegung wie im geladenen Startbild.
+    speed: 0.78
     particle_intensity: 0.4
     light_intensity: 1.0
     # Ruhezustand: Der Orb zieht sich zusammen und fällt weniger auf.
@@ -265,6 +266,23 @@ ai:
   # "claude_code", "claude", "ollama" oder "hermes".
   provider: "auto"
 
+  # Bei HTTP 429/Quotenfehlern wird ein Anbieter nicht von jedem parallel
+  # gestarteten Subagenten erneut belastet. Nach fuenf Minuten wird er
+  # automatisch wieder zugelassen.
+  quota_cooldown_seconds: 300
+
+  # Nur fuer explizit ausgelagerte Subagenten: Diese Reihenfolge wird vor
+  # dem Hauptprovider Claude versucht. So bleibt Claude fuer die Synthese
+  # frei und ein einzelnes Anbieterlimit stoppt nicht die Gesamtantwort.
+  subagent_fallback_order:
+    - "openrouter"
+    - "ollama"
+    # Werden Teil der Reihenfolge, sobald unten enabled=true gesetzt wurde.
+    # Standardmaessig aus, da beide APIs kostenpflichtig sind.
+    - "grok"
+    - "openai"
+    - "claude_code"
+
   # ---------------------------------------------------------------------------
   # Primäres Modell: Claude über dein Abonnement
   # ---------------------------------------------------------------------------
@@ -274,6 +292,14 @@ ai:
   # Voraussetzung: Claude Code ist installiert und du hast dich einmalig
   # angemeldet – dazu im Terminal "claude" eingeben und der Anmeldung
   # mit deinem Abo folgen.
+  # Alltagsfragen zusaetzlich auf das lokale Modell umleiten?
+  #
+  # Standard: nein. Der Benutzer will Claude als Hauptprovider; gespart
+  # wird bei den TEILAUFGABEN (siehe agents.modelle weiter unten), nicht
+  # bei der Hauptantwort. Auf "true" gestellt beantwortet das lokale
+  # Modell kurze Alltagsfragen selbst - dann aber OHNE Werkzeuge.
+  lokal_fuer_alltag: false
+
   primary:
     engine: "claude_code"
     # Kurznamen bleiben auch bei neuen Modellversionen gültig:
@@ -393,6 +419,36 @@ ai:
     # Etwas nuechterner als die Vorgabe - ein kleineres Modell schweift
     # sonst eher ab und vergisst das Werkzeugformat.
     temperature: 0.4
+
+  # Externe Arbeitsmodelle fuer das Multi-Agent-System. Schluesselwerte
+  # stehen ausschliesslich in .env; hier werden nur Variablennamen genannt.
+  # OpenRouter/free ist wirklich kostenlos. Die direkten xAI- und OpenAI-
+  # APIs werden nach Verbrauch abgerechnet. Sie sind schluesselbereit
+  # eingerichtet, aber bewusst deaktiviert, damit der Orb keine unerwarteten
+  # Kosten erzeugt. Fuer ausdruecklich gewuenschte Bezahl-Nutzung kann bei
+  # einem der beiden Bloecke enabled auf true gesetzt werden.
+  additional:
+    openrouter:
+      engine: "openrouter"
+      preset: "openrouter"
+      model: "openrouter/free"
+      api_key_env: "OPENROUTER_API_KEY"
+      app_title: "AI-Orb"
+      timeout: 25
+    grok:
+      enabled: false
+      engine: "grok"
+      preset: "grok"
+      model: "grok-4.3"
+      api_key_env: "XAI_API_KEY"
+      timeout: 30
+    openai:
+      enabled: false
+      engine: "openai"
+      preset: "openai"
+      model: "gpt-4.1-nano"
+      api_key_env: "OPENAI_API_KEY"
+      timeout: 30
 
   # ---------------------------------------------------------------------------
   # Weitere Anbieter (mit dem Master-Prompt ergaenzt)
@@ -770,6 +826,9 @@ agents:
   #   "ollama"       = das lokale Modell (llama3.1:8b) - eigenstaendig, also
   #                    echt parallel zu Claude; auf CPU aber langsamer und
   #                    fachlich schwaecher
+  #   "openrouter"   = kostenloser Free Router
+  #   "grok"         = direkte xAI-API (verbrauchsbasiert)
+  #   "openai"       = direkte OpenAI-API (verbrauchsbasiert)
   #   ""             = der gerade aktive Provider (meist Claude)
   #
   # Vorgabe: alles bei Claude, damit die Qualitaet stimmt (gerade fuer die
@@ -778,21 +837,15 @@ agents:
   # Modell ein - Beispiel: "research: ollama" laesst die Recherche lokal und
   # parallel laufen, waehrend Claude die eigentliche Antwort formt.
   modelle:
-    conversation: ""
-    reasoning: ""
-    # Die Recherche laeuft lokal - und damit ECHT parallel zu Claude.
-    #
-    # Bewusst gewaehlt: Die Recherche ist der Teil, der haeufig als
-    # Nebenschritt neben der eigentlichen Antwort laeuft (Suchen absetzen,
-    # Treffer zusammenfassen). Ihr Ergebnis wird von Claude ohnehin
-    # weiterverarbeitet, also bleibt die Antwortqualitaet oben bei Claude,
-    # waehrend das Sammeln unten lokal und gleichzeitig geschieht. So haengen
-    # nicht beide am einen warmen Claude-Prozess und stehen sich in die
-    # Quere. Fuehlt es sich auf der CPU langsamer an oder wird zu ungenau,
-    # hier einfach wieder auf "" (Claude) zuruecksetzen.
+    # Die Hauptantwort/Synthese bleibt beim aktiven Provider. Die
+    # Teilaufgaben werden dagegen auf den kostenlosen OpenRouter-Pool und
+    # das lokale Modell verteilt und koennen parallel laufen. Der Free Router
+    # verteilt seinerseits auf aktuell verfuegbare Gratis-Modelle.
+    conversation: "openrouter"
+    reasoning: "openrouter"
     research: "ollama"
-    history: ""
-    coding: ""
+    history: "openrouter"
+    coding: "ollama"
 
 # =============================================================================
 # Skill-/Plugin-System (v3 Phase 6)

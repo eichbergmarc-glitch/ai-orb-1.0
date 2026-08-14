@@ -261,7 +261,10 @@ def test_referenzhuelle_hat_keine_zeitliche_helligkeitsmodulation():
     reference_shader = orb.split("const REFERENCE_FRAG", 1)[1].split("`;", 1)[0]
     assert "source.rgb * living" not in reference_shader
     assert "source.a * uOpacity * living" not in reference_shader
-    assert "vec4(source.rgb, source.a * uOpacity)" in reference_shader
+    assert "float darkTransmission" in reference_shader
+    assert "source.a * uOpacity * darkTransmission" in reference_shader
+    assert "uDarkFloor" in reference_shader
+    assert "makeReferenceMaterial(0.0, 0.0, 0.30)" in orb
     assert "texture.minFilter = THREE.LinearFilter" in orb
     assert "texture.generateMipmaps = false" in orb
     assert "this.referenceOrbit.rotation.z = 0.0" in orb
@@ -281,7 +284,7 @@ def test_original_orbits_sind_sichtbar_aber_gegen_ueberstrahlen_begrenzt():
     assert "idle: 0.62" in orb
     assert "this.referenceOrbitTarget = 0.62" in orb
     assert 'crown.target = state === "idle" ? 0.90 : 0.86' in orb
-    assert "this.referenceInnerTarget = 0.16" in orb
+    assert "this.referenceInnerTarget = 0.28" in orb
     assert "ring.particles.visible = true" in orb
 
 
@@ -309,7 +312,7 @@ def test_orbitale_schweife_bleiben_raeumlich_sichtbar_aber_gedaempft():
     assert "if (glow < 0.004) discard" in ring_shader
     assert "float drift" not in ring_shader
     assert "ring.mesh.visible = visible" in orb
-    assert "this.styleRingGain * 0.72" in orb
+    assert "this.styleRingGain * 0.30" in orb
     assert "ringParticles: 12" in orb
     assert "function ellipseArcTube" in orb
     assert "ringGroup.add(...arcs)" in orb
@@ -323,10 +326,14 @@ def test_transferentladung_springt_von_der_huelle_in_die_atomare_bahn():
     assert "private readonly transferArcs" in orb
     assert "float cycle = uProgress" in shader
     assert "float head" in shader and "float tail" in shader
-    assert "glow = min(glow, 0.48)" in shader
-    assert "this.transferWait = Math.random() < 0.20" in orb
-    assert "1.4 + Math.random() * 4.4" in orb
-    assert "chosen.duration = 0.52 + Math.random() * 0.58" in orb
+    assert "tailDistance * 5.5" in shader
+    assert "head * 0.72 + tail * 0.40" in shader
+    assert "glow = min(glow, 0.52)" in shader
+    assert "this.synapsenRot" in orb and "this.synapsenOrange" in orb
+    assert "this.transferWait = Math.random() < 0.16" in orb
+    assert "2.4 + Math.random() * 5.8" in orb
+    assert "new THREE.TubeGeometry(curve, 64, 0.015, 5, false)" in orb
+    assert "chosen.duration = 1.25 + Math.random() * 0.95" in orb
     assert "chosen.group.rotation.z = Math.random() * Math.PI * 2.0" in orb
 
 
@@ -359,8 +366,19 @@ def test_zustandsfarben_faerben_kern_nebel_huelle_und_atomsegmente():
     assert "uDeep.value as THREE.Color" in orb
     assert "a.smokeDensity * 0.68" in orb
     assert "a.smokeDensity * 0.48" in orb
-    assert "0.36 * a.lightIntensity" in orb
+    assert "0.44 * a.lightIntensity" in orb
     assert "ring.arcMaterial.color.copy" in orb
+
+
+def test_start_und_laufzeit_nutzen_dieselben_ruhigen_energiewerte():
+    orb = ORB.read_text(encoding="utf-8")
+    main = MAIN.read_text(encoding="utf-8")
+    # applyAppearance und update duerfen die Bahnhelligkeit nicht beim
+    # ersten Frame auf einen voellig anderen Faktor springen lassen.
+    assert orb.count("a.ringIntensity * bright * 0.58") == 1
+    assert orb.count("a.ringIntensity * this.brightFactor * ringDamp * 0.58") == 1
+    assert orb.count("this.styleRingGain * 0.30") >= 2
+    assert "baseBloomStrength * appearance.bloomStrength" in main
 
 
 def test_ringmenue_chat_automatik_und_globale_maus_sind_verdrahtet():

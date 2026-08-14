@@ -143,6 +143,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
     sse_path: str
     server_version = "AI-Orb"
     sys_version = ""
+    protocol_version = "HTTP/1.1"
 
     # --- Hilfsfunktionen -------------------------------------------------
 
@@ -254,16 +255,23 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", "no-cache, no-transform")
         self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+
+        # Sofortige SSE-Daten bestaetigen den Kanal; der kurze Keep-alive-
+        # Takt verhindert, dass Windows oder Chromium eine ruhige lokale
+        # Verbindung irrtuemlich als inaktiv schliesst.
+        self.wfile.write(b"retry: 1000\n: connected\n\n")
+        self.wfile.flush()
 
         client = self.broker.register()
         try:
             while True:
                 try:
-                    message = client.queue.get(timeout=15.0)
+                    message = client.queue.get(timeout=5.0)
                 except queue.Empty:
                     # Keep-Alive-Kommentar, damit Proxys/Clients die
                     # Verbindung nicht wegen Inaktivität schließen.

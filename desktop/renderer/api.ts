@@ -42,6 +42,11 @@ export class BackendClient {
   private connectionListeners: ((connected: boolean) => void)[] = [];
   private reconnectDelay = 1000;
   private connected = false;
+  private notifiedConnection: boolean | null = null;
+  private reconnectTimer: number | undefined;
+  private disconnectTimer: number | undefined;
+  private eventsPath = "/events";
+  private stopped = true;
 
   /**
    * @param baseUrl Basis-URL des Backends, z. B. `http://127.0.0.1:8756`.
@@ -61,18 +66,29 @@ export class BackendClient {
    * @param eventsPath Pfad des Ereigniskanals (Standard `/events`).
    */
   public connect(eventsPath = "/events"): void {
-    this.close();
+    this.eventsPath = eventsPath;
+    this.stopped = false;
+    this.clearReconnectTimer();
+    this.openEventStream();
+  }
 
-    const source = new EventSource(`${this.baseUrl}${eventsPath}`);
+  /** Oeffnet genau einen aktuellen Ereigniskanal. */
+  private openEventStream(): void {
+    if (this.stopped) return;
+    this.eventSource?.close();
+
+    const source = new EventSource(`${this.baseUrl}${this.eventsPath}`);
     this.eventSource = source;
 
     source.onopen = () => {
-      this.connected = true;
+      if (this.stopped || this.eventSource !== source) return;
+      this.clearDisconnectTimer();
       this.reconnectDelay = 1000;
-      this.notifyConnection(true);
+      this.setConnected(true);
     };
 
     source.onmessage = (message: MessageEvent<string>) => {
+      if (this.stopped || this.eventSource !== source) return;
       try {
         const parsed = JSON.parse(message.data) as BackendEvent;
         for (const listener of this.listeners) {
@@ -85,18 +101,84 @@ export class BackendClient {
     };
 
     source.onerror = () => {
-      this.connected = false;
-      this.notifyConnection(false);
+      if (this.stopped || this.eventSource !== source) return;
       source.close();
       this.eventSource = null;
       // Wartezeit verdoppeln, höchstens 15 Sekunden.
-      window.setTimeout(() => this.connect(eventsPath), this.reconnectDelay);
-      this.reconnectDelay = Math.min(15000, this.reconnectDelay * 2);
+      this.scheduleDisconnectCheck();
+      this.scheduleReconnect();
     };
   }
 
   /** Schließt die Ereignisverbindung. */
+  private scheduleReconnect(): void {
+    if (this.stopped || this.reconnectTimer !== undefined) return;
+    const delay = this.reconnectDelay;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = undefined;
+      this.openEventStream();
+    }, delay);
+    this.reconnectDelay = Math.min(15000, this.reconnectDelay * 2);
+  }
+
+  private scheduleDisconnectCheck(): void {
+    if (this.stopped || this.disconnectTimer !== undefined) return;
+    this.disconnectTimer = window.setTimeout(() => {
+      this.disconnectTimer = undefined;
+      void this.verifyBackendHealth();
+    }, 4500);
+  }
+
+  private async verifyBackendHealth(): Promise<void> {
+    if (this.stopped || this.eventSource?.readyState === EventSource.OPEN) return;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 1500);
+    let healthy = false;
+    try {
+      const response = await fetch(`${this.baseUrl}/health`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        const payload = await response.json() as { status?: unknown };
+        healthy = payload.status === "ok";
+      }
+    } catch {
+      healthy = false;
+    } finally {
+      window.clearTimeout(timeout);
+    }
+
+    if (this.stopped || this.eventSource?.readyState === EventSource.OPEN) return;
+    if (healthy) {
+      // Der Kern lebt; nur der Ereigniskanal wird gerade erneuert.
+      this.scheduleReconnect();
+      return;
+    }
+    this.setConnected(false);
+  }
+
+  private clearReconnectTimer(): void {
+    window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+  }
+
+  private clearDisconnectTimer(): void {
+    window.clearTimeout(this.disconnectTimer);
+    this.disconnectTimer = undefined;
+  }
+
+  private setConnected(connected: boolean): void {
+    this.connected = connected;
+    if (this.notifiedConnection === connected) return;
+    this.notifiedConnection = connected;
+    this.notifyConnection(connected);
+  }
+
   public close(): void {
+    this.stopped = true;
+    this.clearReconnectTimer();
+    this.clearDisconnectTimer();
     this.eventSource?.close();
     this.eventSource = null;
     this.connected = false;

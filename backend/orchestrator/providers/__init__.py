@@ -34,6 +34,9 @@ from backend.orchestrator.providers.claude_code_provider import ClaudeCodeProvid
 from backend.orchestrator.providers.claude_provider import ClaudeProvider
 from backend.orchestrator.providers.hermes_provider import HermesProvider
 from backend.orchestrator.providers.ollama_provider import OllamaProvider
+from backend.orchestrator.providers.openai_compatible_provider import (
+    OpenAICompatibleProvider,
+)
 
 #: Registry aller bekannten Provider-Typen. Der Schlüssel entspricht dem
 #: Wert von ``engine`` in ``config.yaml``.
@@ -42,6 +45,13 @@ PROVIDER_TYPES: dict[str, type[BaseProvider]] = {
     ClaudeProvider.name: ClaudeProvider,
     OllamaProvider.name: OllamaProvider,
     HermesProvider.name: HermesProvider,
+    "openai": OpenAICompatibleProvider,
+    "openrouter": OpenAICompatibleProvider,
+    "grok": OpenAICompatibleProvider,
+    "xai": OpenAICompatibleProvider,
+    "ollama_cloud": OpenAICompatibleProvider,
+    "lmstudio": OpenAICompatibleProvider,
+    "llamacpp": OpenAICompatibleProvider,
 }
 
 __all__ = [
@@ -51,6 +61,7 @@ __all__ = [
     "ClaudeProvider",
     "HermesProvider",
     "OllamaProvider",
+    "OpenAICompatibleProvider",
     "PROVIDER_TYPES",
     "ProviderError",
     "ProviderResponse",

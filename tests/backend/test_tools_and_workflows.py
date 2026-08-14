@@ -204,10 +204,32 @@ def test_parse_tool_call_accepts_english_keys() -> None:
 
 
 def test_parse_ignores_broken_json() -> None:
-    """Ein vergessenes Komma zerstört nicht die ganze Antwort."""
+    """Ein vergessenes Komma zerstört nicht die ganze Antwort.
+
+    Die Erwartung hat sich mit 0.26.18 UMGEKEHRT, und zwar aufgrund des
+    Protokolls des Benutzers: Dort standen Aufrufe wie
+
+        {"werkzeug": "rechnen" "argumente": {}}
+
+    - inhaltlich vollständig, nur ein Komma fehlte. Sie wurden verworfen,
+    das Werkzeug lief nie, und von aussen sah das aus, als könne der Orb
+    seine Werkzeuge nicht benutzen. Heute wird ein solcher Aufruf repariert
+    und ausgeführt.
+
+    Was der Test WEITERHIN sichert, ist der eigentliche Punkt seines
+    Namens: Ein kaputter Block darf die Antwort nicht zerstören - weder
+    durch einen Absturz noch dadurch, dass Fliesstext zum Werkzeugaufruf
+    umgedeutet wird.
+    """
 
     text = '```werkzeug\n{"werkzeug": "rechnen" "argumente": {}}\n```'
-    assert parse_tool_calls(text) == []
+    calls = parse_tool_calls(text)
+    assert [call.tool for call in calls] == ["rechnen"]
+
+    # Und die Gegenprobe: Ohne Werkzeugnamen wird nichts geraten, und
+    # gewöhnlicher Text bleibt gewöhnlicher Text.
+    assert parse_tool_calls('{"argumente": {"a": 1}}') == []
+    assert parse_tool_calls('Er sagte "ja" und ich "nein".') == []
 
 
 def test_strip_tool_calls_leaves_prose() -> None:

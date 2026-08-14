@@ -110,9 +110,14 @@ class DeepenTopicTool(Tool):
         ergebnis = await self._lerner.aus_dem_netz(thema_name, quellen=3, frage=frage)
         antwort = _melden(ergebnis, thema_name)
         if antwort.ok:
+            # ``context`` und nicht ``data``: ToolResult hat kein Feld
+            # ``data``, und der Zugriff darauf liess das Werkzeug jedes Mal
+            # abstuerzen ("'ToolResult' object has no attribute 'data'").
+            # Der Fehler traf ausgerechnet den Erfolgsfall - wenn also
+            # wirklich etwas gelernt worden war.
             return ToolResult.success(
                 f"Nachgegangen bin ich der Frage: {frage}\n\n{antwort.output}",
-                **antwort.data,
+                **(antwort.context or {}),
             )
         return antwort
 
@@ -150,7 +155,27 @@ class LearnFromFileTool(Tool):
 
         pfad = Path(entscheidung.path)
         if not pfad.is_file():
-            return ToolResult.failure(f"Die Datei gibt es nicht: {pfad}")
+            # Nicht aufgeben, sondern NACHSEHEN.
+            #
+            # Der geratene Pfad ist fast immer fast richtig (falscher
+            # Zwischenordner, Unterstrich statt Leerzeichen). Vorher endete
+            # die Aufgabe genau hier - zweimal geraten, zweimal daneben,
+            # fertig. Jetzt wird der Name in den freigegebenen Ordnern
+            # gesucht; ist er eindeutig, geht es einfach weiter.
+            import asyncio
+
+            from backend.tools.datei_finden import datei_finden, hinweis_zu
+
+            gefunden, kandidaten = await asyncio.to_thread(
+                datei_finden, pfad_text, list(self._security.paths.roots)
+            )
+            if gefunden is None:
+                return ToolResult.failure(hinweis_zu(pfad_text, kandidaten))
+            geprueft = self._security.paths.check_read(str(gefunden))
+            if not geprueft.allowed:
+                return ToolResult.failure(geprueft.reason)
+            pfad = Path(geprueft.path)
+            logger.info("Die gemeinte Datei wurde gefunden: %s", pfad)
 
         ergebnis = await self._lerner.aus_datei(thema, pfad)
         return _melden(ergebnis, thema)

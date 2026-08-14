@@ -102,12 +102,13 @@ async function bootstrap(): Promise<void> {
   const orbScale = readConfig(config, "orb.scale", 0.28);
   const movementSpeed = readConfig<string>(config, "smart_desktop.movement_speed", "medium");
   const stateOverrides = readConfig<Record<string, Partial<StateAppearance>>>(config, "states", {});
+  const baseBloomStrength = readConfig(config, "orb.bloom_strength", 0.62);
 
   document.body.dataset.theme = theme;
 
   // --- Rendering ----------------------------------------------------------
   const renderer = new OrbRenderer(canvas, {
-    bloomStrength: readConfig(config, "orb.bloom_strength", 0.62),
+    bloomStrength: baseBloomStrength,
     bloomRadius: readConfig(config, "orb.bloom_radius", 0.35),
     bloomThreshold: readConfig(config, "orb.bloom_threshold", 0.42),
     // Bei einem sichtbaren Orb von rund 90 Pixeln ist mehr als 1,5-fache
@@ -197,13 +198,17 @@ async function bootstrap(): Promise<void> {
 
   // --- Backend ---------------------------------------------------------------
   const backend = new BackendClient(backendUrl);
-  backend.connect(readConfig(config, "backend.events_path", "/events"));
 
   backend.onConnectionChange((connected) => {
     // Kein Backend heisst OFFLINE, nicht Fehler: Der Orb lebt weiter,
     // nur sichtbar gedimmt - er sieht nicht aus, als wäre er abgestürzt.
-    states.setState(connected ? "idle" : "offline");
+    if (!connected) {
+      states.setState("offline");
+    } else if (states.current === "offline") {
+      states.setState("idle");
+    }
   });
+  backend.connect(readConfig(config, "backend.events_path", "/events"));
 
   // Der Sprechpegel, den der Kern meldet. Er wird hier nur eingesammelt;
   // geglaettet und in Bewegung uebersetzt wird er im Orb selbst.
@@ -465,7 +470,9 @@ async function bootstrap(): Promise<void> {
         // Orb sonst weiter, als spraeche er noch.
         stimmpegel = Math.max(0.0, stimmpegel - delta * 1.8);
 
-        renderer.post.setBloomStrength(appearance.bloomStrength * (dragging ? 0.85 : 1.0));
+        renderer.post.setBloomStrength(
+          baseBloomStrength * appearance.bloomStrength * (dragging ? 0.85 : 1.0)
+        );
       },
       render: () => renderer.render(),
       onQualityChange: (level) => {

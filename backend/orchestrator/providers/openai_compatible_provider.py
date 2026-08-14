@@ -61,6 +61,25 @@ PRESETS: dict[str, dict[str, Any]] = {
         "requires_key": True,
         "local": False,
     },
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "requires_key": True,
+        "local": False,
+    },
+    "grok": {
+        "base_url": "https://api.x.ai/v1",
+        "api_key_env": "XAI_API_KEY",
+        "requires_key": True,
+        "local": False,
+    },
+    # Alias fuer Konfigurationen, die den Herstellernamen verwenden.
+    "xai": {
+        "base_url": "https://api.x.ai/v1",
+        "api_key_env": "XAI_API_KEY",
+        "requires_key": True,
+        "local": False,
+    },
     "lmstudio": {
         # LM Studio lauscht standardmäßig hier und verlangt keinen Schlüssel.
         "base_url": "http://127.0.0.1:1234/v1",
@@ -93,6 +112,15 @@ class OpenAICompatibleProvider(BaseProvider):
 
         preset_name = str(settings.get("preset", "")).strip().lower()
         preset = PRESETS.get(preset_name, {})
+        # Mehrere Instanzen dieses Adapters muessen fuer Routing, Metriken und
+        # Gesundheitspruefungen unterscheidbar bleiben. Ohne Instanznamen
+        # ueberschrieben sich OpenAI, OpenRouter und xAI im Health-Monitor.
+        self.name = str(
+            settings.get("provider_name")
+            or settings.get("engine")
+            or preset_name
+            or type(self).name
+        ).strip().lower()
 
         # Konfiguration schlägt Voreinstellung. Eine ausdrücklich gesetzte
         # base_url gilt, auch wenn ein Preset etwas anderes vorschlägt.
@@ -121,6 +149,14 @@ class OpenAICompatibleProvider(BaseProvider):
         key = self.api_key
         if key:
             headers["Authorization"] = f"Bearer {key}"
+        # OpenRouter nutzt diese optionalen Angaben fuer die transparente
+        # Zuordnung der Anwendung. Andere kompatible APIs ignorieren sie.
+        referer = self._settings.get("http_referer")
+        if referer:
+            headers["HTTP-Referer"] = str(referer)
+        title = self._settings.get("app_title")
+        if title:
+            headers["X-Title"] = str(title)
         return headers
 
     @property

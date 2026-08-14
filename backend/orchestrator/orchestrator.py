@@ -138,6 +138,102 @@ def provider_mode_command(text: str) -> str:
     return ""
 
 
+#: Wovon eine Frage handelt, die NIEMALS eine Internetsuche braucht.
+#:
+#: Das war die teuerste Fehlzündung im Protokoll des Benutzers. Die
+#: Zeitwörter ("aktuell", "gerade", "zurzeit") stehen auch in Sätzen, die
+#: mit der Welt nichts zu tun haben:
+#:
+#:   "Eine Darstellung ist AKTUELL sehr dunkel"              -> Orb-Animation
+#:   "Befindest du dich ZURZEIT auf dem zweiten Bildschirm"  -> Fenster
+#:   "lies das Dokument, das ich GERADE offen habe"          -> Datei
+#:
+#: Jeder dieser Sätze löste eine Suche bei sechs Nachrichtenhäusern aus,
+#: und deren Schlagzeilen landeten im Kontext, bevor das Modell zu denken
+#: anfing. Es sollte die Helligkeit des Orb erklären und bekam Nahost.
+#: Nicht die Suche war kaputt - sie lief nur zur falschen Frage.
+_EIGENES_UMFELD: tuple[str, ...] = (
+    # Der Orb selbst
+    "orb", "animation", "darstellung", "helligkeit", "leuchte",
+    "dein fenster", "deine anzeige", "oberfläche", "oberflaeche",
+    # Bildschirm und Fenster
+    "bildschirm", "monitor", "fenster", "desktop", "taskleiste",
+    # Lokales Material
+    "dokument", "datei", "ordner", "verzeichnis", "pdf",
+    # Der Orb als Programm
+    "einstellung", "konfiguration", "config", "quelltext",
+    "protokoll", "werkzeug", "gedächtnis", "gedaechtnis",
+)
+
+
+def betrifft_eigenes_umfeld(text: str) -> bool:
+    """Ob es um den Orb, den Bildschirm oder lokales Material geht.
+
+    Dann ist eine Internetsuche nicht bloss überflüssig, sondern schädlich:
+    Ihre Treffer verdrängen im Kontext genau das, was zur Antwort nötig wäre.
+
+    ACHTUNG, hier liegt eine Falle, in die ich schon getappt bin: „Betrifft
+    den eigenen Rechner" heisst NICHT „braucht keine Werkzeuge" - es heisst
+    fast immer das Gegenteil. Wer diese Funktion benutzt, um Werkzeuge
+    abzuschalten, macht genau die Aufgaben unlösbar, für die der Orb da ist.
+    Dafür gibt es ``braucht_werkzeuge``.
+    """
+
+    knapp = " " + " ".join(text.lower().split()) + " "
+    return any(wort in knapp for wort in _EIGENES_UMFELD)
+
+
+#: Tätigkeiten, die der Orb nur MIT einem Werkzeug ausführen kann.
+#:
+#: Diese Liste entstand aus einem Fehler, den ich selbst gebaut habe. Der
+#: Ablauf schaltet für kurze Alltagsfragen auf das lokale Modell um und
+#: nimmt ihm dabei die Werkzeuge weg - richtig für „erzähl mir einen Witz",
+#: falsch für alles, was zu TUN ist. Ob eine Anfrage zum Tun gehört, wurde
+#: an ``braucht_aktuelles`` abgelesen; als ich dort das Veto für Fragen
+#: über den Orb einbaute, fiel dieser Satz des Benutzers durch:
+#:
+#:   „ich habe gerade ein Dokument geöffnet, erstelle ein Printscreen und
+#:    lies das Dokument ein und merke es dir"
+#:
+#: Er landete beim lokalen Modell OHNE Werkzeuge - drei Aufträge, kein
+#: Werkzeug, keine Lösung. Die Lehre: Ob gesucht werden muss und ob
+#: gehandelt werden muss, sind zwei Fragen. Sie brauchen zwei Listen.
+_WERKZEUG_TAETIGKEITEN: tuple[str, ...] = (
+    # Sehen und aufnehmen
+    "screenshot", "printscreen", "prinzscreen", "print screen", "bildschirmfoto",
+    "schau", "sieh dir", "sieh mal", "guck", "zeig mir", "erkenn",
+    # Lesen und einarbeiten
+    "lies", "lies mir", "liest", "lesen", "einlesen", "vorlesen",
+    "fasse zusammen", "zusammenfass", "durchles", "auswerten", "analysier",
+    # Merken
+    "merk dir", "merke dir", "merk es dir", "merke es dir", "speicher",
+    "notier", "schreib auf", "behalte",
+    # Dateien und Programme
+    "öffne", "oeffne", "starte", "installier", "suche datei", "finde datei",
+    "lege an", "erstelle", "erstell", "schreib", "lösche", "loesche",
+    "verschiebe", "benenne",
+    # Netz
+    "such", "recherchier", "nachschlagen", "im internet", "webseite",
+    # Mail
+    "mail", "e-mail", "schreib eine mail", "sende",
+)
+
+
+def braucht_werkzeuge(text: str) -> bool:
+    """Ob die Anfrage eine HANDLUNG verlangt und damit Werkzeuge braucht.
+
+    Bewusst grosszügig: Ein Werkzeug zu viel im Systemprompt kostet ein
+    paar hundert Zeichen Kontext. Ein Werkzeug zu wenig kostet die Aufgabe.
+    """
+
+    knapp = " " + " ".join(text.lower().split()) + " "
+    if any(wort in knapp for wort in _WERKZEUG_TAETIGKEITEN):
+        return True
+    # Ist von Bildschirm, Datei oder Dokument die Rede, geht es fast immer
+    # um etwas, das auf diesem Rechner zu tun ist.
+    return betrifft_eigenes_umfeld(text)
+
+
 def braucht_aktuelles(text: str) -> bool:
     """Ob eine Frage Wissen von JETZT verlangt.
 
@@ -159,6 +255,11 @@ def braucht_aktuelles(text: str) -> bool:
     # Nachrichtensuchen und lieferten anschließend fremde Webseiten.
     if any(wendung in knapp for wendung in _PERSOENLICHE_JETZT_FRAGEN):
         return False
+    # Und dasselbe für alles, was den Orb, den Bildschirm oder eine Datei
+    # betrifft: Dort ist ein Zeitwort eine Zeitangabe, keine Frage nach
+    # der Welt (siehe betrifft_eigenes_umfeld).
+    if betrifft_eigenes_umfeld(text):
+        return False
     return any(wort in knapp for wort in _JETZT_WOERTER)
 
 
@@ -167,6 +268,12 @@ def braucht_aktuelles(text: str) -> bool:
 _BILDSCHIRM_DIREKT: tuple[str, ...] = (
     "screenshot", "screen shot", "printscreen", "print screen",
     "bildschirmfoto", "bildschirm-foto", "bildschirmaufnahme",
+    # Wie die Spracherkennung "Printscreen" tatsaechlich schreibt.
+    # Im Protokoll stand woertlich "erstelle ein Prinzscreen" - und weil
+    # keine dieser Schreibungen hier stand, galt die klare Bitte nicht als
+    # Bildschirmauftrag. Ein Verhoerer darf keine Faehigkeit kosten.
+    "prinzscreen", "prinz screen", "printscream", "print scream",
+    "prinzscream", "screenshoot", "screen-shot",
 )
 
 #: Das Wort fuer den Ort. Nur zusammen mit einem Seh-/Lesewort loest es aus -
@@ -1084,6 +1191,25 @@ class Orchestrator:
         nicht erst dessen Prozessfrist abwarten, obwohl Ollama bereits laeuft.
         """
 
+        # Standardmaessig AUS - Claude bleibt der Hauptprovider.
+        #
+        # Der Benutzer hat das ausdruecklich verlangt: "der Wunschprovider
+        # ist nicht ollama sondern Claude; er soll andere Modelle fuer
+        # Sub-Agenten nutzen, um die Effizienz zu steigern." Genau so ist
+        # es jetzt eingerichtet: Die HAUPTANTWORT kommt von Claude, und die
+        # Ersparnis entsteht bei den Teilaufgaben (siehe agents.modelle in
+        # der config.yaml - conversation/reasoning/history laufen ueber
+        # OpenRouter, research/coding lokal).
+        #
+        # Die Umleitung der Hauptantwort auf das lokale Modell hatte zwei
+        # Nachteile, die zusammen den Betrieb beschaedigten: Sie nahm der
+        # Anfrage die WERKZEUGE (siehe model_tools_available), und das
+        # kleine Modell brauchte im Protokoll 40 Sekunden fuer eine
+        # Antwort, die Claude in vier lieferte. Wer sie dennoch will,
+        # schaltet sie hier ein.
+        if not bool(self._config.get("ai.lokal_fuer_alltag", False)):
+            return None
+
         local = list(getattr(self._providers, "local_provider_names", []) or [])
         if not local or intent.intent not in {CHAT, DOCUMENT, QUESTION, SMALL_TALK}:
             return None
@@ -1097,6 +1223,11 @@ class Orchestrator:
             return None
         if (
             braucht_aktuelles(stripped)
+            # Der entscheidende Wächter: Alles, was zu TUN ist, bleibt beim
+            # werkzeugfähigen Weg. Er stand vorher nicht hier, und die
+            # Aufgabe "mach einen Printscreen, lies das Dokument, merk es
+            # dir" landete beim lokalen Modell ohne Werkzeuge.
+            or braucht_werkzeuge(stripped)
             or ist_browser_befehl(stripped)
             or will_bildschirm(stripped)
             or will_webseite_lesen(stripped)
@@ -1451,10 +1582,36 @@ class Orchestrator:
             "'scrollen' blättert.\n\n" + "\n\n".join(teile)
         )
 
+    #: Woran eine echte Frage nach NACHRICHTEN zu erkennen ist.
+    #:
+    #: Die Gegenüberstellung von sechs Nachrichtenhäusern ist das teuerste
+    #: Werkzeug im Haus: sechs Suchläufe, und ihre Schlagzeilen füllen den
+    #: Kontext. Das ist richtig bei "was ist heute in der Welt passiert" -
+    #: und falsch bei jeder Frage, in der bloss ein Zeitwort vorkommt. Ein
+    #: solches Wort genügt dafür nicht mehr; es muss um Berichterstattung
+    #: gehen.
+    _NACHRICHTEN_WOERTER: tuple[str, ...] = (
+        "nachricht", "news", "schlagzeile", "meldung", "presse", "medien",
+        "berichterstattung", "berichtet", "zeitung", "tagesschau",
+        "weltlage", "krieg", "wahl", "konflikt", "politik", "was ist passiert",
+        "was passiert in", "aus aller welt", "weltweit", "lage in",
+    )
+
+    def _will_nachrichten(self, text: str) -> bool:
+        """Ob wirklich nach Nachrichten gefragt ist."""
+
+        knapp = " " + " ".join(text.lower().split()) + " "
+        return any(wort in knapp for wort in self._NACHRICHTEN_WOERTER)
+
     async def _vorab_mehrquellen(self, text: str) -> str:
         """Befragt mehrere Häuser parallel und stellt sie gegenüber."""
 
         if not bool(self._config.get("recherche.mehrquellen", True)):
+            return ""
+        # Nur bei einer echten Nachrichtenfrage. Sonst genügt die
+        # gewöhnliche Suche - sie ist schneller und verstopft den Kontext
+        # nicht mit Schlagzeilen, die zur Frage nicht gehören.
+        if not self._will_nachrichten(text):
             return ""
         quellen = self._config.get("recherche.quellen", []) or []
         if not quellen:

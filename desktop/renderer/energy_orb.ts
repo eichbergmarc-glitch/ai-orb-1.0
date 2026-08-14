@@ -384,14 +384,17 @@ const TRANSFER_ARC_FRAG = /* glsl */ `
     // zufaelliges Blitzen und keine wechselnde Grundhelligkeit.
     if (uProgress < 0.0 || uProgress > 1.0) discard;
     float cycle = uProgress;
-    float head = 1.0 - smoothstep(0.015, 0.085, abs(along - cycle));
+    float head = 1.0 - smoothstep(0.015, 0.115, abs(along - cycle));
     float tailDistance = mod(cycle - along + 1.0, 1.0);
-    float tail = exp(-tailDistance * 12.0) * step(along, cycle);
+    // Der warme Nachlauf zeichnet fuer einen Augenblick den gezackten
+    // Uebertragungsweg nach. Ein nur punktfoermiger Kopf war am kleinen
+    // Desktop-Orb kaum als Blitz zu erkennen.
+    float tail = exp(-tailDistance * 5.5) * step(along, cycle);
     float envelope = smoothstep(0.03, 0.18, cycle)
       * (1.0 - smoothstep(0.82, 0.98, cycle));
-    float glow = (head * 0.70 + tail * 0.24) * filament * envelope * uIntensity;
+    float glow = (head * 0.72 + tail * 0.40) * filament * envelope * uIntensity;
     // Deutlich lesbar, aber mit einer harten Obergrenze gegen Bloom-Flare.
-    glow = min(glow, 0.48);
+    glow = min(glow, 0.52);
     if (glow < 0.003) discard;
 
     vec3 color = mix(uColorA, uColorB, smoothstep(0.18, 0.88, along));
@@ -622,6 +625,7 @@ const REFERENCE_FRAG = /* glsl */ `
   uniform float uTime;
   uniform float uOpacity;
   uniform float uWarp;
+  uniform float uDarkFloor;
   varying vec2 vUv;
   void main() {
     vec2 p = vUv - 0.5;
@@ -636,7 +640,13 @@ const REFERENCE_FRAG = /* glsl */ `
     // Die Originalpixel behalten eine konstante Leuchtdichte. Das Muster
     // fliesst nur minimal; Helligkeitspulse an seinen duennen Fasern
     // erzeugen mit Bloom sonst ein scheinbares Ein-/Ausschalten.
-    gl_FragColor = vec4(source.rgb, source.a * uOpacity);
+    // Dunkle Pixel der Vorlage duerfen die darunter weiterlebende
+    // prozedurale Energie nicht wie eine schwarze Folie abdecken. Helle
+    // Fasern und die charakteristische Krone bleiben voll erhalten;
+    // lediglich der dunkle Kern wird teilweise lichtdurchlaessig.
+    float luminance = dot(source.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float darkTransmission = mix(uDarkFloor, 1.0, smoothstep(0.055, 0.30, luminance));
+    gl_FragColor = vec4(source.rgb, source.a * uOpacity * darkTransmission);
     #include <colorspace_fragment>
   }
 `;
@@ -676,8 +686,8 @@ const GROUND_FRAG = /* glsl */ `
       * uTransferEnergy;
 
     vec3 light = uColor * (pool * 0.52 + ring * 0.48 + reflection * 0.30)
-      + uAccent * (violetLobe * 0.18 + orbitA * 0.22 + transfer * 0.28)
-      + uWarm * (warmLobe * 0.12 + orbitB * 0.16);
+      + uAccent * (violetLobe * 0.18 + orbitA * 0.22)
+      + uWarm * (warmLobe * 0.12 + orbitB * 0.16 + transfer * 0.34);
     float alpha = (pool * 0.44 + ring * 0.38 + reflection * 0.18
       + violetLobe * 0.08 + warmLobe * 0.06 + orbitA * 0.10
       + orbitB * 0.08 + transfer * 0.12) * uStrength;
@@ -807,12 +817,15 @@ function transferArcTube(seed: number, offsetY: number): THREE.TubeGeometry {
     const p = index / 12;
     const x = 0.77 + p * 0.39;
     const y = offsetY + Math.sin(p * Math.PI) * 0.07
-      + Math.sin(p * 31.0 + seed * 17.0) * 0.018 * Math.sin(p * Math.PI);
-    const z = 0.10 + Math.sin(p * 18.0 + seed * 11.0) * 0.022 * Math.sin(p * Math.PI);
+      + Math.sin(p * 31.0 + seed * 17.0) * 0.032 * Math.sin(p * Math.PI);
+    const z = 0.10 + Math.sin(p * 18.0 + seed * 11.0) * 0.028 * Math.sin(p * Math.PI);
     return new THREE.Vector3(x, y, z);
   });
   const curve = new THREE.CatmullRomCurve3(points, false, "catmullrom", 0.18);
-  return new THREE.TubeGeometry(curve, 64, 0.008, 5, false);
+  // Etwa 1,3 bis 1,6 sichtbare Pixel beim produktiven Orb-Massstab: duenn
+  // genug fuer einen elektrischen Funken, aber nicht mehr so duenn, dass
+  // die Entladung durch Antialiasing verschwindet.
+  return new THREE.TubeGeometry(curve, 64, 0.015, 5, false);
 }
 
 interface RingBundle {
@@ -964,6 +977,8 @@ export class EnergyOrb {
    *  Boden-Glow und das Punktlicht weiss gefärbt. */
   private readonly weiss = new THREE.Color(0xffffff);
   private readonly warmesBahnlicht = new THREE.Color(0xffa34d);
+  private readonly synapsenRot = new THREE.Color(0xff4a2f);
+  private readonly synapsenOrange = new THREE.Color(0xffad38);
   private readonly violettesBahnlicht = new THREE.Color(0x9d63ff);
   private readonly freundlichBlau = new THREE.Color(0xa9e3ff);
   private readonly freudeKern = new THREE.Color(0x35d97a);
@@ -990,7 +1005,11 @@ export class EnergyOrb {
     const emptyTexture = new THREE.DataTexture(emptyData, 1, 1, THREE.RGBAFormat);
     emptyTexture.needsUpdate = true;
 
-    const makeReferenceMaterial = (opacity = 0.0, warp = 0.0): THREE.ShaderMaterial => {
+    const makeReferenceMaterial = (
+      opacity = 0.0,
+      warp = 0.0,
+      darkFloor = 1.0
+    ): THREE.ShaderMaterial => {
       const material = new THREE.ShaderMaterial({
         vertexShader: PLANE_VERT,
         fragmentShader: REFERENCE_FRAG,
@@ -999,6 +1018,7 @@ export class EnergyOrb {
           uTime: { value: 0.0 },
           uOpacity: { value: opacity },
           uWarp: { value: warp },
+          uDarkFloor: { value: darkFloor },
         },
         transparent: true,
         depthWrite: false,
@@ -1011,8 +1031,8 @@ export class EnergyOrb {
 
     const referenceGeo = new THREE.PlaneGeometry(2.72, 2.66);
     this.geometries.push(referenceGeo);
-    const crownA = new THREE.Mesh(referenceGeo, makeReferenceMaterial());
-    const crownB = new THREE.Mesh(referenceGeo, makeReferenceMaterial());
+    const crownA = new THREE.Mesh(referenceGeo, makeReferenceMaterial(0.0, 0.0, 0.30));
+    const crownB = new THREE.Mesh(referenceGeo, makeReferenceMaterial(0.0, 0.0, 0.30));
     crownA.renderOrder = 3;
     crownB.renderOrder = 3;
     crownA.position.z = 0.69;
@@ -1428,7 +1448,7 @@ export class EnergyOrb {
       this.referenceReflectionMaterial.uniforms.uTexture.value = this.referenceTextures.get("reflectionIdle");
       // Die Quelle besitzt bereits die gewuenschten unterbrochenen Bahnen
       // und Farbverlaeufe. Die 3D-Bogenstuecke darunter geben ihnen Tiefe.
-      this.referenceInnerTarget = 0.16;
+      this.referenceInnerTarget = 0.28;
       this.referenceOrbitTarget = 0.62;
       this.referenceReflectionTarget = 0.16;
       for (const ring of this.rings) ring.particles.visible = true;
@@ -1469,8 +1489,8 @@ export class EnergyOrb {
       waiting: 0.45, success: 0.46, warning: 0.52, error: 0.54, offline: 0.20,
     };
     const innerByState: Record<string, number> = {
-      idle: 0.16, listening: 0.13, thinking: 0.20, executing: 0.22,
-      waiting: 0.14, success: 0.15, warning: 0.18, error: 0.20, offline: 0.07,
+      idle: 0.28, listening: 0.20, thinking: 0.30, executing: 0.32,
+      waiting: 0.22, success: 0.24, warning: 0.28, error: 0.30, offline: 0.08,
     };
     if (normalized === "idle") {
       return { key: "crownIdle", scale: 1.0, orbit: orbitByState.idle, inner: innerByState.idle, reflection: 0.16 };
@@ -1630,7 +1650,7 @@ export class EnergyOrb {
     particle.lerp(this.professorPartikel, this.professorMix * 0.34);
 
     this.coreMaterial.uniforms.uGlow.value.copy(glow);
-    (this.coreMaterial.uniforms.uDeep.value as THREE.Color).copy(core).multiplyScalar(0.24);
+    (this.coreMaterial.uniforms.uDeep.value as THREE.Color).copy(core).multiplyScalar(0.30);
     this.coreMaterial.uniforms.uGlowStrength.value =
       (0.46 + a.coreGlow * 0.62) * bright;
 
@@ -1639,7 +1659,7 @@ export class EnergyOrb {
     // Farbton: Ein kleiner Zug Richtung Cyan hält Blau wirklich blau.
     // Orange bleibt dabei warm, statt über Rot ins Pink zu kippen.
     this.tonVerschieben(glow, -0.035, this.plasmaMaterial.uniforms.uColorB.value as THREE.Color);
-    this.plasmaMaterial.uniforms.uFlow.value = a.energyFlow * bright * 0.30;
+    this.plasmaMaterial.uniforms.uFlow.value = a.energyFlow * bright * 0.40;
 
     // Blau/Cyan traegt violette Nebeladern und Fasern wie die Vorlage.
     // Eindeutige Statusfarben faerben dagegen das gesamte Energiefeld.
@@ -1661,7 +1681,7 @@ export class EnergyOrb {
       clampNumber(a.smokeDensity * 0.48 * bright, 0.22, 0.62);
 
     this.tonVerschieben(core, -0.045, this.shellMaterial.uniforms.uColor.value as THREE.Color, 0.50);
-    this.shellMaterial.uniforms.uIntensity.value = 0.36 * a.lightIntensity * bright;
+    this.shellMaterial.uniforms.uIntensity.value = 0.44 * a.lightIntensity * bright;
 
     this.tonVerschieben(core, -0.045, this.coronaMaterial.uniforms.uColorA.value as THREE.Color, 0.46);
     this.tonVerschieben(core, 0.065, this.coronaMaterial.uniforms.uColorB.value as THREE.Color, 0.48);
@@ -1670,7 +1690,7 @@ export class EnergyOrb {
       blueFamily ? 0.68 : 0.10
     );
     this.coronaMaterial.uniforms.uIntensity.value =
-      (0.14 + a.energyFlow * 0.10) * a.lightIntensity * bright;
+      (0.19 + a.energyFlow * 0.11) * a.lightIntensity * bright;
 
     for (const filament of this.filaments) {
       this.tonVerschieben(core, -0.045, filament.material.uniforms.uColorA.value as THREE.Color, 0.46);
@@ -1692,7 +1712,7 @@ export class EnergyOrb {
         blueFamily ? filament.warmth * 0.58 : 0.0
       );
       filament.material.uniforms.uIntensity.value =
-        filament.gain * a.ringIntensity * bright * 0.52;
+        filament.gain * a.ringIntensity * bright * 0.58;
     }
 
     for (const ring of this.rings) {
@@ -1721,7 +1741,7 @@ export class EnergyOrb {
         blueFamily ? ring.warmth * 0.55 : 0.0
       );
       ring.material.uniforms.uIntensity.value =
-        ring.gain * a.ringIntensity * bright * this.styleRingGain * 0.26;
+        ring.gain * a.ringIntensity * bright * this.styleRingGain * 0.30;
       ring.arcMaterial.color.copy(ring.material.uniforms.uColorA.value as THREE.Color).lerp(
         ring.material.uniforms.uColorB.value as THREE.Color,
         0.34
@@ -1737,13 +1757,13 @@ export class EnergyOrb {
     }
 
     for (const transfer of this.transferArcs) {
-      this.tonVerschieben(glow, -0.045, transfer.material.uniforms.uColorA.value as THREE.Color, 0.55);
-      this.tonVerschieben(glow, 0.055, transfer.material.uniforms.uColorB.value as THREE.Color, 0.50);
-      (transfer.material.uniforms.uColorB.value as THREE.Color).lerp(
-        this.violettesBahnlicht,
-        blueFamily ? 0.55 : 0.08
-      );
-      transfer.gain = 0.82 * a.ringIntensity * bright;
+      // Synaptische Uebertragungen sind absichtlich warm und dadurch auch
+      // im blauen Grundzustand eindeutig als einzelne Ereignisse lesbar.
+      (transfer.material.uniforms.uColorA.value as THREE.Color)
+        .copy(this.synapsenRot).lerp(glow, 0.08);
+      (transfer.material.uniforms.uColorB.value as THREE.Color)
+        .copy(this.synapsenOrange).lerp(glow, 0.06);
+      transfer.gain = 1.38 * Math.max(0.72, a.ringIntensity) * bright;
       transfer.material.uniforms.uIntensity.value =
         transfer.gain * (transfer.active ? transfer.eventGain : 1.0);
     }
@@ -1884,7 +1904,7 @@ export class EnergyOrb {
     for (const filament of this.filaments) {
       filament.material.uniforms.uTime.value = this.filamentPhase;
       filament.material.uniforms.uIntensity.value =
-        filament.gain * a.ringIntensity * this.brightFactor * ringDamp * 1.82;
+        filament.gain * a.ringIntensity * this.brightFactor * ringDamp * 0.58;
       filament.group.rotation.y = this.filamentPhase * filament.speed * 0.24;
       filament.group.rotation.x = filament.baseTiltX
         + Math.sin(t * 0.031 + filament.seed * 19.0) * 0.014;
@@ -1895,7 +1915,7 @@ export class EnergyOrb {
     for (const ring of this.rings) {
       ring.material.uniforms.uTime.value = this.ringPhase;
       ring.material.uniforms.uIntensity.value =
-        ring.gain * a.ringIntensity * this.brightFactor * ringDamp * this.styleRingGain * 0.72;
+        ring.gain * a.ringIntensity * this.brightFactor * ringDamp * this.styleRingGain * 0.30;
       ring.particleMaterial.uniforms.uTime.value = this.particlePhase;
 
       // Räumliche Präzession: Jede Bahn dreht langsam um eine eigene,
@@ -1920,18 +1940,18 @@ export class EnergyOrb {
       if (chosen !== undefined) {
         chosen.active = true;
         chosen.progress = 0.0;
-        chosen.duration = 0.52 + Math.random() * 0.58;
+        chosen.duration = 1.25 + Math.random() * 0.95;
         chosen.group.rotation.z = Math.random() * Math.PI * 2.0;
         chosen.group.rotation.x = (Math.random() - 0.5) * 0.34;
         chosen.group.rotation.y = (Math.random() - 0.5) * 0.30;
-        chosen.eventGain = 0.82 + Math.random() * 0.34;
+        chosen.eventGain = 1.24 + Math.random() * 0.56;
         chosen.material.uniforms.uIntensity.value = chosen.gain * chosen.eventGain;
       }
       // Selten entsteht kurz danach eine zweite Entladung; meistens folgt
       // eine deutlich laengere, unregelmaessige Ruhephase.
-      this.transferWait = Math.random() < 0.20
-        ? 0.22 + Math.random() * 0.42
-        : 1.4 + Math.random() * 4.4;
+      this.transferWait = Math.random() < 0.16
+        ? 0.35 + Math.random() * 0.45
+        : 2.4 + Math.random() * 5.8;
     }
     let transferEnergy = 0.0;
     for (const transfer of this.transferArcs) {

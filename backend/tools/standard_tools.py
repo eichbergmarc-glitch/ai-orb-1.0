@@ -203,7 +203,19 @@ class ReadFileTool(Tool):
 
         path = decision.path
         if not path.is_file():
-            return ToolResult.failure(f"Die Datei gibt es nicht: {path}")
+            # Ein geratener Pfad ist fast immer fast richtig - also
+            # nachsehen statt aufgeben (siehe backend/tools/datei_finden.py).
+            from backend.tools.datei_finden import datei_finden, hinweis_zu
+
+            gefunden, kandidaten = await asyncio.to_thread(
+                datei_finden, path_text, list(self._security.paths.roots)
+            )
+            if gefunden is None:
+                return ToolResult.failure(hinweis_zu(path_text, kandidaten))
+            erneut = self._security.paths.check_read(str(gefunden))
+            if not erneut.allowed:
+                return ToolResult.failure(erneut.reason)
+            path = erneut.path
 
         try:
             size = path.stat().st_size

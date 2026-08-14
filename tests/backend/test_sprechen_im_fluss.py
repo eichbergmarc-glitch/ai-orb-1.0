@@ -98,6 +98,28 @@ def _orchestrator(anbieter, werkzeuge=None) -> Orchestrator:
     return orch
 
 
+def _schalter_an(orch) -> None:
+    """Schaltet ``ai.lokal_fuer_alltag`` fuer diesen Orchestrator ein.
+
+    ``ConfigLoader`` kennt kein ``set``; hier wird deshalb nur das Lesen
+    dieses einen Schluessels ueberlagert - alles andere bleibt, wie es in
+    der config.yaml steht.
+    """
+
+    echt = orch._config
+
+    class _MitSchalter:
+        def get(self, key, default=None):
+            if key == "ai.lokal_fuer_alltag":
+                return True
+            return echt.get(key, default)
+
+        def __getattr__(self, name):
+            return getattr(echt, name)
+
+    orch._config = _MitSchalter()
+
+
 def _lauf(orch, frage: str):
     """Stellt eine Frage und sammelt, was dabei gesprochen wurde."""
 
@@ -128,14 +150,44 @@ def test_saetze_werden_einzeln_gesprochen():
 
 
 def test_einfache_sprachfrage_nimmt_sofort_das_lokale_modell():
+    """Nur noch, wenn es ausdruecklich eingeschaltet ist.
+
+    Der Benutzer hat die Regel umgedreht: "der Wunschprovider ist nicht
+    ollama sondern Claude; er soll andere Modelle fuer Sub-Agenten nutzen,
+    um die Effizienz zu steigern." Die Hauptantwort kommt seither von
+    Claude; gespart wird bei den Teilaufgaben (agents.modelle).
+
+    Zwei Gruende gaben den Ausschlag, beide aus dem Protokoll: Die
+    Umleitung nahm der Anfrage die WERKZEUGE - "mach einen Printscreen,
+    lies das Dokument, merk es dir" landete beim werkzeuglosen Modell -,
+    und das kleine Modell brauchte 40 Sekunden fuer eine Antwort, die
+    Claude in vier lieferte.
+
+    Der Weg bleibt erhalten und wird hier weiter geprueft; er ist nur
+    nicht mehr die Voreinstellung.
+    """
+
+    anbieter = _Anbieter(["Das ist eine kurze Antwort."])
+    anbieter.local_provider_names = ["ollama"]
+    orch = _orchestrator(anbieter, _Werkzeuge())
+    _schalter_an(orch)
+
+    _lauf(orch, "Kannst du mir deine neuen Funktionen erklaeren?")
+
+    assert anbieter.stream_kwargs[-1]["preferred"] == "ollama"
+    assert anbieter.stream_kwargs[-1]["max_tokens"] == 40
+
+
+def test_ohne_schalter_bleibt_die_hauptantwort_bei_claude():
+    """Die Voreinstellung: Claude antwortet, nicht das lokale Modell."""
+
     anbieter = _Anbieter(["Das ist eine kurze Antwort."])
     anbieter.local_provider_names = ["ollama"]
     orch = _orchestrator(anbieter, _Werkzeuge())
 
     _lauf(orch, "Kannst du mir deine neuen Funktionen erklaeren?")
 
-    assert anbieter.stream_kwargs[-1]["preferred"] == "ollama"
-    assert anbieter.stream_kwargs[-1]["max_tokens"] == 40
+    assert anbieter.stream_kwargs[-1]["preferred"] is None
 
 
 def test_aktuelle_sprachfrage_bleibt_beim_starken_provider():
@@ -149,9 +201,12 @@ def test_aktuelle_sprachfrage_bleibt_beim_starken_provider():
 
 
 def test_allgemeine_erklaerung_bleibt_im_schnellen_sprachweg():
+    """Ebenfalls nur mit eingeschaltetem Schalter (siehe oben)."""
+
     anbieter = _Anbieter(["Ein Regenbogen entsteht durch Lichtbrechung."])
     anbieter.local_provider_names = ["ollama"]
     orch = _orchestrator(anbieter, _Werkzeuge())
+    _schalter_an(orch)
 
     _lauf(orch, "Erklaere mir in einem Satz, was ein Regenbogen ist.")
 

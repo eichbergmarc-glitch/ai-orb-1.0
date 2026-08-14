@@ -165,6 +165,8 @@ class ProviderFactory:
             results[role] = self.build(dict(section), role=role)
 
         for name, section in (ai_config.get("additional") or {}).items():
+            if not bool(section.get("enabled", True)):
+                continue
             merged = dict(section)
             merged.setdefault("engine", name)
             results[f"additional:{name}"] = self.build(merged, role=name)

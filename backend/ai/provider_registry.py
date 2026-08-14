@@ -127,6 +127,37 @@ class ProviderRegistry:
                 billing="Nach Verbrauch ueber platform.openai.com",
             ),
             ProviderInfo(
+                name="openrouter",
+                provider_class=OpenAICompatibleProvider,
+                description=(
+                    "OpenRouter ueber die OpenAI-kompatible API. Mit dem "
+                    "Free Router werden ausschliesslich kostenlose, aktuell "
+                    "verfuegbare Modelle ausgewaehlt."
+                ),
+                requires_internet=True,
+                requires_api_key=True,
+                billing="Free Router kostenlos; andere Modelle nach OpenRouter-Tarif",
+            ),
+            ProviderInfo(
+                name="grok",
+                provider_class=OpenAICompatibleProvider,
+                description=(
+                    "Grok ueber die offizielle xAI-API. Verlangt XAI_API_KEY; "
+                    "API-Aufrufe koennen Guthaben verbrauchen."
+                ),
+                requires_internet=True,
+                requires_api_key=True,
+                billing="Nach Verbrauch ueber console.x.ai",
+            ),
+            ProviderInfo(
+                name="xai",
+                provider_class=OpenAICompatibleProvider,
+                description="Alias fuer den Grok-Provider der offiziellen xAI-API.",
+                requires_internet=True,
+                requires_api_key=True,
+                billing="Nach Verbrauch ueber console.x.ai",
+            ),
+            ProviderInfo(
                 name="ollama_cloud",
                 provider_class=OpenAICompatibleProvider,
                 description=(

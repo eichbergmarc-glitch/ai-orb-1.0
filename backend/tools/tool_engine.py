@@ -178,7 +178,77 @@ def _freie_objekte(text: str) -> list[str]:
                     if any(f'"{s}"' in stueck for s in _AUFRUF_SCHLUESSEL):
                         gefunden.append(stueck)
                     start = -1
+
+    # Ein Objekt, das nie zuging - die abgeschnittene Antwort.
+    #
+    # Genau das stand im Protokoll des Benutzers:
+    #
+    #   {"werkzeug": "internet_suchen", "argumente": {"suchbegriff": "Iran"}
+    #
+    # Eine schliessende Klammer fehlt, und weil hier nur VOLLSTAENDIGE
+    # Objekte eingesammelt wurden, kam der Aufruf nie bis zum Leser. Der
+    # Rest wird mitgenommen und unten repariert; ist er unbrauchbar, faellt
+    # er dort wieder heraus.
+    if tiefe > 0 and start >= 0:
+        rest = text[start:]
+        if any(f'"{s}"' in rest for s in _AUFRUF_SCHLUESSEL):
+            gefunden.append(rest)
     return gefunden
+
+
+def _json_reparieren(text: str) -> dict[str, Any] | None:
+    """Repariert die kleinen Schreibfehler, mit denen Modelle JSON verderben.
+
+    Bewusst KONSERVATIV: Es wird nur behoben, was eindeutig ist - fehlende
+    Kommas zwischen Feldern, fehlende schliessende Klammern, ein Komma zu
+    viel am Ende, Python-Schreibweisen (True/False/None). Alles, was ein
+    Raten waere, bleibt liegen; ein falsch geratener Aufruf ist schlimmer
+    als ein nicht ausgefuehrter.
+
+    Returns:
+        Das gelesene Objekt oder ``None``, wenn es sich nicht sicher
+        herstellen liess.
+    """
+
+    kandidat = text.strip()
+    if not kandidat.startswith("{"):
+        return None
+
+    versuche: list[str] = []
+
+    # 1. Python-Schreibweisen, die Modelle gern einstreuen.
+    ersetzt = re.sub(r"\bTrue\b", "true", kandidat)
+    ersetzt = re.sub(r"\bFalse\b", "false", ersetzt)
+    ersetzt = re.sub(r"\bNone\b", "null", ersetzt)
+    versuche.append(ersetzt)
+
+    # 2. Fehlendes Komma zwischen zwei Feldern. Nur dort, wo ein Feldname
+    #    folgt - sonst wuerde in Fliesstext eingegriffen.
+    mit_komma = re.sub(r'("\s*)\n?(\s*")(?=[^"]*"\s*:)', r"\1,\2", ersetzt)
+    mit_komma = re.sub(r'([}\]])(\s*")(?=[^"]*"\s*:)', r"\1,\2", mit_komma)
+    versuche.append(mit_komma)
+
+    # 3. Ein Komma zu viel vor der schliessenden Klammer.
+    ohne_letztes = re.sub(r",(\s*[}\]])", r"\1", mit_komma)
+    versuche.append(ohne_letztes)
+
+    # 4. Fehlende schliessende Klammern anhaengen (abgeschnittene Antwort).
+    for basis in (ohne_letztes, mit_komma, ersetzt):
+        offen_geschweift = basis.count("{") - basis.count("}")
+        offen_eckig = basis.count("[") - basis.count("]")
+        if offen_geschweift > 0 or offen_eckig > 0:
+            versuche.append(
+                basis + ("]" * max(0, offen_eckig)) + ("}" * max(0, offen_geschweift))
+            )
+
+    for versuch in versuche:
+        try:
+            gelesen = json.loads(versuch)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(gelesen, dict):
+            return gelesen
+    return None
 
 
 @dataclass
@@ -254,16 +324,29 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            # Sieht es aus wie ein Aufruf und lässt sich trotzdem nicht
-            # lesen, ist das eine Meldung wert: Ein vergessenes Komma
-            # kostet sonst stillschweigend die ganze Werkzeugbenutzung,
-            # und von aussen sieht das aus, als benutze der Orb seine
-            # Werkzeuge nicht.
-            if any(f'"{s}"' in raw for s in _AUFRUF_SCHLUESSEL):
-                logger.warning(
-                    "Ein Werkzeugaufruf war kein gueltiges JSON: %s", raw[:200]
-                )
-            continue
+            # Erst reparieren, dann aufgeben.
+            #
+            # Vorher wurde hier nur gemeldet und weggeworfen - und im
+            # Protokoll des Benutzers steht, was das kostet:
+            #
+            #   {"werkzeug": "rechnen" "argumente": {}}          (Komma fehlt)
+            #   {"werkzeug": "internet_suchen", "argumente": {...   (Klammer fehlt)
+            #
+            # Beide Aufrufe waren inhaltlich vollstaendig und eindeutig; nur
+            # ein Zeichen fehlte. Das Werkzeug wurde trotzdem nicht
+            # ausgefuehrt, und von aussen sah das aus, als koenne der Orb
+            # seine Werkzeuge nicht benutzen.
+            payload = _json_reparieren(raw)
+            if payload is None:
+                if any(f'"{s}"' in raw for s in _AUFRUF_SCHLUESSEL):
+                    logger.warning(
+                        "Ein Werkzeugaufruf war kein gueltiges JSON und liess "
+                        "sich auch nicht reparieren: %s", raw[:200]
+                    )
+                continue
+            logger.info(
+                "Ein fehlerhafter Werkzeugaufruf wurde repariert: %s", raw[:120]
+            )
 
         if not _ist_aufruf(payload):
             continue

@@ -66,6 +66,17 @@ def test_health_endpoint(server):
     assert result["version"]
 
 
+def test_sse_kanal_bestaetigt_die_verbindung_sofort(server):
+    request = urllib.request.Request(
+        f"{server}/events",
+        headers={"Accept": "text/event-stream"},
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        assert response.headers.get_content_type() == "text/event-stream"
+        assert response.readline() == b"retry: 1000\n"
+        assert response.readline() == b": connected\n"
+
+
 def test_unknown_endpoint_returns_error(server):
     with pytest.raises(urllib.error.HTTPError) as error:
         _get(server, "/gibt-es-nicht")

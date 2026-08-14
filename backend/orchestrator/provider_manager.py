@@ -56,6 +56,10 @@ class ProviderManager:
         self._switch_immediately = bool(self._ai_config.get("switch_immediately", False))
         self._pending_switch: str | None = None
         self._conversation_active = False
+        # Quotenfehler werden fuer eine kurze Zeit gemerkt. Andernfalls
+        # wuerde jeder parallel gestartete Subagent erneut denselben bereits
+        # limitierten Anbieter anfragen und erst danach ausweichen.
+        self._quota_cooldowns: dict[str, float] = {}
 
         # Der vom Benutzer gewaehlte Betriebsmodus ist Laufzeitstatus und
         # gehoert deshalb nicht in die statische config.yaml. Er bleibt in
@@ -113,6 +117,12 @@ class ProviderManager:
 
         # Zusätzliche Provider aus dem optionalen Abschnitt "additional".
         for engine, section in (self._ai_config.get("additional") or {}).items():
+            if not bool(section.get("enabled", True)):
+                logger.info(
+                    "Zusätzlicher Provider '%s' ist in config.yaml deaktiviert.",
+                    engine,
+                )
+                continue
             provider_type = PROVIDER_TYPES.get(str(section.get("engine", engine)))
             if provider_type is None:
                 logger.error("Unbekannter zusätzlicher Provider: '%s'", engine)
@@ -473,6 +483,85 @@ class ProviderManager:
 
     # --- Anfragen ---------------------------------------------------------------
 
+    def _provider_order(self, preferred: str | None = None) -> list[str]:
+        """Baut die Reihenfolge fuer eine Anfrage.
+
+        Ein expliziter Wunsch stammt von einem Subagenten. In diesem Fall
+        werden nach dessen Wunsch zuerst die konfigurierten externen
+        Subagenten-Provider und das lokale Modell versucht; der aktive
+        Hauptprovider (meist Claude) kommt erst danach. Normale Dialogzuege
+        behalten dagegen unveraendert den aktiven Hauptprovider an erster
+        Stelle.
+        """
+
+        allowed = (
+            set(self.local_provider_names)
+            if self.offline_mode
+            else set(self._providers)
+        )
+        now = time.monotonic()
+        cooldowns = getattr(self, "_quota_cooldowns", {})
+        order: list[str] = []
+
+        if preferred:
+            configured = getattr(self, "_ai_config", {}).get(
+                "subagent_fallback_order", []
+            )
+            candidates = (
+                preferred,
+                *configured,
+                self._fallback_name,
+                self._active_name,
+                self._primary_name,
+            )
+        else:
+            candidates = (
+                self._active_name,
+                self._primary_name,
+                self._fallback_name,
+            )
+
+        for candidate in (*candidates, *self._providers):
+            name = str(candidate or "").strip()
+            if not name or name not in allowed or name in order:
+                continue
+            if cooldowns.get(name, 0.0) > now:
+                logger.debug("Provider '%s' wegen Quoten-Sperrfrist uebersprungen.", name)
+                continue
+            order.append(name)
+        return order
+
+    def _note_provider_error(self, name: str, error: ProviderError) -> None:
+        """Erfasst Fehler und setzt bei Quotenproblemen eine Sperrfrist."""
+
+        lowered = str(error).lower()
+        self._health.note_error(
+            name,
+            timeout="timeout" in lowered or "zeitlimit" in lowered,
+        )
+        quota_markers = (
+            "http 429",
+            "rate limit",
+            "rate_limit",
+            "usage limit",
+            "quota",
+            "kontingent",
+            "nutzungsgrenze",
+            "zu viele anfragen",
+        )
+        if any(marker in lowered for marker in quota_markers):
+            seconds = float(
+                getattr(self, "_ai_config", {}).get("quota_cooldown_seconds", 300)
+            )
+            self._quota_cooldowns = getattr(self, "_quota_cooldowns", {})
+            self._quota_cooldowns[name] = time.monotonic() + max(10.0, seconds)
+            logger.warning(
+                "Provider '%s' hat sein Kontingent erreicht und wird fuer %.0f "
+                "Sekunden bei Subagenten uebersprungen.",
+                name,
+                max(10.0, seconds),
+            )
+
     async def chat(
         self,
         messages: list[ChatMessage],
@@ -498,14 +587,7 @@ class ProviderManager:
             ProviderError: Wenn kein Provider die Anfrage bearbeiten konnte.
         """
 
-        order: list[str] = []
-        allowed = set(self.local_provider_names) if self.offline_mode else set(self._providers)
-        for candidate in (preferred, self._active_name, self._primary_name, self._fallback_name):
-            if candidate and candidate in allowed and candidate not in order:
-                order.append(candidate)
-        for name in self._providers:
-            if name in allowed and name not in order:
-                order.append(name)
+        order = self._provider_order(preferred)
 
         if not order:
             raise ProviderError("Kein KI-Provider konfiguriert.")
@@ -546,7 +628,7 @@ class ProviderManager:
                 return response
             except ProviderError as error:
                 last_error = error
-                self._health.note_error(name, timeout="Timeout" in str(error))
+                self._note_provider_error(name, error)
                 logger.warning("Provider '%s' fehlgeschlagen: %s", name, error)
 
         raise ProviderError(
@@ -572,23 +654,9 @@ class ProviderManager:
         auf den gewöhnlichen :meth:`chat` zurückfallen.
         """
 
-        allowed = set(self.local_provider_names) if self.offline_mode else set(self._providers)
-        name = preferred if preferred in allowed else self._active_name
-        if name not in allowed:
-            name = self._primary_name if self._primary_name in allowed else None
-        if not name or name not in self._providers:
-            name = next((candidate for candidate in self._providers if candidate in allowed), "")
-        if not name:
+        order = self._provider_order(preferred)
+        if not order:
             raise ProviderError("Kein KI-Provider konfiguriert.")
-
-        # Solange noch kein Text beim Benutzer angekommen ist, ist ein
-        # Providerwechsel unsichtbar und sicher. So kann ein haengender
-        # Claude-Prozess nach der kurzen Frist an Ollama uebergeben, statt
-        # das Gespraech fuer 30 bis 45 Sekunden zu blockieren.
-        order = [name]
-        for candidate in (self._fallback_name, self._primary_name, *self._providers):
-            if candidate and candidate in allowed and candidate not in order:
-                order.append(candidate)
 
         last_error: ProviderError | None = None
         for candidate in order:
@@ -608,11 +676,7 @@ class ProviderManager:
                 return
             except ProviderError as error:
                 last_error = error
-                lowered = str(error).lower()
-                self._health.note_error(
-                    candidate,
-                    timeout="timeout" in lowered or "zeitlimit" in lowered,
-                )
+                self._note_provider_error(candidate, error)
                 if delivered:
                     raise
                 logger.warning(
