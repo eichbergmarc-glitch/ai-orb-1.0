@@ -80,9 +80,9 @@ export const ENERGY_PARAMS = {
   /** Wie stark der Sprechpegel in das Leuchten eingeht (klein!). */
   audioSensitivity: 0.22,
   /** Boden-Glow: Grundgröße, Grundstärke, Kopplung an die Schwebehöhe. */
-  ground: { y: -0.94, size: 1.52, strength: 0.84, heightCoupling: 3.2 },
+  ground: { y: -0.94, size: 1.52, strength: 0.48, heightCoupling: 3.2 },
   /** Augen: Grundabstand, Grundgröße – klein; sie dürfen den Orb nie dominieren. */
-  eyes: { dx: 0.118, width: 0.033, height: 0.060, z: 0.0 },
+  eyes: { dx: 0.124, width: 0.044, height: 0.076, z: 0.0 },
   /** Wie lang ein Lichtimpuls (Erfolg/Fehler/Aufwachen) nachklingt. */
   flashSeconds: 1.1,
 } as const;
@@ -1406,13 +1406,16 @@ export class EnergyOrb {
     const loader = new THREE.TextureLoader();
     const states = ["idle", "listening", "thinking", "executing", "waiting", "success", "warning", "error", "offline"];
     const files: Record<string, string> = {
-      crownIdle: "assets/orb/reference-layers/idle-crown.png",
+      // Die vollstaendige Referenzkugel traegt den dunklen Kern und die
+      // charakteristische Flechtstruktur exakt. Augen/Symbole sind in den
+      // Dateien ausgespart und bleiben deshalb vollstaendig dynamisch.
+      crownIdle: "assets/orb/reference-layers/idle-base.png",
       innerIdle: "assets/orb/reference-layers/idle-inner-energy.png",
       orbitIdle: "assets/orb/reference-layers/idle-orbits.png",
       reflectionIdle: "assets/orb/reference-layers/idle-reflection.png",
     };
     for (const state of states) {
-      files[`state:${state}`] = `assets/orb/reference-layers/state-${state}.png`;
+      files[`state:${state}`] = `assets/orb/reference-layers/state-base-${state}.png`;
     }
 
     let remaining = Object.keys(files).length;
@@ -1425,9 +1428,9 @@ export class EnergyOrb {
       this.referenceReflectionMaterial.uniforms.uTexture.value = this.referenceTextures.get("reflectionIdle");
       // Die Quelle besitzt bereits die gewuenschten unterbrochenen Bahnen
       // und Farbverlaeufe. Die 3D-Bogenstuecke darunter geben ihnen Tiefe.
-      this.referenceInnerTarget = 0.46;
-      this.referenceOrbitTarget = 0.48;
-      this.referenceReflectionTarget = 0.34;
+      this.referenceInnerTarget = 0.16;
+      this.referenceOrbitTarget = 0.62;
+      this.referenceReflectionTarget = 0.16;
       for (const ring of this.rings) ring.particles.visible = true;
       for (const filament of this.filaments) filament.mesh.visible = true;
       this.showReferenceState(this.referenceState);
@@ -1462,22 +1465,22 @@ export class EnergyOrb {
     // dem Live-Bloom darf sie deshalb nur als dezente Bahnzeichnung
     // zugemischt werden, sonst ueberstrahlt sie nach dem Einblenden.
     const orbitByState: Record<string, number> = {
-      idle: 0.48, listening: 0.30, thinking: 0.40, executing: 0.52,
-      waiting: 0.34, success: 0.31, warning: 0.45, error: 0.46, offline: 0.16,
+      idle: 0.62, listening: 0.44, thinking: 0.50, executing: 0.58,
+      waiting: 0.45, success: 0.46, warning: 0.52, error: 0.54, offline: 0.20,
     };
     const innerByState: Record<string, number> = {
-      idle: 0.46, listening: 0.36, thinking: 0.58, executing: 0.62,
-      waiting: 0.38, success: 0.42, warning: 0.52, error: 0.56, offline: 0.15,
+      idle: 0.16, listening: 0.13, thinking: 0.20, executing: 0.22,
+      waiting: 0.14, success: 0.15, warning: 0.18, error: 0.20, offline: 0.07,
     };
     if (normalized === "idle") {
-      return { key: "crownIdle", scale: 1.0, orbit: orbitByState.idle, inner: innerByState.idle, reflection: 0.34 };
+      return { key: "crownIdle", scale: 1.0, orbit: orbitByState.idle, inner: innerByState.idle, reflection: 0.16 };
     }
     return {
       key: `state:${normalized}`,
       scale: 0.67,
       orbit: orbitByState[normalized] ?? 0.36,
       inner: innerByState[normalized] ?? 0.42,
-      reflection: normalized === "offline" ? 0.12 : 0.30,
+      reflection: normalized === "offline" ? 0.06 : 0.14,
     };
   }
 
@@ -1501,7 +1504,7 @@ export class EnergyOrb {
     // nach dem Laden heller als die perfekte Startdarstellung werden.
     // Die Referenzkrone liefert Formdetails, darf aber die live berechnete
     // Zustandsfarbe von Nebel, Huelle und Bahnen nicht ueberdecken.
-    crown.target = state === "idle" ? 0.58 : 0.52;
+    crown.target = state === "idle" ? 0.90 : 0.86;
     crown.material.uniforms.uOpacity.value = crown.opacity;
     this.referenceCrowns[1 - next].target = 0.0;
     this.referenceSlot = next;
@@ -1636,7 +1639,7 @@ export class EnergyOrb {
     // Farbton: Ein kleiner Zug Richtung Cyan hält Blau wirklich blau.
     // Orange bleibt dabei warm, statt über Rot ins Pink zu kippen.
     this.tonVerschieben(glow, -0.035, this.plasmaMaterial.uniforms.uColorB.value as THREE.Color);
-    this.plasmaMaterial.uniforms.uFlow.value = a.energyFlow * bright * 0.74;
+    this.plasmaMaterial.uniforms.uFlow.value = a.energyFlow * bright * 0.30;
 
     // Blau/Cyan traegt violette Nebeladern und Fasern wie die Vorlage.
     // Eindeutige Statusfarben faerben dagegen das gesamte Energiefeld.
@@ -1689,7 +1692,7 @@ export class EnergyOrb {
         blueFamily ? filament.warmth * 0.58 : 0.0
       );
       filament.material.uniforms.uIntensity.value =
-        filament.gain * a.ringIntensity * bright * 1.82;
+        filament.gain * a.ringIntensity * bright * 0.52;
     }
 
     for (const ring of this.rings) {
@@ -1718,15 +1721,15 @@ export class EnergyOrb {
         blueFamily ? ring.warmth * 0.55 : 0.0
       );
       ring.material.uniforms.uIntensity.value =
-        ring.gain * a.ringIntensity * bright * this.styleRingGain * 0.72;
+        ring.gain * a.ringIntensity * bright * this.styleRingGain * 0.26;
       ring.arcMaterial.color.copy(ring.material.uniforms.uColorA.value as THREE.Color).lerp(
         ring.material.uniforms.uColorB.value as THREE.Color,
         0.34
       );
       ring.arcMaterial.opacity = clampNumber(
-        0.42 + ring.gain * a.ringIntensity * bright * 0.22,
-        0.42,
-        0.78
+        0.14 + ring.gain * a.ringIntensity * bright * 0.10,
+        0.14,
+        0.30
       );
       ring.particleMaterial.uniforms.uColor.value.copy(particle);
       ring.particleMaterial.uniforms.uIntensity.value =
@@ -1749,7 +1752,10 @@ export class EnergyOrb {
     this.dustMaterial.uniforms.uIntensity.value =
       0.5 * a.particleIntensity * bright * this.styleParticleGain;
 
-    this.eyesMaterial.uniforms.uColor.value.copy(glow).lerp(this.weiss, 0.55);
+    this.eyesMaterial.uniforms.uColor.value.copy(glow).lerp(
+      this.weiss,
+      a.eyeAlert > 0.5 ? 0.06 : 0.55
+    );
     const emotionEyes: Partial<Record<OrbEmotionName, [number, number, number, number, number, number, number]>> = {
       friendly: [0.72, 0.62, 0.0, 0.0, 0.2, 0.0, 0.0],
       curious: [1.12, 0.0, 0.0, 0.0, 1.0, 0.15, 0.0],

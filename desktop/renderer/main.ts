@@ -107,9 +107,9 @@ async function bootstrap(): Promise<void> {
 
   // --- Rendering ----------------------------------------------------------
   const renderer = new OrbRenderer(canvas, {
-    bloomStrength: readConfig(config, "orb.bloom_strength", 1.18),
-    bloomRadius: readConfig(config, "orb.bloom_radius", 0.46),
-    bloomThreshold: readConfig(config, "orb.bloom_threshold", 0.18),
+    bloomStrength: readConfig(config, "orb.bloom_strength", 0.62),
+    bloomRadius: readConfig(config, "orb.bloom_radius", 0.35),
+    bloomThreshold: readConfig(config, "orb.bloom_threshold", 0.42),
     // Bei einem sichtbaren Orb von rund 90 Pixeln ist mehr als 1,5-fache
     // Renderauflösung optisch ohne Nutzen, vervielfacht aber die Kosten des
     // Bloom-Effekts und kann auf integrierten GPUs Frames auslassen.

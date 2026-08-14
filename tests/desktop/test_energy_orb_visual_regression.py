@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 
+from PIL import Image
+
 from backend.utils.paths import get_project_root
 
 STATES = get_project_root() / "desktop" / "renderer" / "states.ts"
@@ -207,10 +209,12 @@ def test_vorlagenmuster_bleiben_animiert_und_zustandsabhaengig():
     asset_dir = root / "desktop" / "assets" / "orb" / "reference-layers"
 
     for name in (
-        "idle-crown.png", "idle-inner-energy.png", "idle-orbits.png", "idle-reflection.png",
-        "state-listening.png", "state-thinking.png", "state-executing.png",
-        "state-waiting.png", "state-success.png", "state-warning.png",
-        "state-error.png", "state-offline.png",
+        "idle-base.png", "idle-crown.png", "idle-inner-energy.png",
+        "idle-orbits.png", "idle-reflection.png", "state-base-idle.png",
+        "state-base-listening.png", "state-base-thinking.png",
+        "state-base-executing.png", "state-base-waiting.png",
+        "state-base-success.png", "state-base-warning.png",
+        "state-base-error.png", "state-base-offline.png",
     ):
         assert (asset_dir / name).is_file(), name
 
@@ -220,6 +224,30 @@ def test_vorlagenmuster_bleiben_animiert_und_zustandsabhaengig():
     assert "public setState(state: OrbStateName)" in orb
     assert "energyOrb?.setState(state)" in main
     assert 'copyDirectory("desktop/assets/orb", "assets/orb")' in copy_assets
+    assert 'crownIdle: "assets/orb/reference-layers/idle-base.png"' in orb
+    assert "state-base-${state}.png" in orb
+
+
+def test_referenzbasis_behaelt_den_dunklen_kern_aber_spart_live_augen_aus():
+    asset_dir = get_project_root() / "desktop" / "assets" / "orb" / "reference-layers"
+    idle = Image.open(asset_dir / "idle-base.png").convert("RGBA")
+    assert idle.getpixel((200, 250))[3] > 240
+    assert idle.getpixel((170, 203))[3] < 12
+    assert idle.getpixel((234, 201))[3] < 12
+
+    warning = Image.open(asset_dir / "state-base-warning.png").convert("RGBA")
+    assert warning.getpixel((59, 40))[3] < 12
+    assert warning.getpixel((59, 25))[3] < 20
+
+
+def test_bloom_verstaerkt_live_funken_ohne_die_referenz_zu_verbrennen():
+    config = (get_project_root() / "config.yaml").read_text(encoding="utf-8")
+    strength = float(re.search(r"^\s+bloom_strength:\s*([0-9.]+)", config, re.MULTILINE).group(1))
+    radius = float(re.search(r"^\s+bloom_radius:\s*([0-9.]+)", config, re.MULTILINE).group(1))
+    threshold = float(re.search(r"^\s+bloom_threshold:\s*([0-9.]+)", config, re.MULTILINE).group(1))
+    assert 0.45 <= strength <= 0.75
+    assert 0.25 <= radius <= 0.42
+    assert 0.35 <= threshold <= 0.55
 
 
 def test_ueberraschungssprung_summiert_position_nicht_frameweise():
@@ -250,10 +278,10 @@ def test_transparenter_webgl_puffer_bleibt_bis_zur_desktopkomposition_erhalten()
 
 def test_original_orbits_sind_sichtbar_aber_gegen_ueberstrahlen_begrenzt():
     orb = ORB.read_text(encoding="utf-8")
-    assert "idle: 0.48" in orb
-    assert "this.referenceOrbitTarget = 0.48" in orb
-    assert 'crown.target = state === "idle" ? 0.58 : 0.52' in orb
-    assert "this.referenceInnerTarget = 0.46" in orb
+    assert "idle: 0.62" in orb
+    assert "this.referenceOrbitTarget = 0.62" in orb
+    assert 'crown.target = state === "idle" ? 0.90 : 0.86' in orb
+    assert "this.referenceInnerTarget = 0.16" in orb
     assert "ring.particles.visible = true" in orb
 
 
@@ -323,7 +351,7 @@ def test_bodenspiegelung_folgt_orbitfarben_und_entladungen():
     assert "float transfer" in shader
     assert "this.groundMaterial.uniforms.uOrbitPhase.value = this.ringPhase" in orb
     assert "this.groundMaterial.uniforms.uTransferEnergy.value = this.transferReflection" in orb
-    assert "this.referenceReflectionTarget = 0.34" in orb
+    assert "this.referenceReflectionTarget = 0.16" in orb
 
 
 def test_zustandsfarben_faerben_kern_nebel_huelle_und_atomsegmente():

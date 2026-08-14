@@ -46,6 +46,13 @@
       </div>
       <div id="diagnostics-content" class="diagnostics__content">Status wird geladen …</div>
     </aside>
+    <!--
+      Stellt ausschliesslich im normalen Browser eine lokale, nebenwirkungsfreie
+      Vorschau-Bruecke bereit. In Electron existiert window.aiOrb bereits und
+      die Datei veraendert nichts. So kann die echte WebGL-Ausgabe automatisch
+      gegen die Referenz geprueft werden, statt nur Shadertext zu testen.
+    -->
+    <script src="preview-bridge.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

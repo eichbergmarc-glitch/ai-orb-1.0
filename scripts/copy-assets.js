@@ -55,6 +55,7 @@ function copyDirectory(source, destination) {
 fs.mkdirSync(outputDir, { recursive: true });
 
 copyFile("desktop/renderer/index.html", "index.html");
+copyFile("desktop/renderer/preview-bridge.js", "preview-bridge.js");
 copyFile("desktop/styles/orb.css", "styles/orb.css");
 copyFile("desktop/styles/themes.css", "styles/themes.css");
 copyDirectory("desktop/assets/icons", "assets/icons");
