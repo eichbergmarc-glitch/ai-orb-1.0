@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import queue
-import threading
 import urllib.error
 import urllib.request
 from collections.abc import AsyncIterator
 from typing import Any
+
+import httpx
 
 from backend.orchestrator.providers.base_provider import (
     BaseProvider,
@@ -44,6 +44,11 @@ class OllamaProvider(BaseProvider):
         # Das Modell im Arbeitsspeicher halten - sonst laedt Ollama es nach
         # jeder Pause neu, und die erste Offline-Antwort dauert dann lange.
         self._keep_alive = str(settings.get("keep_alive", "30m"))
+        self._first_token_timeout = max(
+            1.0,
+            float(settings.get("first_token_timeout", min(self._timeout, 10.0))),
+        )
+        self._warmup_tokens = max(1, int(settings.get("warmup_tokens", 8)))
         # Ein kleineres Modell schweift leichter ab; eine nuechternere
         # Vorgabe haelt es beim Werkzeugformat.
         roh = settings.get("temperature")
@@ -195,10 +200,27 @@ class OllamaProvider(BaseProvider):
                 f"{self._base_url}/api/chat",
                 {
                     "model": self._model,
-                    "messages": [{"role": "user", "content": "Hallo"}],
+                    # Nicht nur das Modell laden, sondern auch einen kurzen
+                    # echten Dialogdurchlauf ausfuehren. Ein Ein-Token-Ping
+                    # meldete bereits "warm", obwohl der erste Benutzerzug
+                    # danach noch bis zu neun Sekunden auf die erste
+                    # Dekodierung wartete.
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Du bist AI-Orb. Antworte auf Deutsch, direkt, "
+                                "freundlich und in kurzen gesprochenen Saetzen."
+                            ),
+                        },
+                        {"role": "user", "content": "Sage kurz, dass du bereit bist."},
+                    ],
                     "stream": False,
                     "keep_alive": self._keep_alive,
-                    "options": {"num_predict": 1},
+                    "options": {
+                        "num_predict": self._warmup_tokens,
+                        "temperature": self._temperatur,
+                    },
                 },
                 versuche=2,
             )
@@ -215,14 +237,7 @@ class OllamaProvider(BaseProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
-        """Streamt die Antwort Stück für Stück (Ollama kann das nativ).
-
-        Ollama liefert bei ``stream: true`` zeilenweise JSON, jede Zeile mit
-        einem kleinen Textstück. Weil ``urllib`` blockierend liest, läuft
-        das Lesen in einem Thread und reicht die Stücke über eine Queue an
-        die Ereignisschleife weiter – so blockiert das Streamen die
-        Oberfläche nicht.
-        """
+        """Stream to Ollama while propagating cancellation to the socket."""
 
         options: dict[str, Any] = {
             "temperature": temperature if temperature is not None else self._temperatur
@@ -237,23 +252,60 @@ class OllamaProvider(BaseProvider):
             "keep_alive": self._keep_alive,
             "options": options,
         }
-        if options:
-            payload["options"] = options
+        timeout = httpx.Timeout(
+            timeout=self._timeout,
+            connect=min(self._timeout, 5.0),
+        )
+        loop = asyncio.get_running_loop()
+        first_deadline = loop.time() + self._first_token_timeout
+        received_text = False
 
-        chunks: queue.Queue[str | None] = queue.Queue()
-        error_box: list[str] = []
-
-        def reader() -> None:
-            try:
-                request = urllib.request.Request(
-                    f"{self._base_url}/api/chat",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                request = client.build_request(
+                    "POST", f"{self._base_url}/api/chat", json=payload
                 )
-                with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                    for line in response:
-                        text = line.decode("utf-8", errors="replace").strip()
+                try:
+                    response = await asyncio.wait_for(
+                        client.send(request, stream=True),
+                        timeout=self._first_token_timeout,
+                    )
+                except asyncio.TimeoutError as error:
+                    raise ProviderError(
+                        "ollama: Keine Antwortverbindung innerhalb von "
+                        f"{self._first_token_timeout:.0f} s."
+                    ) from error
+                try:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode("utf-8", errors="replace")
+                        raise ProviderError(
+                            f"ollama: HTTP {response.status_code} - {body[:500]}"
+                        )
+
+                    iterator = response.aiter_lines()
+                    while True:
+                        remaining = (
+                            max(0.01, first_deadline - loop.time())
+                            if not received_text
+                            else self._timeout
+                        )
+                        try:
+                            line = await asyncio.wait_for(
+                                anext(iterator), timeout=remaining
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError as error:
+                            if not received_text:
+                                raise ProviderError(
+                                    "ollama: Kein erstes Textstueck innerhalb von "
+                                    f"{self._first_token_timeout:.0f} s."
+                                ) from error
+                            raise ProviderError(
+                                "ollama: Der Antwortstrom ist stehen geblieben."
+                            ) from error
+
+                        text = line.strip()
                         if not text:
                             continue
                         try:
@@ -262,22 +314,13 @@ class OllamaProvider(BaseProvider):
                             continue
                         piece = str((data.get("message") or {}).get("content", ""))
                         if piece:
-                            chunks.put(piece)
+                            received_text = True
+                            yield piece
                         if data.get("done"):
                             break
-            except (urllib.error.URLError, TimeoutError, OSError) as error:
-                error_box.append(str(error))
-            finally:
-                chunks.put(None)
-
-        thread = threading.Thread(target=reader, daemon=True)
-        thread.start()
-
-        while True:
-            piece = await asyncio.to_thread(chunks.get)
-            if piece is None:
-                break
-            yield piece
-
-        if error_box:
-            raise ProviderError(f"ollama: Streaming abgebrochen – {error_box[0]}")
+                finally:
+                    await response.aclose()
+        except ProviderError:
+            raise
+        except (httpx.HTTPError, OSError) as error:
+            raise ProviderError(f"ollama: Streaming abgebrochen - {error}") from error

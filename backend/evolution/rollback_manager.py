@@ -33,6 +33,7 @@ class RestorePoint:
     commit: str = ""
     version: str = ""
     files: list[str] = field(default_factory=list)
+    new_files: list[str] = field(default_factory=list)
     backup_path: str = ""
     test_summary: str = ""
     created_at: float = field(default_factory=time.time)
@@ -48,6 +49,7 @@ class RestorePoint:
             "commit": self.commit,
             "version": self.version,
             "files": self.files,
+            "new_files": self.new_files,
             "backup_path": self.backup_path,
             "test_summary": self.test_summary,
             "created_at": self.created_at,
@@ -100,6 +102,9 @@ class RollbackManager:
             commit=commit,
             version=version,
             files=list(files),
+            new_files=[
+                relative for relative in files if not (self._root / relative).exists()
+            ],
             test_summary=test_summary,
         )
 
@@ -144,11 +149,21 @@ class RollbackManager:
             return {"restored": False, "message": "Die Sicherung ist nicht mehr vorhanden."}
 
         restored: list[str] = []
+        removed: list[str] = []
         failed: list[str] = []
 
         for relative in target_point.get("files", []) or []:
             source = backup_dir / relative
             destination = self._root / relative
+            if relative in (target_point.get("new_files", []) or []):
+                try:
+                    if destination.exists():
+                        destination.unlink()
+                    removed.append(relative)
+                except OSError as error:
+                    logger.error("Entfernen der neuen Datei %s fehlgeschlagen: %s", relative, error)
+                    failed.append(relative)
+                continue
             if not source.exists():
                 failed.append(relative)
                 continue
@@ -165,13 +180,14 @@ class RollbackManager:
 
         logger.info("Rollback %s: %d Datei(en) wiederhergestellt.", point_id, len(restored))
         return {
-            "restored": bool(restored),
+            "restored": bool(restored or removed),
             "restored_files": restored,
+            "removed_files": removed,
             "failed_files": failed,
             "message": (
-                f"{len(restored)} Datei(en) auf den Stand vor „{target_point.get('title')}“ "
-                "zurückgesetzt."
-                if restored
+                f"{len(restored)} Datei(en) wiederhergestellt und "
+                f"{len(removed)} neu angelegte Datei(en) entfernt."
+                if restored or removed
                 else "Es konnte keine Datei wiederhergestellt werden."
             ),
         }

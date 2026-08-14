@@ -21,6 +21,7 @@ from backend.agents.history_agent import professor_engine, research_question_eng
 from backend.agents.history_agent import socratic_engine
 from backend.agents.history_agent.learning_profile import LearningProfile
 from backend.agents.history_agent.mentor_engine import MentorEngine
+from backend.agents.history_agent.bridge import ProfessorSession
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +196,19 @@ def test_einsteiger_bekommt_den_tutor(tmp_path):
     assert professor_engine.detect_role("socratic", profil) == "tutor"
 
 
+def test_allgemeine_erklaerung_nutzt_den_kompakten_professor(tmp_path, monkeypatch):
+    session = ProfessorSession()
+
+    prompt = session.prompt_for(
+        "Erklaere mir in einem Satz, was ein Regenbogen ist."
+    )
+
+    assert prompt
+    assert len(prompt) < 500
+    assert "keine historische Recherche" in prompt
+    assert session.status()["modus"] == "erklaeren"
+
+
 # ---------------------------------------------------------------------------
 #  Betreuung
 # ---------------------------------------------------------------------------
@@ -286,4 +300,3 @@ def test_agent_haelt_den_laufenden_modus(tmp_path, monkeypatch):
 
     asyncio.run(agent.handle(AgentTask(text="Die Bauern waren unzufrieden.")))
     assert agent._mode == "quellenkritik", "Der Vorgang wurde durch eine Antwort beendet."
-

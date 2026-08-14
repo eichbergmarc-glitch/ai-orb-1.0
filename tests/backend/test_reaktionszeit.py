@@ -72,6 +72,17 @@ def test_ohne_frische_antwort_wird_sehr_wohl_gefragt():
     assert anbieter.gefragt == 1
 
 
+def test_bestaetigt_abwesender_provider_wird_nicht_jede_minute_gestartet():
+    monitor = ProviderHealth(interval_seconds=60)
+    anbieter = _Anbieter(erreichbar=False)
+    monitor.register(anbieter)
+
+    asyncio.run(monitor.check_now(force=True))
+    asyncio.run(monitor.check_now())
+
+    assert anbieter.gefragt == 1
+
+
 def test_eine_alte_antwort_zaehlt_nicht_mehr():
     """Meldet sich der Anbieter zwischendurch ab, soll das auffallen."""
 
@@ -100,11 +111,37 @@ def test_die_startpruefung_fragt_wirklich_nach():
     assert anbieter.gefragt == 1
 
 
+def test_hintergrundpruefung_konkurriert_nicht_mit_einer_antwort():
+    """Ein Health-Check darf keinen Prozess waehrend des Dialogzugs starten."""
+
+    monitor = ProviderHealth(interval_seconds=60)
+    anbieter = _Anbieter()
+    monitor.register(anbieter)
+    monitor.set_busy_check(lambda: True)
+
+    ergebnis = asyncio.run(monitor.check_now())
+
+    assert anbieter.gefragt == 0
+    assert ergebnis == {"test": False}
+
+
+def test_erzwungene_pruefung_bleibt_auch_waehrend_dialog_moeglich():
+    monitor = ProviderHealth(interval_seconds=60)
+    anbieter = _Anbieter()
+    monitor.register(anbieter)
+    monitor.set_busy_check(lambda: True)
+
+    asyncio.run(monitor.check_now(force=True))
+
+    assert anbieter.gefragt == 1
+
+
 def test_die_grenzen_sind_vernuenftig_gewaehlt():
     """Zu lang, und ein Ausfall faellt erst nach einer Viertelstunde auf."""
 
     assert 120.0 <= ProviderHealth.VERTRAUENSDAUER <= 600.0
     assert ProviderHealth.MAX_INTERVAL <= 1800.0
+    assert 120.0 <= ProviderHealth.UNAVAILABLE_RETRY_INTERVAL <= 600.0
 
 
 def test_der_abstand_geht_bei_einem_fehlschlag_sofort_zurueck():

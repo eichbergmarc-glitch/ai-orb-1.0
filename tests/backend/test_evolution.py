@@ -128,6 +128,30 @@ def test_rollback_restores_previous_content(tmp_path):
     assert target.read_text(encoding="utf-8") == "original\n"
 
 
+def test_rollback_removes_files_created_after_restore_point(tmp_path):
+    project = tmp_path / "projekt"
+    project.mkdir()
+    manager = RollbackManager(root=project)
+    point = manager.create_point(
+        patch_id="new-file",
+        title="Neue Datei",
+        description="Test",
+        branch="",
+        commit="",
+        version="",
+        files=["backend/neu.py"],
+    )
+    created = project / "backend" / "neu.py"
+    created.parent.mkdir(parents=True)
+    created.write_text("print('neu')", encoding="utf-8")
+
+    report = manager.rollback(point.id)
+
+    assert report["restored"] is True
+    assert report["removed_files"] == ["backend/neu.py"]
+    assert not created.exists()
+
+
 def test_rollback_records_are_listed(tmp_path):
     project = tmp_path / "projekt"
     (project / "backend").mkdir(parents=True)

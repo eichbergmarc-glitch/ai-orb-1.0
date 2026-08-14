@@ -85,6 +85,65 @@ def test_ollama_schickt_keep_alive_mit(monkeypatch):
     assert "options" in gesehen and "temperature" in gesehen["options"]
 
 
+def test_ollama_waermt_mit_einem_echten_kurzen_dialog_vor(monkeypatch):
+    from backend.orchestrator.providers.ollama_provider import OllamaProvider
+
+    provider = OllamaProvider({"model": "llama3.2:3b", "warmup_tokens": 8})
+    gesehen: dict = {}
+
+    async def _fake(url, payload, *, versuche=3):
+        gesehen.update(payload)
+        return {"message": {"content": "Bereit"}}
+
+    monkeypatch.setattr(provider, "_mit_ladegeduld", _fake)
+
+    assert asyncio.run(provider.waermen()) is True
+    assert len(gesehen["messages"]) == 2
+    assert gesehen["options"]["num_predict"] == 8
+
+
+def test_ollama_stream_is_async_and_forwards_the_speech_limit(monkeypatch):
+    import json
+    import httpx
+    from backend.orchestrator.providers import ollama_provider as module
+    from backend.orchestrator.providers.base_provider import ChatMessage
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content.decode("utf-8")))
+        body = (
+            b'{"message":{"content":"Hallo "},"done":false}\n'
+            b'{"message":{"content":"Welt."},"done":true}\n'
+        )
+        return httpx.Response(200, content=body)
+
+    original_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        return original_client(
+            transport=httpx.MockTransport(handler),
+            timeout=kwargs.get("timeout"),
+        )
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", client_factory)
+    provider = module.OllamaProvider(
+        {"model": "llama3.1:8b", "timeout": 5, "first_token_timeout": 2}
+    )
+
+    async def collect() -> list[str]:
+        return [
+            piece
+            async for piece in provider.chat_stream(
+                [ChatMessage(role="user", content="Hallo")], max_tokens=72
+            )
+        ]
+
+    assert asyncio.run(collect()) == ["Hallo ", "Welt."]
+    assert seen["options"]["num_predict"] == 72
+    assert seen["keep_alive"]
+
+
 def test_das_lokale_modell_bekommt_dieselben_nachrichten():
     """Werkzeuge und Gedaechtnis kommen ueber die messages - fuer JEDEN Provider gleich.
 

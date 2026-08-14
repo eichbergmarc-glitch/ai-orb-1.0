@@ -87,7 +87,9 @@ class TestingEngine:
     def __init__(self, timeout_seconds: float = 600.0) -> None:
         self._timeout = timeout_seconds
 
-    def run_all(self, workspace: Path) -> TestReport:
+    def run_all(
+        self, workspace: Path, *, changed_files: list[str] | None = None
+    ) -> TestReport:
         """Führt alle Prüfungen für eine Arbeitskopie aus.
 
         Args:
@@ -103,7 +105,7 @@ class TestingEngine:
         report.runs.append(self.integration_tests(workspace))
         report.runs.append(self.regression_tests(workspace))
         report.runs.append(self.performance_tests(workspace))
-        report.runs.append(self.security_check(workspace))
+        report.runs.append(self.security_check(workspace, changed_files=changed_files))
 
         logger.info("Testlauf abgeschlossen: %s", report.summary)
         return report
@@ -255,7 +257,9 @@ class TestingEngine:
             output=f"Importdauer: {seconds:.3f} s\n{result.stderr}",
         )
 
-    def security_check(self, workspace: Path) -> TestRun:
+    def security_check(
+        self, workspace: Path, *, changed_files: list[str] | None = None
+    ) -> TestRun:
         """Prüft den geänderten Code auf sicherheitskritische Muster."""
 
         started = time.perf_counter()
@@ -268,7 +272,15 @@ class TestingEngine:
         )
 
         findings: list[str] = []
-        for path in (workspace / "backend").rglob("*.py"):
+        if changed_files is None:
+            paths = list((workspace / "backend").rglob("*.py"))
+        else:
+            paths = [
+                workspace / relative
+                for relative in changed_files
+                if relative.startswith("backend/") and relative.endswith(".py")
+            ]
+        for path in paths:
             if "__pycache__" in path.parts:
                 continue
             try:

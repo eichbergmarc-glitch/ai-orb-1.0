@@ -107,7 +107,11 @@ export class PresenceEngine {
 
     // --- Neigung ------------------------------------------------------------
     group.rotation.z = Math.sin(elapsed * 0.31 * speed) * this.options.tiltAmount;
-    group.rotation.x += Math.sin(elapsed * 0.23) * 0.0006;
+    // Absolut setzen, nicht pro Bild addieren. Das frühere `+=` summierte
+    // winzige Werte über Tausende Frames auf und erzeugte dadurch ein
+    // langsames Wegdriften mit sichtbaren Korrektursprüngen.
+    group.rotation.x =
+      Math.sin(elapsed * 0.23 * speed) * this.options.tiltAmount * 0.28;
   }
 
   /**

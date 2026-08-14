@@ -169,7 +169,9 @@ class EvolutionEngine:
             return {"validated": False, "message": "Unbekannter Patch."}
 
         workspace = Path(patch.workspace)
-        test_report = self.tests.run_all(workspace)
+        test_report = self.tests.run_all(
+            workspace, changed_files=patch.files_changed
+        )
         review_report = self.review.review(patch)
         benchmark = self.benchmarks.compare(workspace) if run_benchmark else None
 

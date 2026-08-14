@@ -565,6 +565,7 @@ class ToolEngine:
         first_reply: str,
         *,
         actor: str = "gespraech",
+        preexecuted: dict[str, str] | None = None,
     ) -> tuple[str, list[ToolRun]]:
         """Führt Werkzeugaufrufe aus einer bereits erhaltenen Antwort aus.
 
@@ -590,9 +591,34 @@ class ToolEngine:
         last_signature = ""
         history = list(messages)
         nachgehakt = False
+        bereits = dict(preexecuted or {})
 
         for _round in range(self._max_rounds):
             calls = parse_tool_calls(text) if self.enabled else []
+            if calls and bereits:
+                doppelte = [call for call in calls if call.tool in bereits]
+                calls = [call for call in calls if call.tool not in bereits]
+                if doppelte:
+                    logger.info(
+                        "Bereits vorab ausgefuehrte Werkzeuge nicht wiederholt: %s",
+                        ", ".join(sorted({call.tool for call in doppelte})),
+                    )
+                    # Besteht die Antwort nur aus dem wiederholten Aufruf,
+                    # ist das vorab beschaffte Ergebnis selbst bereits die
+                    # passende Antwort. Es erneut durch dasselbe Werkzeug und
+                    # danach noch einmal durchs Modell zu schicken, verdoppelt
+                    # nur die Wartezeit und kann den Befund sogar veraendern.
+                    if not calls:
+                        normaler_text = strip_tool_calls(text).strip()
+                        if len(normaler_text) >= 40:
+                            return normaler_text, runs
+                        antworten = [
+                            bereits[call.tool].strip()
+                            for call in doppelte
+                            if bereits.get(call.tool, "").strip()
+                        ]
+                        if antworten:
+                            return "\n\n".join(dict.fromkeys(antworten)), runs
             if not calls:
                 # Auch das Ausbleiben gehoert ins Protokoll.
                 #

@@ -118,7 +118,7 @@ orb:
   # ueberblendet, es gibt keine harten Wechsel).
   # Kurz genug, dass auch ein schnelles Werkzeug sichtbar orange/gruen/rot
   # wird; weiterhin weich genug, dass Farbe und Augen nicht hart springen.
-  transition_seconds: 0.35
+  transition_seconds: 0.65
 
   # ---------------------------------------------------------------------------
   # Die Animation – vom Orb selbst veränderbar
@@ -160,7 +160,7 @@ orb:
   # bleiben davon unberuehrt - Zuhoeren und Nachdenken sind weiter rot,
   # weil das eine Auskunft ist und keine Geschmacksfrage. Der Verlauf des
   # Kerns wird dann zu einem Purpur, bleibt also ein Verlauf.
-  theme: "neon"
+  theme: "blue"
   # Zielbildrate der Orb-Animation.
   target_fps: 60
   # Auch ohne Mausbewegung flüssig bleiben. Die frühere Absenkung auf
@@ -168,9 +168,12 @@ orb:
   idle_fps: 60
   # Begrenzte interne Renderauflösung: Bei dem kompakten Orb nicht sichtbar,
   # entlastet aber Bloom und integrierte Grafikkarten deutlich.
-  max_pixel_ratio: 1.5
+  max_pixel_ratio: 1.1
   # Automatische Qualitätsanpassung bei geringer Leistung.
-  adaptive_quality: true
+  # Feste Qualität verhindert, dass komplette Ring-/Staubebenen während
+  # der Animation plötzlich ein- oder ausgeblendet werden. Die reduzierte
+  # Renderauflösung oben hält die GPU-Last stattdessen konstant niedrig.
+  adaptive_quality: false
   # Intensität des Bloom-Postprocessing-Effekts (0.0 – 3.0).
   bloom_strength: 1.18
   bloom_radius: 0.46
@@ -278,7 +281,10 @@ ai:
     executable: ""
     # Zusätzliche Argumente für die Befehlszeile (normalerweise leer).
     extra_args: []
-    timeout: 180
+    # Ein Gespraech darf nicht minutenlang an einem einzelnen Cloud-Aufruf
+    # haengen. Bildanalysen lagen im Betrieb bei 12-26 s; 45 s lassen dafuer
+    # Luft und geben danach dem lokalen Rueckfallmodell die Chance.
+    timeout: 45
 
     # Sperrfrist (Minuten), nachdem Claudes Nutzungsgrenze erreicht wurde.
     #
@@ -329,7 +335,10 @@ ai:
     # der nach einer Minute kein Zeichen von sich gegeben hat, laedt nicht -
     # er haengt. Danach wird er verworfen und die Frage auf dem alten Weg
     # neu gestellt.
-    warm_timeout: 75
+    # Ein schon wartender Prozess braucht keine Anlaufminute. Kommt nach
+    # zwoelf Sekunden kein einziges Lebenszeichen, wird er ersetzt, statt
+    # den ganzen Dialog zu blockieren.
+    warm_timeout: 12
 
     # Laesst beim Start alles weg, was fuer eine gesprochene Antwort nichts
     # beitraegt: fremde MCP-Server, Einstellungsdateien, Skills, das Ablegen
@@ -359,23 +368,25 @@ ai:
     engine: "ollama"
     # Das lokale Offline-Modell.
     #
-    # llama3.1:8b, weil es AUF DIESEM RECHNER SCHON INSTALLIERT IST. Das
-    # Protokoll zeigte den Grund, hier genau zu sein: Der Orb war auf
-    # qwen2.5:7b-instruct eingestellt, das aber gar nicht geladen war
-    # ("Ollama laeuft, aber Modell 'qwen2.5:7b-instruct' ist nicht
-    # installiert. Verfuegbar: llama3.1:8b, llama3.2:3b"). Damit sprang
-    # offline nichts ein - die beste Wahl nuetzt nichts, wenn sie fehlt.
-    #
-    # llama3.1 8B ist stark im Deutschen und im Werkzeug-Einsatz und laeuft
-    # fluessig auf 16 GB RAM ohne Grafikkarte. Es ist ab sofort da, ohne
-    # dass noch etwas geladen werden muss. Wer lieber qwen2.5:7b-instruct
-    # haette, holt es mit OFFLINE-EINRICHTEN.bat und traegt es hier ein.
-    model: "llama3.1:8b"
+    # llama3.2:3b ist auf diesem Rechner installiert und erreicht bei kurzen
+    # Sprachdialogen deutlich schneller das erste Wort als die ebenfalls
+    # vorhandenen 7B-/8B-Modelle. Fuer laengere oder werkzeugintensive
+    # Aufgaben bleibt im Automatikbetrieb der staerkere Hauptprovider
+    # zustaendig; im bewussten Offlinebetrieb arbeitet dieses lokale Modell.
+    model: "llama3.2:3b"
     base_url: "http://127.0.0.1:11434"
     timeout: 120
+    # Ein lokales Modell darf nicht minutenlang still rechnen. Wenn nach
+    # dieser Frist noch kein Textstueck vorliegt, bricht die Anfrage sauber
+    # ab und blockiert nicht den naechsten Gespraechszug.
+    first_token_timeout: 10
     # Das Modell nach der ersten Nutzung im Arbeitsspeicher halten, damit
     # die naechste Offline-Antwort nicht wieder auf das Laden wartet.
     keep_alive: "30m"
+    # Ein echter kurzer Dialog wird beim Start einmal komplett durchlaufen.
+    # Ein einzelner Ping lud zwar das Modell, beseitigte aber nicht die lange
+    # erste Dekodierung des anschliessenden Benutzerzugs.
+    warmup_tokens: 8
     # Etwas nuechterner als die Vorgabe - ein kleineres Modell schweift
     # sonst eher ab und vergisst das Werkzeugformat.
     temperature: 0.4
@@ -805,8 +816,16 @@ evolution:
   require_user_approval: true
   # Abhängigkeiten werden niemals automatisch installiert.
   auto_install_dependencies: false
-  # Quellcode wird nicht an externe Dienste übertragen.
+  # Die allgemeine, automatische Evolution überträgt keinen Quellcode.
   allow_external_code_transfer: false
+  live_development:
+    enabled: true
+    # Ausschließlich ein ausdrücklich gesprochener/geschriebener
+    # Entwicklungsauftrag darf relevante Ausschnitte an den aktiven
+    # Online-Codeanbieter senden. Im Offlinebetrieb bleibt alles lokal.
+    allow_external_code_transfer: true
+    max_files: 10
+    max_context_characters: 100000
   # Schwellwerte der Codeanalyse.
   max_function_lines: 60
   max_module_lines: 500
@@ -894,6 +913,11 @@ security:
 # Sprachsteuerung (Phasen 2, 4, 15)
 # =============================================================================
 voice:
+  # Kurze Antworten halten den Dialog beweglich. Das lokale 8B-Modell
+  # benoetigte mit 192 Tokens trotz fruehem ersten Satz insgesamt 14 s.
+  # 40 Tokens reichen fuer eine kurze gesprochene Antwort und verhindern,
+  # dass das lokale Modell bei mehreren Fragen in Folge immer langsamer wird.
+  spoken_max_tokens: 40
   # Gesamtschalter der Sprachsteuerung.
   enabled: true
   # Beim Start selbsttaetig zuhoeren. Es wird vorher nach dem Mikrofon gefragt.

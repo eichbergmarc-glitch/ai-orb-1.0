@@ -82,6 +82,29 @@ def test_ein_befehl_loest_gar_nichts_aus():
     assert not _regel("Oeffne den Browser")
 
 
+def test_kurze_fortsetzungen_loesen_keine_vollrecherche_aus():
+    """Der Professor bleibt aktiv, aber ein Nachtrag ist keine neue Frage."""
+
+    for nachtrag in (
+        "Wissenschaftlich.",
+        "Ja, genau.",
+        "Schritt fuer Schritt.",
+        "Mach bitte weiter.",
+    ):
+        assert not _regel(nachtrag, _PROFESSOR), nachtrag
+
+
+def test_allgemeine_erklaerung_startet_keine_fachrecherche():
+    assert not _regel(
+        "Erklaere mir in einem Satz, was ein Regenbogen ist.",
+        _PROFESSOR,
+    )
+
+
+def test_ausdrueckliche_quellensuche_bleibt_auch_kurz_verbindlich():
+    assert _regel("Quellen bitte.", _PROFESSOR)
+
+
 # --- Die Domaenen aus den Favoriten ---------------------------------------------------
 
 

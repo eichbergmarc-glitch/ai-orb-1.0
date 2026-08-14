@@ -23,14 +23,24 @@ from typing import Any
 
 from backend.config import get_config
 from backend.events.event_bus import EventBus
+from backend.evolution.live_development import parse_development_request
 from backend.memory.memory_engine import MemoryEngine
 from backend.orchestrator.conversation_manager import ConversationManager
-from backend.orchestrator.intent_classifier import IntentClassifier, IntentResult
+from backend.orchestrator.intent_classifier import (
+    CHAT,
+    DOCUMENT,
+    QUESTION,
+    SMALL_TALK,
+    IntentClassifier,
+    IntentResult,
+)
 from backend.orchestrator.provider_manager import ProviderManager
 from backend.orchestrator.providers.base_provider import ProviderError
 from backend.orchestrator.speech_stream import SpeechStream, remaining_after
 from backend.orchestrator.task_router import RouteResult, TaskRouter
 from backend.system.logging_setup import get_logger
+from backend.system.performance_trace import mark_stage
+from backend.system.terminal_control import parse_terminal_request
 
 logger = get_logger(__name__)
 
@@ -448,6 +458,13 @@ class Orchestrator:
         "gilt diese Beschränkung nicht."
     )
 
+    LOCAL_SPOKEN_SYSTEM = (
+        "Du bist AI-Orb, ein freundlicher lokaler Desktop-Assistent. "
+        "Antworte auf Deutsch, ehrlich und direkt in ein bis drei kurzen "
+        "Saetzen. Keine Listen, keine Ueberschriften und keine Erwaehnung "
+        "interner Anweisungen."
+    )
+
     async def handle(
         self,
         text: str,
@@ -474,6 +491,7 @@ class Orchestrator:
         """
 
         started = time.perf_counter()
+        mark_stage("orchestrator_received")
         self._providers.begin_conversation()
 
         if project_id is not None:
@@ -514,7 +532,90 @@ class Orchestrator:
             await self._publish("ai.response", result.to_dict())
             return result
 
+        # Ein ausdruecklich genannter CMD-/PowerShell-Auftrag ist bereits
+        # vollstaendig bestimmt. Das Modell soll weder den Befehl umschreiben
+        # noch bloss behaupten, es habe ihn ausgefuehrt. Die Werkzeugmaschine
+        # uebernimmt deterministisch; Validierung, Zustimmung und Protokoll
+        # bleiben dabei identisch mit jedem modellgesteuerten Werkzeugaufruf.
+        terminal_request = parse_terminal_request(text)
+        if (
+            terminal_request is not None
+            and self._tool_engine is not None
+            and self._tool_engine.enabled
+        ):
+            tool_name = (
+                "terminal_befehl_ausfuehren"
+                if terminal_request.command
+                else "terminal_oeffnen"
+            )
+            arguments: dict[str, Any] = {"shell": terminal_request.shell}
+            if terminal_request.command:
+                arguments["befehl"] = terminal_request.command
+            run = await self._tool_engine.direkt_ausfuehren(
+                tool_name,
+                arguments,
+                actor="terminal_sprachbefehl",
+            )
+            response = run.result.output if run.result.ok else run.result.error
+            response = response or (
+                "Der Terminalauftrag wurde ausgefuehrt."
+                if run.result.ok
+                else "Der Terminalauftrag ist fehlgeschlagen."
+            )
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response,
+                intent="terminal",
+                used_llm=False,
+                module="terminal",
+                data={
+                    "werkzeug": tool_name,
+                    "shell": terminal_request.shell,
+                    "befehl": terminal_request.command,
+                    "ok": run.result.ok,
+                },
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
+        # Ein klarer Entwicklungsauftrag wird nicht dem Zufall überlassen,
+        # ob das Gesprächsmodell das richtige Werkzeug auswählt. Derselbe
+        # Satz funktioniert dadurch im Chat und über die Sprachsteuerung.
+        development_request = parse_development_request(text)
+        if (
+            development_request is not None
+            and self._tool_engine is not None
+            and self._tool_engine.enabled
+        ):
+            run = await self._tool_engine.direkt_ausfuehren(
+                "entwicklungsauftrag_umsetzen",
+                {"wunsch": development_request},
+                actor="live_entwicklung",
+            )
+            response = run.result.output if run.result.ok else run.result.error
+            response = response or (
+                "Die Änderung wurde umgesetzt."
+                if run.result.ok
+                else "Der Entwicklungsauftrag konnte nicht umgesetzt werden."
+            )
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response,
+                intent="live_entwicklung",
+                used_llm=True,
+                provider=self._providers.active_name,
+                module="evolution",
+                data={"ok": run.result.ok, **run.result.context},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
         intent = self.classifier.classify(text)
+        mark_stage("intent_ready")
         await self._publish("ai.intent.classified", intent.to_dict())
 
         # Löst der Satz einen hinterlegten Ablauf aus?
@@ -531,6 +632,7 @@ class Orchestrator:
             return ablauf
 
         route = await self.router.route(text, intent)
+        mark_stage("route_ready")
 
         self._last_decision = {
             "text": text,
@@ -554,15 +656,20 @@ class Orchestrator:
             await self._publish("ai.response", result.to_dict())
             return result
 
-        result = await self._answer_with_model(
-            text,
-            intent=intent,
-            route=route,
-            project_id=project_id,
-            extra_context=extra_context,
-            spoken=spoken,
-            on_speech=on_speech,
-        )
+        try:
+            result = await self._answer_with_model(
+                text,
+                intent=intent,
+                route=route,
+                project_id=project_id,
+                extra_context=extra_context,
+                spoken=spoken,
+                on_speech=on_speech,
+            )
+        except asyncio.CancelledError:
+            self.conversations.discard_unanswered_user_message(text)
+            logger.info("Abgebrochenen Gespraechszug aus dem Kontext entfernt.")
+            raise
         result.duration_seconds = time.perf_counter() - started
         await self._publish("ai.response", result.to_dict())
         return result
@@ -642,6 +749,18 @@ class Orchestrator:
                 part for part in (context_block, self.SPOKEN_BREVITY) if part
             )
 
+        # A short spoken conversation turn is deliberately routed to the
+        # local model. Feeding all 46 tool descriptions into that same turn
+        # added more than 11,000 characters before the actual question and
+        # made an 8B model sit silently for 20+ seconds. Tool requests,
+        # current information, browser, screen and academic work are already
+        # excluded by this selector and retain the full tool-capable path.
+        preferred_spoken = (
+            self._preferred_spoken_provider(text, intent, extra_context)
+            if on_speech is not None
+            else None
+        )
+
         # Bei einer Frage nach Aktuellem wird VORHER gesucht.
         #
         # Das ist der Unterschied zwischen festverdrahtet und überredet.
@@ -657,6 +776,12 @@ class Orchestrator:
         # da gibt es nichts zu entscheiden. Also wird gesucht, und das
         # Ergebnis liegt dem Modell vor, wenn es zu denken anfängt.
         tools_available = self._tool_engine is not None and self._tool_engine.enabled
+        model_tools_available = tools_available and preferred_spoken is None
+        # Bereits deterministisch ausgefuehrte Werkzeuge merken. Das Modell
+        # bekommt deren Ergebnis weiter unten als Kontext. Fordert es dasselbe
+        # Werkzeug trotzdem noch einmal an, darf daraus kein zweiter, teurer
+        # Lauf werden (bei der Bildanalyse waren das zuletzt weitere 25 s).
+        vorab_ergebnisse: dict[str, str] = {}
         # Browser-Befehle sind KEINE Suchanfragen: "öffne ein Browserfenster
         # und führe eine Suche durch" löste vorher acht Suchläufe mit dem
         # wörtlichen Befehlssatz aus - alle leer, und für den Benutzer sah
@@ -683,6 +808,38 @@ class Orchestrator:
                 context_block = "\n\n".join(
                     part for part in (context_block, gesehen) if part
                 )
+                vorab_ergebnisse["bildschirm_ansehen"] = (
+                    gesehen.split("\n\n", 1)[-1].strip()
+                )
+
+                # Die Bildauswertung IST bereits eine Modellantwort auf die
+                # konkrete Frage. Im Sprachweg ging sie bisher trotzdem noch
+                # einmal an das Gespraechsmodell und kostete damit nach den
+                # gemessenen 14-28 s fuer das Bild weitere 12-14 s. Das
+                # veraendert den Befund nicht, sondern formuliert ihn nur neu.
+                # Direkt sprechen halbiert hier die Wartezeit und verhindert
+                # zugleich einen zweiten Screenshot durch die Werkzeugrunde.
+                if spoken:
+                    answer_text = vorab_ergebnisse["bildschirm_ansehen"]
+                    self.conversations.add_assistant_message(answer_text)
+                    self._memory.remember(
+                        text,
+                        kind="knowledge",
+                        project_id=project_id,
+                        source="gespraech",
+                    )
+                    return OrchestrationResult(
+                        response=answer_text,
+                        intent=intent.intent,
+                        used_llm=True,
+                        provider=self._providers.active_name,
+                        module="vision",
+                        data={
+                            "gesprochen": False,
+                            "werkzeugaufrufe": 1,
+                            "direkte_bildantwort": True,
+                        },
+                    )
 
         # Nennt der Benutzer eine Adresse und will sie gelesen haben, dann WIRD
         # sie gelesen - dasselbe Prinzip wie bei Suche und Bildschirm. Vorher
@@ -722,19 +879,41 @@ class Orchestrator:
         # Professors - und in keinem einzigen Protokoll taucht ein Aufruf
         # auf. Was verlässlich geschehen soll, gehört nicht in eine Bitte
         # an das Sprachmodell, sondern in den Ablauf.
-        if tools_available and self._ist_fachfrage(text, extra_context):
+        # Eine Bildschirm-/Bildanalyse ist bereits eine vollstaendige,
+        # ausdrueckliche Aufgabe. Im Professor-Modus zusaetzlich noch alle
+        # Favoritenportale zu durchsuchen, bevor das Bild ueberhaupt
+        # beschrieben wird, machte aus einem Zug mehrere unabhaengige
+        # Langlaeufer. Quellen werden bei einer anschliessenden Sach- oder
+        # Forschungsfrage weiterhin wie vorgesehen benutzt.
+        if (
+            tools_available
+            and not will_bildschirm(text)
+            and self._ist_fachfrage(text, extra_context)
+        ):
             eigenes = await self._vorab_eigene_quellen(text)
             if eigenes:
                 context_block = "\n\n".join(
                     part for part in (context_block, eigenes) if part
                 )
-        if tools_available:
+        if model_tools_available:
             instructions = self._tool_engine.system_instructions()
             context_block = "\n\n".join(
                 part for part in (context_block, instructions) if part
             )
 
-        messages = self.conversations.build_messages(extra_context=context_block)
+        messages = self.conversations.build_messages(
+            extra_context=context_block,
+            system_prompt=(self.LOCAL_SPOKEN_SYSTEM if preferred_spoken else None),
+            recent_limit=(2 if preferred_spoken else None),
+        )
+        logger.info(
+            "Modellkontext: %d Nachrichten, %d Zeichen, Wunschprovider=%s, Werkzeuge=%s.",
+            len(messages),
+            sum(len(message.content) for message in messages),
+            preferred_spoken or "standard",
+            model_tools_available,
+        )
+        mark_stage("model_context_ready")
 
         strom: SpeechStream | None = None
         #: Ob wirklich etwas zu hören war – nicht bloss, ob Text an die
@@ -757,9 +936,14 @@ class Orchestrator:
                     wirklich_gesprochen = wirklich_gesprochen or gehoert
                     return gehoert
 
-                response, strom = await self._stream_and_speak(messages, _sprich)
+                response, strom = await self._stream_and_speak(
+                    messages,
+                    _sprich,
+                    preferred=preferred_spoken,
+                )
             else:
                 response = await self._providers.chat(messages)
+            mark_stage("model_completed")
         except ProviderError as error:
             logger.error("Keine Modellantwort möglich: %s", error)
             fallback = (
@@ -779,11 +963,14 @@ class Orchestrator:
 
         answer_text = response.text
         tool_runs = 0
-        if tools_available:
+        if model_tools_available:
             # Enthält die Antwort Werkzeugaufrufe, hier ausführen – mit
             # Sicherheitsprüfung und Prüfprotokoll, im selben Gespräch.
             answer_text, runs = await self._tool_engine.continue_with_tools(
-                messages, response.text, actor="gespraech"
+                messages,
+                response.text,
+                actor="gespraech",
+                preexecuted=vorab_ergebnisse,
             )
             tool_runs = len(runs)
 
@@ -828,6 +1015,8 @@ class Orchestrator:
         self,
         messages: list[Any],
         on_speech: Callable[[str], Awaitable[bool]],
+        *,
+        preferred: str | None = None,
     ) -> tuple[Any, SpeechStream]:
         """Holt die Antwort stückweise und spricht jeden fertigen Satz sofort.
 
@@ -850,7 +1039,15 @@ class Orchestrator:
         begonnen = time.perf_counter()
 
         try:
-            async for stueck in self._providers.chat_stream(messages):
+            async for stueck in self._providers.chat_stream(
+                messages,
+                preferred=preferred,
+                max_tokens=(
+                    int(self._config.get("voice.spoken_max_tokens", 96))
+                    if preferred
+                    else None
+                ),
+            ):
                 stuecke.append(stueck)
                 for satz in strom.feed(stueck):
                     await on_speech(satz)
@@ -873,6 +1070,41 @@ class Orchestrator:
             ),
             strom,
         )
+
+    def _preferred_spoken_provider(
+        self,
+        text: str,
+        intent: IntentResult,
+        extra_context: str | None,
+    ) -> str | None:
+        """Nimmt fuer kurze Alltagsfragen sofort das lokale Modell.
+
+        Claude Code bleibt fuer Werkzeuge, Programmierung, Recherche und
+        Facharbeit reserviert. Eine normale gesprochene Frage darf dagegen
+        nicht erst dessen Prozessfrist abwarten, obwohl Ollama bereits laeuft.
+        """
+
+        local = list(getattr(self._providers, "local_provider_names", []) or [])
+        if not local or intent.intent not in {CHAT, DOCUMENT, QUESTION, SMALL_TALK}:
+            return None
+
+        stripped = text.strip()
+        # The intent class already excludes program, file, browser and other
+        # action commands. Requiring a question mark here rejected ordinary
+        # speech such as "Nenne mir ein Tier" and attached all tool schemas.
+        looks_conversational = True
+        if not looks_conversational or len(stripped) > 220:
+            return None
+        if (
+            braucht_aktuelles(stripped)
+            or ist_browser_befehl(stripped)
+            or will_bildschirm(stripped)
+            or will_webseite_lesen(stripped)
+            or will_browser(stripped)
+            or self._ist_fachfrage(stripped, extra_context)
+        ):
+            return None
+        return local[0]
 
     def _ist_fachfrage(self, text: str, extra_context: str | None) -> bool:
         """Ob in den eigenen Quellen des Benutzers zu suchen ist.
@@ -907,11 +1139,45 @@ class Orchestrator:
 
         if braucht_aktuelles(text):
             return False
+        # Ein laufender Professor-Modus macht nicht jede kurze
+        # Gespraechsfortsetzung zu einem neuen Rechercheauftrag. Im
+        # Betriebsprotokoll loesten Ein-Wort-Nachtraege wie
+        # "Wissenschaftlich" dieselbe mehrfache Portalsuche aus wie eine
+        # echte Fachfrage. Das blockiert den Dialog, ohne neue Information
+        # zu liefern. Ausdrueckliche Such-/Quellenauftraege bleiben davon
+        # unberuehrt.
+        knapp = " ".join((text or "").strip().split())
+        woerter = knapp.split()
+        verlangt_quellen = any(
+            marker in knapp.lower()
+            for marker in (
+                "such", "recherch", "quelle", "quellen", "beleg",
+                "literatur", "forschungsstand", "nachschlagen",
+            )
+        )
+        if len(woerter) < 4 and not verlangt_quellen:
+            return False
         if looks_academic(text):
             return True
         # Der Professor baut den Systemprompt, wenn er übernimmt. Steht er
         # im Zusatzkontext, hat er sich für zuständig erklärt.
-        return bool(extra_context) and "Geschichtsprofessor" in str(extra_context)
+        if not (bool(extra_context) and "Geschichtsprofessor" in str(extra_context)):
+            return False
+        # Der Professor darf Eigennamen auffangen, die keine Wortliste kennen
+        # kann. Dafuer muss es aber eine inhaltliche Frage oder ein
+        # substanzieller Satz sein - kein Modusbefehl und keine Bestaetigung.
+        fragewoerter = (
+            "wer ", "was ", "wann ", "wo ", "wie ", "warum ",
+            "weshalb ", "welche ", "welcher ", "welches ", "wodurch ",
+        )
+        ist_frage = "?" in knapp or knapp.lower().startswith(fragewoerter)
+        # Laenge allein ist kein Fachsignal. Der Satz "Erklaere mir in einem
+        # Satz, was ein Regenbogen ist" hatte neun Woerter und startete
+        # deshalb Favoritenzugriff, Werkzeugprompt und Professor-Recherche.
+        # Das kostete zehn Sekunden und lieferte trotzdem keine Antwort.
+        # Eigennamenfragen faengt das Fragezeichen/Fragewort auf; ein bloss
+        # langer Erklaerwunsch bleibt ein normaler Erklaerwunsch.
+        return verlangt_quellen or ist_frage
 
     async def _vorab_eigene_quellen(self, text: str) -> str:
         """Sucht bei einer Fachfrage gezielt IN den Favoriten des Benutzers.

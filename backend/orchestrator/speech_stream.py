@@ -68,6 +68,11 @@ _FENCE = "```"
 #: Entscheidung „Zaun oder nicht" gewartet wird.
 _FENCE_LOOKAHEAD = len(_FENCE)
 
+# A local model sometimes produces one long sentence. Waiting for its final
+# full stop kept an already available answer silent for almost eight seconds.
+# Around 90 characters form a natural spoken phrase without sounding chopped.
+_SOFT_BREAK_AFTER = 70
+
 
 class SpeechStream:
     """Sammelt Antwortstücke und gibt fertige Sätze zum Sprechen frei.
@@ -228,7 +233,23 @@ class SpeechStream:
             self._merken(kandidat)
             position = ende
 
-        return saetze, text[position:]
+        rest = text[position:]
+        if not saetze and len(rest) >= _SOFT_BREAK_AFTER:
+            stripped = rest.lstrip()
+            # A naked tool call has no sentence ending either. Never release
+            # part of its JSON merely to improve latency.
+            if not stripped.startswith(("{", "```")):
+                limit = min(len(rest), _SOFT_BREAK_AFTER + 24)
+                window = rest[:limit]
+                cut = max(window.rfind(", "), window.rfind("; "), window.rfind(" "))
+                if cut >= 55:
+                    candidate = rest[:cut].strip()
+                    if candidate and not _ist_maschinensprache(candidate):
+                        saetze.append(candidate)
+                        self._merken(candidate)
+                        rest = rest[cut:].lstrip()
+
+        return saetze, rest
 
     def _merken(self, satz: str) -> None:
         self.spoken = f"{self.spoken} {satz}".strip() if self.spoken else satz

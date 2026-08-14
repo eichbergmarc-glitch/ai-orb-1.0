@@ -36,6 +36,7 @@ WINDOW_POSITION_CHANGED = "window.position.changed"
 ORB_STATE_CHANGED = "orb.state.changed"
 ORB_ACTIVATED = "orb.activated"
 ORB_CONTEXT_MENU_REQUESTED = "orb.context_menu.requested"
+ORB_MENU_REQUESTED = "orb.menu.requested"
 ORB_ACTION_TRIGGERED = "orb.action.triggered"
 
 # --- Verhalten (vorbereitet für spätere Phasen) -------------------------

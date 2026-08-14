@@ -118,10 +118,31 @@ class PatchGenerator:
                     workspace / name,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "dist", "node_modules"),
                 )
-        for name in ("config.yaml", "requirements.txt", "pytest.ini", "conftest.py"):
+        for name in (
+            "config.yaml",
+            "requirements.txt",
+            "pytest.ini",
+            "conftest.py",
+            "package.json",
+            "package-lock.json",
+            "tsconfig.json",
+            "tsconfig.renderer.json",
+        ):
             source = self._root / name
             if source.exists():
                 shutil.copy2(source, workspace / name)
+
+        # Kleine, ausführbare Projektdateien an der Wurzel gehören ebenfalls
+        # zum entwickelbaren Quellstand (Start-/Buildskripte, Dokumentation).
+        # Laufzeitprotokolle und Zugangsdaten werden bewusst nie kopiert.
+        excluded = {"AI-Orb-Start-Log.txt", ".env"}
+        for pattern in ("*.bat", "*.md", "*.txt", "*.json", "*.yaml", "*.yml"):
+            for source in self._root.glob(pattern):
+                if source.name in excluded or not source.is_file():
+                    continue
+                target = workspace / source.name
+                if not target.exists():
+                    shutil.copy2(source, target)
 
         logger.info("Arbeitskopie angelegt: %s", workspace)
         return workspace

@@ -26,6 +26,8 @@ class _Anbieter:
         self.antworten = list(antworten)
         self.gefragt = 0
         self.active_name = "test"
+        self.local_provider_names: list[str] = []
+        self.stream_kwargs: list[dict] = []
 
     def begin_conversation(self) -> None:
         pass
@@ -36,6 +38,7 @@ class _Anbieter:
         return text
 
     async def chat_stream(self, messages, **kw):
+        self.stream_kwargs.append(dict(kw))
         for stueck in _silben(self._naechste()):
             await asyncio.sleep(0)
             yield stueck
@@ -62,11 +65,27 @@ class _Werkzeuge:
     def system_instructions(self) -> str:
         return "Werkzeuge: internet_suchen"
 
-    async def continue_with_tools(self, messages, first_reply, *, actor="gespraech"):
+    async def continue_with_tools(
+        self, messages, first_reply, *, actor="gespraech", preexecuted=None
+    ):
         if self.endantwort is None:
             # Kein Werkzeug im Spiel: Die erste Antwort ist die endgueltige.
             return first_reply, []
         return self.endantwort, [object()] * self.laeufe
+
+
+class _BildWerkzeug(_Werkzeuge):
+    async def direkt_ausfuehren(self, name, arguments, *, actor="vorab"):
+        class _Result:
+            ok = True
+            output = "Auf dem Bild ist eine goldene mittelalterliche Handschrift."
+            error = ""
+
+        class _Run:
+            result = _Result()
+            seconds = 0.1
+
+        return _Run()
 
 
 def _orchestrator(anbieter, werkzeuge=None) -> Orchestrator:
@@ -106,6 +125,37 @@ def test_saetze_werden_einzeln_gesprochen():
         "Zieh dich warm an.",
     ]
     assert ergebnis.data["gesprochen"] is True
+
+
+def test_einfache_sprachfrage_nimmt_sofort_das_lokale_modell():
+    anbieter = _Anbieter(["Das ist eine kurze Antwort."])
+    anbieter.local_provider_names = ["ollama"]
+    orch = _orchestrator(anbieter, _Werkzeuge())
+
+    _lauf(orch, "Kannst du mir deine neuen Funktionen erklaeren?")
+
+    assert anbieter.stream_kwargs[-1]["preferred"] == "ollama"
+    assert anbieter.stream_kwargs[-1]["max_tokens"] == 40
+
+
+def test_aktuelle_sprachfrage_bleibt_beim_starken_provider():
+    anbieter = _Anbieter(["Das ist eine aktuelle Antwort."])
+    anbieter.local_provider_names = ["ollama"]
+    orch = _orchestrator(anbieter, _Werkzeuge())
+
+    _lauf(orch, "Was sind die aktuellen Nachrichten?")
+
+    assert anbieter.stream_kwargs[-1]["preferred"] is None
+
+
+def test_allgemeine_erklaerung_bleibt_im_schnellen_sprachweg():
+    anbieter = _Anbieter(["Ein Regenbogen entsteht durch Lichtbrechung."])
+    anbieter.local_provider_names = ["ollama"]
+    orch = _orchestrator(anbieter, _Werkzeuge())
+
+    _lauf(orch, "Erklaere mir in einem Satz, was ein Regenbogen ist.")
+
+    assert anbieter.stream_kwargs[-1]["preferred"] == "ollama"
 
 
 def test_werkzeugaufruf_wird_nie_vorgelesen():
@@ -154,6 +204,23 @@ def test_letzter_satz_ohne_punkt_geht_nicht_verloren():
     assert " ".join(gesagt).endswith("ohne Punkt")
 
 
+def test_langer_einzelsatz_beginnt_vor_dem_schlusspunkt():
+    text = (
+        "Ein Regenbogen entsteht, wenn Sonnenlicht in vielen feinen "
+        "Wassertropfen gebrochen, gespiegelt und in seine Farben zerlegt wird."
+    )
+    anbieter = _Anbieter([text])
+    orch = _orchestrator(anbieter, _Werkzeuge())
+
+    _, gesagt = _lauf(
+        orch, "Erklaere mir in einem Satz, was ein Regenbogen ist."
+    )
+
+    assert len(gesagt) >= 2
+    assert len(gesagt[0]) < len(text)
+    assert " ".join(gesagt).replace("  ", " ") == text
+
+
 def test_ohne_rueckruf_bleibt_alles_wie_bisher():
     """Der getippte Weg darf sich durch all das nicht veraendern."""
 
@@ -164,6 +231,24 @@ def test_ohne_rueckruf_bleibt_alles_wie_bisher():
 
     assert ergebnis.response == "Eine ganz gewoehnliche Antwort."
     assert ergebnis.data.get("gesprochen") is False
+
+
+def test_gesprochene_bildanalyse_wird_nicht_zweimal_vom_modell_bearbeitet():
+    """Die Werkzeugantwort ist bereits die angeforderte Bildbeschreibung."""
+
+    anbieter = _Anbieter(["Diese zweite Modellantwort darf nicht entstehen."])
+    orch = _orchestrator(anbieter, _BildWerkzeug())
+
+    ergebnis = asyncio.run(
+        orch.handle(
+            "Mach einen Printscreen und analysiere das Bild.",
+            spoken=True,
+        )
+    )
+
+    assert anbieter.gefragt == 0
+    assert "Handschrift" in ergebnis.response
+    assert ergebnis.data["direkte_bildantwort"] is True
 
 
 # --- Und der Fehler, der den Orb verstummen liess ------------------------------

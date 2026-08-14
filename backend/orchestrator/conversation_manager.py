@@ -124,6 +124,19 @@ class ConversationManager:
 
         self.active.add("assistant", content)
 
+    def discard_unanswered_user_message(self, content: str) -> bool:
+        """Remove the pending user turn when its task was cancelled."""
+
+        conversation = self.active
+        if not conversation.messages:
+            return False
+        last = conversation.messages[-1]
+        if last.get("role") != "user" or str(last.get("content", "")) != content:
+            return False
+        conversation.messages.pop()
+        conversation.updated_at = time.time()
+        return True
+
     async def maybe_compress(self) -> bool:
         """Komprimiert den Verlauf, wenn er zu lang geworden ist.
 
@@ -167,6 +180,7 @@ class ConversationManager:
         *,
         extra_context: str | None = None,
         system_prompt: str | None = None,
+        recent_limit: int | None = None,
     ) -> list[ChatMessage]:
         """Baut die Nachrichtenliste für eine Modellanfrage auf.
 
@@ -191,7 +205,11 @@ class ConversationManager:
         if extra_context:
             messages.append(ChatMessage(role="system", content=extra_context))
 
-        for message in conversation.messages:
+        history = conversation.messages
+        if recent_limit is not None and recent_limit > 0:
+            history = history[-recent_limit:]
+
+        for message in history:
             role = str(message.get("role", "user"))
             if role not in ("user", "assistant", "system"):
                 role = "user"

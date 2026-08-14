@@ -47,6 +47,14 @@ from backend.system.logging_setup import get_logger
 logger = get_logger(__name__)
 
 
+_GENERAL_EXPLANATION_PROMPT = (
+    "Du erklaerst wie ein ruhiger, klarer Professor: anschaulich, menschlich "
+    "und ohne unnoetige Fachsprache. Antworte direkt in hoechstens drei "
+    "kurzen Saetzen. Dies ist eine allgemeine Erklaerung, keine historische "
+    "Recherche; fordere weder Quellen noch eine wissenschaftliche Analyse an."
+)
+
+
 #: Woran ein wissenschaftliches oder historisches Anliegen zu erkennen ist.
 #:
 #: Bewusst breit: Lieber einmal zu viel den Professor fragen als den
@@ -179,6 +187,24 @@ class ProfessorSession:
         try:
             if not self.should_engage(text):
                 return ""
+
+            detected_mode, _reason = professor_engine.detect_mode(
+                text, current=self._mode
+            )
+            if (
+                detected_mode == "erklaeren"
+                and not looks_academic(text)
+                and not self.busy()
+            ):
+                # The renderer still receives an active professor mode (and
+                # can show the glasses), but a general explanation does not
+                # carry the multi-page history/research persona into a small
+                # local model. That prompt caused ten seconds of silence for
+                # a one-sentence question about a rainbow.
+                self._mode = "erklaeren"
+                self._last_turn = None
+                logger.info("Der Professor erklaert im kompakten Allgemeinmodus.")
+                return _GENERAL_EXPLANATION_PROMPT
 
             if self._similar_to_last(text):
                 self._attempts += 1

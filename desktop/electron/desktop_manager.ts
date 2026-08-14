@@ -100,7 +100,12 @@ export class DesktopManager {
   private usage: Map<string, number> = new Map();
   private lastMouse = { x: 0, y: 0, at: Date.now() };
   private mouseSpeed = 0;
-  private suspended = false;
+  /** Unabhaengige Gruende, die automatische Bewegung anzuhalten. */
+  private readonly suspensionReasons = new Set<string>();
+  /** Beginn einer Mausannaeherung; gibt Zeit fuer einen gezielten Klick. */
+  private mouseNearSince = 0;
+  /** Nur ein von uns angeforderter Schlaf darf später Idle anfordern. */
+  private sleepRequested = false;
 
   /**
    * @param window Das Orb-Fenster.
@@ -151,7 +156,19 @@ export class DesktopManager {
    * Entscheidung hat immer Vorrang.
    */
   public suspend(suspended: boolean): void {
-    this.suspended = suspended;
+    this.setSuspended("legacy", suspended);
+  }
+
+  /**
+   * Sperrt oder entsperrt die Bewegung fuer genau einen UI-Grund.
+   * Menü, Chat und Ziehen koennen sich dadurch nicht gegenseitig aufheben.
+   */
+  public setSuspended(reason: string, suspended: boolean): void {
+    if (suspended) {
+      this.suspensionReasons.add(reason);
+    } else {
+      this.suspensionReasons.delete(reason);
+    }
   }
 
   /**
@@ -169,7 +186,7 @@ export class DesktopManager {
     this.mouseSpeed = (distance / elapsed) * 1000;
     this.lastMouse = { x: point.x, y: point.y, at: now };
 
-    if (!this.options.enabled || !this.options.avoidMouse || this.suspended) {
+    if (!this.options.enabled || !this.options.avoidMouse || this.suspensionReasons.size > 0) {
       return;
     }
 
@@ -181,7 +198,16 @@ export class DesktopManager {
 
     // Nur ausweichen, wenn die Maus wirklich nah ist und sich nicht rasend
     // schnell bewegt (sonst wirkt der Orb nervös).
-    if (toCursor < 130 && this.mouseSpeed < 2500) {
+    if (toCursor >= 145) {
+      this.mouseNearSince = 0;
+      return;
+    }
+    if (this.mouseNearSince === 0) this.mouseNearSince = now;
+
+    // 750 ms Klickschutz: Wer den Orb gezielt anfährt, kann ihn erreichen
+    // und per Rechtsklick festhalten. Erst längeres Verweilen ohne Hover-
+    // Sperre gilt als Anlass zum Ausweichen.
+    if (toCursor < 130 && now - this.mouseNearSince >= 750 && this.mouseSpeed < 2500) {
       this.evaluate(true);
     }
   }
@@ -192,7 +218,7 @@ export class DesktopManager {
    * @param urgent Ob die Bewertung durch eine Mausannäherung ausgelöst wurde.
    */
   public evaluate(urgent = false): void {
-    if (!this.options.enabled || this.suspended || this.window.isDestroyed()) {
+    if (!this.options.enabled || this.suspensionReasons.size > 0 || this.window.isDestroyed()) {
       return;
     }
 
@@ -210,11 +236,21 @@ export class DesktopManager {
     const fullscreen = windows.find((window) => window.isFullscreen);
     if (fullscreen !== undefined && this.options.fullscreenSleep) {
       this.handlers.onVisibilityRequest?.(false);
-      this.handlers.onStateRequest?.("sleep");
+      if (!this.sleepRequested) {
+        this.sleepRequested = true;
+        this.handlers.onStateRequest?.("sleep");
+      }
       return;
     }
     this.handlers.onVisibilityRequest?.(true);
-    this.handlers.onStateRequest?.("idle");
+    // Früher wurde bei jeder Bewertung (standardmäßig alle 1,5 Sekunden)
+    // Idle gesendet. Das überschrieb Listening, Thinking und Executing und
+    // ließ die Anzeige hektisch zwischen Zuständen springen. Nur wenn die
+    // Desktop-Engine selbst zuvor Sleep angefordert hat, darf sie aufwecken.
+    if (this.sleepRequested) {
+      this.sleepRequested = false;
+      this.handlers.onStateRequest?.("idle");
+    }
 
     const state: DesktopState = {
       monitors,

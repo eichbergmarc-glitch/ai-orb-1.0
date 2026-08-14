@@ -74,6 +74,23 @@ async def test_registry_self_test_marks_agent_as_tested():
     assert registry.is_tested("echo") is True
 
 
+async def test_evolution_selftest_startet_keine_vollanalyse():
+    """Der Bereitschaftstest darf nicht alle Projektmodule untersuchen."""
+
+    from backend.agents.standard_agents import EvolutionAgent
+
+    class _Evolution:
+        def analyze(self):
+            raise AssertionError("Vollanalyse im Start-Selbsttest")
+
+    result = await EvolutionAgent(_Evolution()).run(
+        AgentTask(text="selbsttest", metadata={"selftest": True})
+    )
+
+    assert result.success is True
+    assert result.data["selftest"] is True
+
+
 def test_capability_registry_tracks_permissions():
     capabilities = CapabilityRegistry()
     agent = _EchoAgent()

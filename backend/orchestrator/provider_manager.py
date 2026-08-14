@@ -28,6 +28,7 @@ from backend.orchestrator.providers.base_provider import (
     ProviderResponse,
 )
 from backend.system.logging_setup import get_logger
+from backend.system.performance_trace import mark_stage
 from backend.utils.store import JsonStore
 
 logger = get_logger(__name__)
@@ -73,6 +74,7 @@ class ProviderManager:
             interval_seconds=float(self._ai_config.get("health_check_interval", 60))
         )
         self._health.set_change_callback(self._on_availability_changed)
+        self._health.set_busy_check(lambda: self._conversation_active)
 
         self._build_providers()
         if self.offline_mode:
@@ -513,10 +515,12 @@ class ProviderManager:
             provider = self._providers[name]
             started = time.perf_counter()
             try:
+                mark_stage("provider_requested")
                 response = await provider.chat(
                     messages, temperature=temperature, max_tokens=max_tokens
                 )
                 self._health.note_success(name, time.perf_counter() - started)
+                mark_stage("provider_first_text")
                 if name != self._active_name:
                     # Ein einzelner Ausweichtreffer macht den Ausweichprovider
                     # NICHT zum neuen Standard.
@@ -577,17 +581,50 @@ class ProviderManager:
         if not name:
             raise ProviderError("Kein KI-Provider konfiguriert.")
 
-        provider = self._providers[name]
-        started = time.perf_counter()
-        try:
-            async for piece in provider.chat_stream(
-                messages, temperature=temperature, max_tokens=max_tokens
-            ):
-                yield piece
-            self._health.note_success(name, time.perf_counter() - started)
-        except ProviderError as error:
-            self._health.note_error(name, timeout="Timeout" in str(error))
-            raise
+        # Solange noch kein Text beim Benutzer angekommen ist, ist ein
+        # Providerwechsel unsichtbar und sicher. So kann ein haengender
+        # Claude-Prozess nach der kurzen Frist an Ollama uebergeben, statt
+        # das Gespraech fuer 30 bis 45 Sekunden zu blockieren.
+        order = [name]
+        for candidate in (self._fallback_name, self._primary_name, *self._providers):
+            if candidate and candidate in allowed and candidate not in order:
+                order.append(candidate)
+
+        last_error: ProviderError | None = None
+        for candidate in order:
+            provider = self._providers[candidate]
+            started = time.perf_counter()
+            delivered = False
+            try:
+                mark_stage("provider_requested")
+                async for piece in provider.chat_stream(
+                    messages, temperature=temperature, max_tokens=max_tokens
+                ):
+                    if piece:
+                        mark_stage("provider_first_text")
+                        delivered = True
+                        yield piece
+                self._health.note_success(candidate, time.perf_counter() - started)
+                return
+            except ProviderError as error:
+                last_error = error
+                lowered = str(error).lower()
+                self._health.note_error(
+                    candidate,
+                    timeout="timeout" in lowered or "zeitlimit" in lowered,
+                )
+                if delivered:
+                    raise
+                logger.warning(
+                    "Provider '%s' lieferte noch keinen Text (%s); "
+                    "der naechste Provider uebernimmt.",
+                    candidate,
+                    error,
+                )
+
+        raise ProviderError(
+            f"Alle Provider blieben vor dem ersten Antworttext aus: {last_error}"
+        )
 
     async def complete(
         self,

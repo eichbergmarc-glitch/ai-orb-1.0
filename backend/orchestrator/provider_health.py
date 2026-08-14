@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any
 
 from backend.orchestrator.providers.base_provider import BaseProvider
@@ -78,6 +79,11 @@ class ProviderHealth:
     #: Bis hierhin darf der Abstand zwischen zwei Pruefungen wachsen.
     MAX_INTERVAL = 900.0
 
+    #: Ein bereits als nicht erreichbar bestaetigter Anbieter wird nicht
+    #: jede Minute erneut als Prozess gestartet. Fuenf Minuten sind fuer die
+    #: automatische Rueckkehr kurz genug, ohne lokale Antworten zu stoeren.
+    UNAVAILABLE_RETRY_INTERVAL = 300.0
+
     def __init__(self, interval_seconds: float = 60.0) -> None:
         self._interval = max(10.0, interval_seconds)
         self._vertrauensdauer = self.VERTRAUENSDAUER
@@ -87,6 +93,7 @@ class ProviderHealth:
         self._providers: dict[str, BaseProvider] = {}
         self._on_change: Any | None = None
         self._allowed_names: set[str] | None = None
+        self._busy_check: Callable[[], bool] | None = None
 
     def register(self, provider: BaseProvider) -> None:
         """Nimmt einen Provider in die Überwachung auf."""
@@ -111,6 +118,18 @@ class ProviderHealth:
         """
 
         self._allowed_names = set(names) if names is not None else None
+
+    def set_busy_check(self, callback: Callable[[], bool] | None) -> None:
+        """Verschiebt Hintergrundpruefungen waehrend eines Dialogzugs.
+
+        Die Pruefung eines nicht erreichbaren Kommandozeilen-Providers kann
+        auf Windows mehrere Sekunden Rechenzeit und Prozessstarts kosten.
+        Sie darf deshalb nie mit der eigentlichen Antwort konkurrieren.
+        Erzwingbare Start- und Moduspruefungen (``force=True``) bleiben davon
+        unberuehrt.
+        """
+
+        self._busy_check = callback
 
     def record(self, name: str) -> HealthRecord:
         """Gibt den Gesundheitseintrag eines Providers zurück."""
@@ -156,11 +175,28 @@ class ProviderHealth:
         results: dict[str, bool] = {}
         jetzt = time.time()
 
+        if not force and self._busy_check is not None and self._busy_check():
+            logger.debug("Provider-Pruefung verschoben: ein Dialogzug laeuft.")
+            return {
+                name: self.record(name).available
+                for name in self._providers
+                if self._allowed_names is None or name in self._allowed_names
+            }
+
         for name, provider in self._providers.items():
             if self._allowed_names is not None and name not in self._allowed_names:
                 continue
             entry = self.record(name)
             previous = entry.available
+
+            if (
+                not force
+                and not entry.available
+                and entry.last_check > 0
+                and (jetzt - entry.last_check) < self.UNAVAILABLE_RETRY_INTERVAL
+            ):
+                results[name] = False
+                continue
 
             # Wer gerade geantwortet hat, muss nicht gefragt werden, ob er
             # antworten kann.

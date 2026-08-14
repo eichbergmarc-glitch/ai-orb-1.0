@@ -343,6 +343,16 @@ class EvolutionAgent(BaseAgent):
     async def handle(self, task: AgentTask) -> AgentResult:
         """Beantwortet Fragen zur Selbstverbesserung."""
 
+        # Der Start-Selbsttest prueft nur, ob der Agent ansprechbar ist.
+        # Eine vollstaendige Analyse aller Projektmodule dauerte hier zuletzt
+        # 46 Sekunden und konkurrierte direkt mit der ersten Benutzerfrage.
+        if task.metadata.get("selftest") is True:
+            return AgentResult(
+                agent=self.name,
+                response="Die Evolution-Schnittstelle ist bereit.",
+                data={"selftest": True},
+            )
+
         lowered = task.text.lower()
 
         if "patch" in lowered:

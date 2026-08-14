@@ -42,6 +42,8 @@ interface AiOrbBridge {
   showContextMenu(): void;
   triggerDoubleClickAction(): void;
   setIgnoreMouseEvents(ignore: boolean): void;
+  setInteractionLock(active: boolean, reason: string): void;
+  setChatFocus(active: boolean): void;
   setSpeaking(speaking: boolean): void;
   getBackendUrl(): Promise<string>;
 }
@@ -235,12 +237,14 @@ async function bootstrap(): Promise<void> {
     stimmpegel = pegelAus(event, stimmpegel);
     handleProgress(event);
     handleEmotionEvent(event, energyOrb);
+    handleProfessorEvent(event, energyOrb);
     handleBackendEvent(event, states);
   });
   window.aiOrb.onBackendEvent((event) => {
     stimmpegel = pegelAus(event, stimmpegel);
     handleProgress(event);
     handleEmotionEvent(event, energyOrb);
+    handleProfessorEvent(event, energyOrb);
     handleBackendEvent(event, states);
   });
 
@@ -264,14 +268,31 @@ async function bootstrap(): Promise<void> {
   const showMenu = (show: boolean): void => {
     menuOpen = show;
     if (orbMenu !== null) orbMenu.hidden = !show;
+    window.aiOrb.setInteractionLock(show, "menu");
     updateOverlayInput();
   };
+
+  const handleVoiceMenu = (event: BackendEvent): void => {
+    if (event.event !== "orb.menu.requested") return;
+    const action = String(event.payload.action ?? "open");
+    showMenu(action !== "close");
+    loop.noteActivity();
+  };
+  backend.onEvent(handleVoiceMenu);
+  window.aiOrb.onBackendEvent(handleVoiceMenu);
 
   const showChat = (show: boolean): void => {
     chatOpen = show;
     if (chatPanel !== null) chatPanel.hidden = !show;
+    window.aiOrb.setChatFocus(show);
+    window.aiOrb.setInteractionLock(show, "chat");
     updateOverlayInput();
-    if (show) window.setTimeout(() => chatInput?.focus(), 0);
+    if (show) {
+      window.setTimeout(() => {
+        chatInput?.focus();
+        chatInput?.select();
+      }, 40);
+    }
   };
 
   const addChatMessage = (text: string, kind: "user" | "orb" | "pending"): HTMLDivElement | null => {
@@ -293,13 +314,17 @@ async function bootstrap(): Promise<void> {
       onActivate: () => {
         loop.noteActivity();
         energyOrb?.react("click");
-        states.setState(states.current === "listening" ? "idle" : "listening");
+        // Ein UI-Klick ist noch kein Sprachzustand. Listening wird erst
+        // durch das Mikrofon/Backend gesetzt; sonst können überlappende
+        // Klick- und Kontextmenüereignisse die Anzeige hektisch toggeln.
         void backend.reportInteraction("aktivieren");
       },
       onContextMenu: () => {
         loop.noteActivity();
         showMenu(!menuOpen);
-        void backend.reportInteraction("kontextmenü");
+        // Das Oeffnen des lokalen Menues ist kein Denk-, Sprach- oder
+        // Arbeitsauftrag. Es bleibt deshalb vollstaendig im Renderer und
+        // darf keine Backend-Zustandsfolge ausloesen.
       },
       onDoubleClick: () => {
         loop.noteActivity();
@@ -310,7 +335,6 @@ async function bootstrap(): Promise<void> {
       onDragStart: () => {
         dragging = true;
         loop.noteActivity();
-        states.setState("busy");
       },
       onDrag: (dx, dy) => {
         window.aiOrb.moveWindowBy(dx, dy);
@@ -319,10 +343,10 @@ async function bootstrap(): Promise<void> {
         dragging = false;
         // Eine bewusst gewählte Position wiegt im Lernsystem schwerer.
         window.aiOrb.commitWindowPosition(true);
-        states.setState("idle");
       },
       onHover: (hovering) => {
         hoverBoost = hovering ? 1.12 : 1.0;
+        window.aiOrb.setInteractionLock(hovering, "pointer");
         if (hovering) {
           loop.noteActivity();
         }
@@ -482,6 +506,7 @@ async function bootstrap(): Promise<void> {
       warning: "fire", offline: "minimal",
     };
     energyOrb?.setVisualStyle(automaticStyles[state]);
+    energyOrb?.setState(state);
     if (orbInfo !== null) {
       const labels: Record<OrbStateName, string> = {
         idle: "Bereit", listening: "Hört zu", thinking: "Denkt nach",
@@ -556,6 +581,9 @@ async function bootstrap(): Promise<void> {
   });
 
   window.addEventListener("beforeunload", () => {
+    window.aiOrb.setInteractionLock(false, "menu");
+    window.aiOrb.setInteractionLock(false, "chat");
+    window.aiOrb.setInteractionLock(false, "pointer");
     loop.stop();
     backend.close();
     orb.dispose();
@@ -603,6 +631,13 @@ function handleEmotionEvent(event: BackendEvent, orb: EnergyOrb | null): void {
   }
 }
 
+/** ProfessorSession entscheidet fachlich; der Renderer zeichnet nur. */
+function handleProfessorEvent(event: BackendEvent, orb: EnergyOrb | null): void {
+  if (orb === null || event.event !== "orb.professor.changed") return;
+  const active = (event.payload as { active?: unknown } | undefined)?.active;
+  orb.setProfessorMode(active === true);
+}
+
 function handleBackendEvent(event: BackendEvent, states: StateMachine): void {
   // Der Orb hat seine eigene Animation geändert (Werte oder Code) und
   // will, dass die Anzeige neu lädt. `location.reload()` lädt index.html
@@ -611,6 +646,24 @@ function handleBackendEvent(event: BackendEvent, states: StateMachine): void {
   // Animation dem Orb erklären kann, statt Dateien von Hand zu ändern.
   if (event.event === "orb.oberflaeche.neu_laden") {
     window.setTimeout(() => window.location.reload(), 150);
+    return;
+  }
+
+  // Ein Entwicklungsauftrag dauert deutlich länger als eine normale
+  // Antwort. Seine Phasen bleiben deshalb sichtbar: Planung denkt,
+  // Patch/Test arbeitet, erfolgreiche Übernahme bestätigt grün.
+  if (event.event === "orb.entwicklung.status") {
+    const phase = String(
+      (event.payload as { phase?: unknown } | undefined)?.phase ?? "",
+    );
+    const developmentStates: Record<string, OrbStateName> = {
+      planung: "thinking",
+      patch: "executing",
+      tests: "executing",
+      fertig: "success",
+    };
+    const next = developmentStates[phase];
+    if (next !== undefined) states.setState(next);
     return;
   }
 

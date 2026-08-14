@@ -58,5 +58,6 @@ copyFile("desktop/renderer/index.html", "index.html");
 copyFile("desktop/styles/orb.css", "styles/orb.css");
 copyFile("desktop/styles/themes.css", "styles/themes.css");
 copyDirectory("desktop/assets/icons", "assets/icons");
+copyDirectory("desktop/assets/orb", "assets/orb");
 
 console.log("[copy-assets] Fertig.");

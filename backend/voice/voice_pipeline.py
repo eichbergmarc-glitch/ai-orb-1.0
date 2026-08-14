@@ -48,6 +48,7 @@ from backend.events import event_types
 from backend.events.event_bus import EventBus
 from backend.security.security_engine import SecurityEngine
 from backend.system.logging_setup import get_logger
+from backend.system.performance_trace import TurnTrace, mark_stage, reset_turn_trace, start_turn_trace
 from backend.diktat.diktat import KALIBRIERSATZ, Diktierer
 from backend.tts.tts_manager import TtsManager
 from backend.voice.speaker_id import Stimmerkennung, Urteil
@@ -187,6 +188,8 @@ class VoiceTurn:
     interrupted: bool = False
     duration_seconds: float = 0.0
     timestamp: float = field(default_factory=time.time)
+    trace_id: str = ""
+    timings: dict[str, float | str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -197,6 +200,8 @@ class VoiceTurn:
             "interrupted": self.interrupted,
             "duration_seconds": round(self.duration_seconds, 2),
             "timestamp": self.timestamp,
+            "trace_id": self.trace_id,
+            "timings": self.timings,
         }
 
 
@@ -522,6 +527,15 @@ class VoicePipeline:
         self._last_error = ""
         self._speaking_task: asyncio.Task[None] | None = None
         self._processing = False
+        # The concrete trace is also kept on the pipeline because playback
+        # callbacks arrive from the audio thread and do not inherit asyncio's
+        # context variables.
+        self._active_turn_trace: TurnTrace | None = None
+        #: Reserviert einen Gespraechszug bereits nach der Transkription.
+        # ``_processing`` wird erst in ``_respond`` gesetzt; zwischen beiden
+        # Stellen liegen Ereignisse, an denen ein zweites Hoerfenster sonst
+        # denselben freien Zug beanspruchen koennte.
+        self._turn_claimed = False
         #: Die gerade laufende Antwort-Aufgabe - damit ein "Stop" sie auch
         #: WAEHREND des Denkens abbrechen kann, nicht erst beim Sprechen.
         self._antwort_task: asyncio.Task | None = None
@@ -899,7 +913,11 @@ class VoicePipeline:
         """Verarbeitet eine aufgenommene Äußerung."""
 
         started = time.perf_counter()
+        trace, trace_token = start_turn_trace()
         turn = VoiceTurn(duration_seconds=duration)
+        turn.trace_id = trace.turn_id
+        self._active_turn_trace = trace
+        claimed_turn = False
 
         try:
             # Solange der Orb spricht, gilt nur eine Frage: Fiel das
@@ -914,7 +932,7 @@ class VoicePipeline:
                     self.interrupt()
                 return
 
-            if self._processing:
+            if self._processing or self._turn_claimed:
                 # Ein kurzes "Stop" bricht den LAUFENDEN Auftrag ab - das
                 # war das Loch, durch das jedes "Stop" während des Denkens
                 # fiel: Die Äußerung wurde hier kommentarlos verworfen, der
@@ -979,6 +997,7 @@ class VoicePipeline:
             self._neue_rede()
 
             transcript = await self._transcriber.transcribe(path)
+            trace.mark("transcript_ready")
             turn.transcript = transcript.text
             turn.confidence = transcript.confidence
 
@@ -996,6 +1015,36 @@ class VoicePipeline:
             logger.info(
                 "Verstanden (%.2f): %s", transcript.confidence, transcript.text
             )
+
+            # Die erste Pruefung auf ``_processing`` steht bewusst VOR der
+            # Transkription, damit ein bereits laufender Auftrag keine neue,
+            # teure Erkennung startet. Zwei Hoerfenster koennen diese Stelle
+            # aber nahezu gleichzeitig passieren: Waehren beide noch
+            # transkribieren, ist ``_processing`` bei beiden zunaechst False.
+            # Ohne eine zweite Pruefung starteten danach zwei Modell- und
+            # Werkzeuglaeufe parallel. Im Betriebsprotokoll war genau das im
+            # Abstand von vier Sekunden zu sehen; der Orb wirkte danach
+            # minutenlang blockiert und seine Zustaende sprangen.
+            if self._processing or self._turn_claimed:
+                if self._contains_stop_word(transcript.text):
+                    logger.info(
+                        "Stop-Wort nach paralleler Transkription erkannt - "
+                        "der laufende Auftrag wird abgebrochen."
+                    )
+                    self.verarbeitung_abbrechen()
+                else:
+                    logger.info(
+                        "Spaeteres Hoerfenster nicht parallel gestartet; "
+                        "der laufende Auftrag bleibt eindeutig."
+                    )
+                return
+
+            # Atomar fuer diese Ereignisschleife reservieren: Bis zum
+            # naechsten ``await`` kann kein zweites Hoerfenster dazwischen.
+            # Das schliesst das verbliebene Rennen zwischen der zweiten
+            # Pruefung und dem spaeteren ``_respond``.
+            self._turn_claimed = True
+            claimed_turn = True
 
             # Kauderwelsch gar nicht erst weiterreichen.
             #
@@ -1025,12 +1074,21 @@ class VoicePipeline:
             logger.exception("Fehler bei der Verarbeitung einer Äußerung.")
             self._last_error = "Bei der Verarbeitung ist etwas schiefgegangen."
         finally:
+            if claimed_turn:
+                self._turn_claimed = False
             # Die Aufnahme wird nicht aufbewahrt. Vorgabe: Keine
             # Mikrofonaufnahmen werden dauerhaft gespeichert.
             with contextlib.suppress(OSError):
                 path.unlink()
             turn.duration_seconds = time.perf_counter() - started
+            outcome = (
+                "interrupted" if turn.interrupted else "answered" if turn.answered else "ignored"
+            )
+            turn.timings = trace.finish(outcome=outcome)
             self._remember(turn)
+            if self._active_turn_trace is trace:
+                self._active_turn_trace = None
+            reset_turn_trace(trace_token)
 
     # --- Die Stimme lernen ----------------------------------------------------
 
@@ -1332,6 +1390,8 @@ class VoicePipeline:
         if match.has_command:
             # „Hallo Orb, wie spät ist es?" – gleich weiterarbeiten, statt
             # nachzufragen.
+            if await self._menue_befehl(match.command):
+                return
             await self._respond(match.command, turn)
         elif self._acknowledge:
             await self._set_state(VoiceState.LISTENING)
@@ -1518,6 +1578,12 @@ class VoicePipeline:
         # jetzt …" nicht als Teil der Frage bei der KI landet.
         text = self._wake_word.strip_wake_word(transcript.text).strip()
 
+        # Das Ringmenue ist lokale Oberflaechensteuerung. Es funktioniert
+        # deshalb ohne Sprachmodell, Internet oder Werkzeugwahl.
+        if await self._menue_befehl(text):
+            self._wake()
+            return
+
         # Laeuft ein Diktat, gehen ALLE Aeusserungen an die Diktatsteuerung -
         # zuerst, noch vor der Laengen- und Sicherheitspruefung, weil die
         # Steuerworte kurz sind ("weiter", "stopp") und sicher durchkommen
@@ -1594,6 +1660,37 @@ class VoicePipeline:
 
         await self._respond(text, turn)
 
+    async def _menue_befehl(self, text: str) -> bool:
+        """Oeffnet oder schliesst das Ringmenue direkt per Sprache."""
+
+        normalisiert = " ".join(
+            text.lower()
+            .replace("ü", "ue")
+            .replace("ö", "oe")
+            .replace("ä", "ae")
+            .replace("ß", "ss")
+            .strip(" .,!?:;")
+            .split()
+        )
+        oeffnen = {
+            "menue", "menu", "menue einblenden", "menu einblenden",
+            "menue oeffnen", "menu oeffnen", "oeffne das menue",
+            "oeffne menue", "zeig das menue", "zeige das menue",
+            "zeig mir das menue", "blende das menue ein",
+        }
+        schliessen = {
+            "menue schliessen", "menu schliessen", "schliesse das menue",
+            "schliess das menue", "blende das menue aus", "menue ausblenden",
+            "menu ausblenden",
+        }
+        if normalisiert in oeffnen:
+            await self._event_bus.publish(event_types.ORB_MENU_REQUESTED, {"action": "open"})
+            return True
+        if normalisiert in schliessen:
+            await self._event_bus.publish(event_types.ORB_MENU_REQUESTED, {"action": "close"})
+            return True
+        return False
+
     @staticmethod
     def _is_dismissal(text: str) -> bool:
         """Ob der Benutzer das Gespräch beendet hat."""
@@ -1636,6 +1733,7 @@ class VoicePipeline:
             # Der Fluss-Weg, wenn er bereitsteht: denken, sprechen,
             # weiterdenken, weitersprechen. Er kommt zuerst, weil er das
             # ist, was sich für den Benutzer am flüssigsten anfühlt.
+            mark_stage("answer_dispatched")
             if self._stream_speech and self._answer_stream is not None:
                 spoke = await self._respond_streaming(text, turn)
                 if spoke:
@@ -1668,6 +1766,7 @@ class VoicePipeline:
             if not answer.strip():
                 answer = "Dazu fällt mir gerade nichts ein."
 
+            mark_stage("answer_tts_requested")
             response_completed = await self._say(answer)
         finally:
             self._processing = False
@@ -1697,6 +1796,7 @@ class VoicePipeline:
 
         if self._interrupted.is_set():
             return False
+        mark_stage("answer_tts_requested")
         return await self._say(satz)
 
     async def _respond_streaming(self, text: str, turn: VoiceTurn) -> bool:
@@ -1723,6 +1823,7 @@ class VoicePipeline:
                 buffer += piece
                 sentence, buffer = _take_complete_sentence(buffer)
                 while sentence:
+                    mark_stage("answer_tts_requested")
                     if await self._say(sentence):
                         spoke_anything = True
                     if self._interrupted.is_set():
@@ -1732,6 +1833,7 @@ class VoicePipeline:
             # Was nach dem letzten Satzzeichen übrig blieb, noch sprechen.
             rest = buffer.strip()
             if rest:
+                mark_stage("answer_tts_requested")
                 if await self._say(rest):
                     spoke_anything = True
         except Exception:  # noqa: BLE001 - Fluss gescheitert, dann eben normal.
@@ -1841,6 +1943,10 @@ class VoicePipeline:
                         break
 
                     result = await pending
+
+                    active_trace = getattr(self, "_active_turn_trace", None)
+                    if active_trace is not None and "answer_tts_requested" in active_trace.stages:
+                        active_trace.mark("answer_audio_ready")
 
                     if not result.succeeded:
                         self._last_error = result.error
@@ -2203,6 +2309,9 @@ class VoicePipeline:
         )
 
     def _on_playback_started(self, path: Path) -> None:
+        trace = getattr(self, "_active_turn_trace", None)
+        if trace is not None and "answer_tts_requested" in trace.stages:
+            trace.mark("answer_audible")
         logger.debug("Wiedergabe beginnt: %s", path.name)
 
     def _on_playback_finished(self, path: Path, completed: bool) -> None:

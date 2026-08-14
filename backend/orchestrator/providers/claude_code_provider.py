@@ -509,10 +509,9 @@ class ClaudeCodeProvider(BaseProvider):
             prompt, weiter = await self._prepare_turn(messages)
             if not weiter:
                 self._warm_broken = True
-                antwort = await self._chat_einzeln(self._compose_prompt(messages))
-                if antwort.text:
-                    yield antwort.text
-                return
+                raise ProviderError(
+                    "claude_code: kein vorgewaermter Antwortstrom verfuegbar."
+                )
             try:
                 async for art, inhalt in self._stream_from_warm(prompt):
                     if art == "text":
@@ -535,13 +534,13 @@ class ClaudeCodeProvider(BaseProvider):
                     logger.warning("Der Strom riss ab: %s", fehler)
                     return
                 logger.warning(
-                    "Der Strom kam nicht zustande (%s); es wird neu gestartet.",
+                    "Der Strom kam nicht zustande (%s); der Provider-Manager "
+                    "darf vor dem ersten Text sofort ausweichen.",
                     fehler,
                 )
-                antwort = await self._chat_einzeln(self._compose_prompt(messages))
-                if antwort.text:
-                    yield antwort.text
-                return
+                raise ProviderError(
+                    f"claude_code: Antwortstrom vor dem ersten Text gescheitert: {fehler}"
+                ) from fehler
             except BaseException:
                 await self._retire_warm()
                 raise
@@ -1051,10 +1050,18 @@ class ClaudeCodeProvider(BaseProvider):
         # Drei Minuten zu warten hiesse, den Benutzer für einen Fehler
         # büssen zu lassen, der nach sechzig Sekunden feststand.
         frist = min(self._timeout, self._warm_timeout)
+        # Statusereignisse sind noch keine Antwort. Bis zum ersten echten
+        # Text gilt eine absolute Frist, die Statuszeilen nicht verlaengern.
+        loop = asyncio.get_running_loop()
+        erste_antwort_bis = loop.time() + frist
+        antwort_begonnen = False
 
         while True:
             try:
-                line = await asyncio.wait_for(process.stdout.readline(), timeout=frist)
+                restzeit = frist if antwort_begonnen else max(
+                    0.01, erste_antwort_bis - loop.time()
+                )
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=restzeit)
             except asyncio.TimeoutError as error:
                 raise ProviderError(
                     f"claude_code: Zeitlimit von {frist:.0f} s überschritten."
@@ -1079,6 +1086,7 @@ class ClaudeCodeProvider(BaseProvider):
                 if ereignis.get("type") == "content_block_delta":
                     stueck = str((ereignis.get("delta") or {}).get("text", ""))
                     if stueck:
+                        antwort_begonnen = True
                         gesammelt.append(stueck)
                         yield ("text", stueck)
                 continue

@@ -83,7 +83,7 @@ _MODE_TRIGGERS: tuple[tuple[str, tuple[str, ...]], ...] = (
                   "was übe ich", "was uebe ich")),
     ("kolloquium", ("kolloquium", "forschungsstand", "historiographie",
                     "forschungskontroverse")),
-    ("erklaeren", ("erklär mir", "erklaer mir", "erkläre mir", "was bedeutet",
+    ("erklaeren", ("erklär mir", "erklaer mir", "erkläre mir", "erklaere mir", "was bedeutet",
                    "was ist ein", "definiere")),
     # Sokratisches Lehren muss ausdruecklich verlangt werden.
     #

@@ -42,7 +42,12 @@ export class OrbRenderer {
       canvas,
       alpha: true,
       antialias: true,
-      premultipliedAlpha: false,
+      // Electron komponiert das transparente Fenster asynchron mit dem
+      // Desktop. Ohne erhaltenen Zeichenpuffer kann es dabei genau zwischen
+      // WebGL-Clear und Present lesen: Der komplette Orb fehlt dann fuer ein
+      // Bild. Das ist das vom Benutzer beobachtete Vollbild-Flackern.
+      preserveDrawingBuffer: true,
+      premultipliedAlpha: true,
       powerPreference: "high-performance",
     });
     // Vollständig transparenter Hintergrund: kein Schwarz, kein Weiß.

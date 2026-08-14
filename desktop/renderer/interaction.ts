@@ -58,6 +58,7 @@ export class InteractionController {
   private downPosition = { x: 0, y: 0 };
   private lastPosition = { x: 0, y: 0 };
   private lastClickAt = 0;
+  private lastContextMenuAt = Number.NEGATIVE_INFINITY;
   private enabled = true;
 
   /**
@@ -227,6 +228,16 @@ export class InteractionController {
     if (!this.enabled || !this.isOverOrb(event.clientX, event.clientY)) {
       return;
     }
+
+    // Einige Windows-Eingabegeraete erzeugen fuer einen einzigen
+    // Rechtsklick mehrere Kontextmenuereignisse. Ohne Entprellung klappt
+    // das Ringmenue dann sofort wieder zu und wirkt wie ein hektischer
+    // Zustandswechsel.
+    const now = performance.now();
+    if (now - this.lastContextMenuAt < 350) {
+      return;
+    }
+    this.lastContextMenuAt = now;
     this.handlers.onContextMenu();
   }
 }

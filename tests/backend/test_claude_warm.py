@@ -20,6 +20,8 @@ import stat
 import sys
 from pathlib import Path
 
+import pytest
+
 from backend.orchestrator.providers.base_provider import ChatMessage, ProviderError
 from backend.orchestrator.providers.claude_code_provider import ClaudeCodeProvider
 
@@ -224,6 +226,32 @@ def test_die_antwort_kommt_stueckweise(tmp_path: Path):
     assert "".join(stuecke) == "warm: Hallo Welt"
 
 
+def test_stream_startet_nach_warmfehler_nicht_noch_einen_claude_prozess(tmp_path: Path):
+    """Sonst zahlt die Sprache erst die Warmfrist und dann den Einzelstart,
+    bevor der Provider-Manager endlich lokal ausweichen kann."""
+
+    anbieter = _provider(tmp_path)
+
+    async def ablauf():
+        await anbieter.prewarm()
+
+        async def _kaputt(prompt):
+            raise ProviderError("Zeitlimit")
+            yield ("ende", "")  # pragma: no cover
+
+        anbieter._stream_from_warm = _kaputt  # type: ignore[method-assign]
+        anbieter._chat_einzeln = lambda prompt: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            AssertionError("zweiter Claude-Anlauf")
+        )
+        try:
+            return [piece async for piece in anbieter.chat_stream(_frage("Hallo"))]
+        finally:
+            await anbieter.shutdown()
+
+    with pytest.raises(ProviderError):
+        asyncio.run(ablauf())
+
+
 def test_ohne_warmen_weg_bleibt_der_alte(tmp_path: Path):
     """Vorwaermen ist eine Beschleunigung, keine Voraussetzung."""
 
@@ -415,3 +443,14 @@ def test_das_warme_zeitlimit_ist_kuerzer_als_das_grosse(tmp_path: Path):
 
     anbieter = _provider(tmp_path, timeout=180)
     assert anbieter._warm_timeout < anbieter._timeout
+
+
+def test_statuszeilen_verlaengern_die_frist_bis_zum_ersten_text_nicht():
+    """Die Frist muss absolut sein, bis wirklicher Antworttext eintrifft."""
+
+    source = Path(
+        "backend/orchestrator/providers/claude_code_provider.py"
+    ).read_text(encoding="utf-8")
+    assert "erste_antwort_bis = loop.time() + frist" in source
+    assert "erste_antwort_bis - loop.time()" in source
+    assert "antwort_begonnen = True" in source

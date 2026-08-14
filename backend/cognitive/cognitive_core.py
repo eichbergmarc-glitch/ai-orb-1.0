@@ -276,6 +276,18 @@ class CognitiveCore:
         # Systemprompt VOR dem übrigen Kontext – er bestimmt die Haltung,
         # der Rest liefert die Einzelheiten.
         professor_prompt = self.professor.prompt_for(text)
+        professor_status = self.professor.status()
+        await self._publish(
+            "orb.professor.changed",
+            {
+                "active": bool(professor_prompt),
+                "mode": (
+                    str(professor_status.get("modus", ""))
+                    if professor_prompt
+                    else ""
+                ),
+            },
+        )
         if professor_prompt:
             extra_context = "\n\n".join(
                 part for part in (professor_prompt, extra_context) if part

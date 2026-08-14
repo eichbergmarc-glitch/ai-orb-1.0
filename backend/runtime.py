@@ -24,6 +24,7 @@ darf.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import threading
 import time
@@ -172,6 +173,8 @@ class Runtime:
         # Werkzeug angeschlossen und damit fuer den Orb unerreichbar: Er
         # konnte an sich arbeiten, aber niemand hatte ihm gesagt, wie.
         from backend.system.restart import baue_neustarter
+        from backend.evolution.live_development import LiveDevelopmentService
+        from backend.tools.development_tools import build_development_tools
         from backend.tools.file_tools import build_file_tools
         from backend.tools.self_tools import build_self_tools
 
@@ -183,6 +186,13 @@ class Runtime:
                 neustart=self.neustarter,
             )
         )
+        self.live_development = LiveDevelopmentService(
+            providers=self.providers,
+            evolution=self.evolution,
+            event_bus=self.event_bus,
+            neustart=self.neustarter,
+        )
+        self.tools.register_many(build_development_tools(self.live_development))
         self.tool_engine = ToolEngine(
             registry=self.tools,
             security=self.security,
@@ -715,7 +725,15 @@ class Runtime:
         if self._loop is None:
             raise RuntimeError("Der AI-Orb Kern läuft nicht.")
         future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # A timed-out HTTP/API caller must not leave its model or tool
+            # task running invisibly in the core loop. Such orphaned turns
+            # accumulated and made every following request slower.
+            future.cancel()
+            logger.warning("Auftrag nach %.1f s abgebrochen (Zeitlimit).", timeout)
+            raise
 
     def publish(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
         """Veröffentlicht ein Event threadsicher auf dem Event Bus."""

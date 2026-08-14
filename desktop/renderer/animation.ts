@@ -131,9 +131,11 @@ export class AnimationLoop {
     }
 
     this.lastFrameTime = now;
-    // Sehr große Sprünge (z. B. nach dem Aufwachen aus dem Ruhezustand)
-    // begrenzen, damit keine Bewegung "springt".
-    const delta = Math.min(rawDelta / 1000, 0.1);
+    // Ein ausgelassenes GPU-Bild darf die Ringe nicht im nächsten Bild um
+    // ein Zehntel Sekunde vorspringen lassen. Maximal ein 30-FPS-Schritt
+    // wird sichtbar nachgeholt; Zeitlupe nach einem Hänger ist weniger
+    // störend als ein harter Positionssprung.
+    const delta = Math.min(rawDelta / 1000, 1 / 30);
     this.elapsed += delta;
 
     this.trackFrameTime(rawDelta);

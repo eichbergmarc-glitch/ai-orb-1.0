@@ -165,3 +165,30 @@ def test_ausdruecklich_verlangtes_werkzeug_wird_nicht_still_ignoriert():
     assert tool.gerufen == 1
     assert runs and runs[0].result.ok
     assert "Dokument" in antwort
+
+
+def test_vorab_ausgefuehrte_bildanalyse_wird_nicht_wiederholt():
+    """Ein erzwungener Screenshot ist schon das Werkzeugergebnis.
+
+    Fordert das Modell denselben Aufruf trotzdem noch einmal, darf daraus
+    kein zweiter Screenshot samt zweiter Modellanalyse werden.
+    """
+
+    provider = _FakeProvider(["sollte nicht gebraucht werden"])
+    eng, tool = _engine(provider)
+
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(
+            messages=[],
+            first_reply=_AUFRUF,
+            actor="test",
+            preexecuted={
+                "bildschirm_ansehen": "Auf dem Bild ist eine Handschrift zu sehen."
+            },
+        )
+    )
+
+    assert tool.gerufen == 0
+    assert provider.aufrufe == 0
+    assert runs == []
+    assert "Handschrift" in antwort

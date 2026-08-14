@@ -16,6 +16,10 @@
 # Zum Lesen von config.yaml. Einzige Pflicht-Abhängigkeit.
 PyYAML>=6.0
 
+# Abbrechbares asynchrones Streaming zum lokalen Ollama-Dienst. Ein
+# blockierender Lesethread lief nach einem Stop weiter und staute neue Fragen.
+httpx>=0.27
+
 # -----------------------------------------------------------------------------
 # Für die Tests wird zusätzlich pytest benötigt. Diese Pakete stehen in
 # requirements-dev.txt, damit ein Problem dort niemals den normalen Betrieb

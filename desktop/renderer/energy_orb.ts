@@ -32,7 +32,7 @@
 
 import * as THREE from "three";
 
-import type { StateAppearance } from "./states";
+import type { OrbStateName, StateAppearance } from "./states";
 
 /**
  * Die zentralen Animationsparameter – EINE Stelle für das visuelle Tuning.
@@ -42,27 +42,47 @@ import type { StateAppearance } from "./states";
  */
 export const ENERGY_PARAMS = {
   /** Radius des dunklen Kerns. */
-  coreRadius: 0.67,
+  coreRadius: 0.61,
   /** Radius der Plasmaschicht (knapp über dem Kern). */
-  plasmaRadius: 0.705,
+  plasmaRadius: 0.735,
+  /** Zwei transparente Tiefen fuer den synaptischen Nebel im Hohlraum. */
+  synapticInnerRadius: 0.675,
+  synapticOuterRadius: 0.785,
   /** Radius der weichen Außenhülle. */
-  shellRadius: 0.79,
-  /** Die drei Bahnen: Halbachsen, Neigung, Grundtempo, Grundhelligkeit. */
+  shellRadius: 0.82,
+  /** Radius der unregelmaessigen, aeusseren Energiekorona. */
+  coronaRadius: 0.88,
+  /** Die Lichtbahnen: Halbachsen, Neigung, Tempo und Farbakzente. */
   rings: [
-    { a: 1.04, b: 0.78, tiltX: 1.08, tiltZ: 0.18, speed: 0.092, gain: 1.00, tube: 0.030, warmth: 0.00 },
-    { a: 1.10, b: 0.72, tiltX: -0.78, tiltZ: 0.82, speed: -0.067, gain: 0.72, tube: 0.022, warmth: 0.10 },
-    { a: 0.96, b: 0.84, tiltX: 0.31, tiltZ: -1.08, speed: 0.051, gain: 0.48, tube: 0.017, warmth: 0.32 },
+    { a: 1.08, b: 0.78, tiltX: 1.08, tiltZ: 0.18, speed: 0.086, gain: 1.00, tube: 0.034, violet: 0.08, warmth: 0.00 },
+    { a: 1.13, b: 0.73, tiltX: -0.78, tiltZ: 0.82, speed: -0.064, gain: 0.82, tube: 0.027, violet: 0.56, warmth: 0.00 },
+    { a: 1.00, b: 0.88, tiltX: 0.31, tiltZ: -1.08, speed: 0.049, gain: 0.64, tube: 0.023, violet: 0.18, warmth: 0.34 },
+    { a: 1.17, b: 0.67, tiltX: 0.70, tiltZ: 1.31, speed: -0.040, gain: 0.50, tube: 0.019, violet: 0.74, warmth: 0.00 },
+    { a: 0.94, b: 0.91, tiltX: -0.24, tiltZ: -0.55, speed: 0.036, gain: 0.38, tube: 0.016, violet: 0.04, warmth: 0.48 },
+  ],
+  /** Geflochtene Lichtfasern direkt auf der Korona der Referenz. */
+  filaments: [
+    { radius: 0.80, amplitude: 0.16, lobes: 3, phase: 0.20, tiltX: 0.18, tiltZ: 0.10, speed: 0.030, gain: 0.72, tube: 0.020, violet: 0.00, warmth: 0.00 },
+    { radius: 0.83, amplitude: 0.13, lobes: 4, phase: 1.35, tiltX: -0.24, tiltZ: 0.42, speed: -0.026, gain: 0.64, tube: 0.017, violet: 0.66, warmth: 0.00 },
+    { radius: 0.78, amplitude: 0.19, lobes: 5, phase: 2.10, tiltX: 0.31, tiltZ: -0.36, speed: 0.022, gain: 0.58, tube: 0.016, violet: 0.12, warmth: 0.00 },
+    { radius: 0.85, amplitude: 0.11, lobes: 3, phase: 3.05, tiltX: -0.12, tiltZ: 0.78, speed: -0.019, gain: 0.50, tube: 0.014, violet: 0.82, warmth: 0.00 },
+    { radius: 0.81, amplitude: 0.17, lobes: 6, phase: 4.30, tiltX: 0.47, tiltZ: 0.20, speed: 0.017, gain: 0.46, tube: 0.013, violet: 0.05, warmth: 0.65 },
+    { radius: 0.86, amplitude: 0.10, lobes: 5, phase: 5.10, tiltX: -0.38, tiltZ: -0.62, speed: -0.015, gain: 0.43, tube: 0.012, violet: 0.48, warmth: 0.00 },
+    { radius: 0.79, amplitude: 0.15, lobes: 7, phase: 0.85, tiltX: 0.09, tiltZ: 1.04, speed: 0.014, gain: 0.39, tube: 0.011, violet: 0.00, warmth: 0.88 },
+    { radius: 0.84, amplitude: 0.12, lobes: 4, phase: 2.75, tiltX: 0.58, tiltZ: -0.12, speed: -0.013, gain: 0.37, tube: 0.010, violet: 0.74, warmth: 0.00 },
+    { radius: 0.82, amplitude: 0.18, lobes: 8, phase: 3.72, tiltX: -0.52, tiltZ: 0.16, speed: 0.012, gain: 0.34, tube: 0.009, violet: 0.14, warmth: 0.00 },
+    { radius: 0.87, amplitude: 0.09, lobes: 6, phase: 4.92, tiltX: 0.22, tiltZ: -0.92, speed: -0.011, gain: 0.31, tube: 0.009, violet: 0.42, warmth: 0.55 },
   ],
   /** Partikel je Bahn (HIGH; MEDIUM/LOW reduzieren). */
-  ringParticles: 30,
+  ringParticles: 12,
   /** Freie Staubpartikel um die Hülle. */
-  dustParticles: 46,
+  dustParticles: 52,
   /** Wie stark der Sprechpegel in das Leuchten eingeht (klein!). */
   audioSensitivity: 0.22,
   /** Boden-Glow: Grundgröße, Grundstärke, Kopplung an die Schwebehöhe. */
-  ground: { y: -0.94, size: 1.08, strength: 0.62, heightCoupling: 3.2 },
+  ground: { y: -0.94, size: 1.52, strength: 0.84, heightCoupling: 3.2 },
   /** Augen: Grundabstand, Grundgröße – klein; sie dürfen den Orb nie dominieren. */
-  eyes: { dx: 0.125, width: 0.042, height: 0.094, z: 0.0 },
+  eyes: { dx: 0.118, width: 0.033, height: 0.060, z: 0.0 },
   /** Wie lang ein Lichtimpuls (Erfolg/Fehler/Aufwachen) nachklingt. */
   flashSeconds: 1.1,
 } as const;
@@ -178,14 +198,79 @@ const PLASMA_FRAG = /* glsl */ `
     float field = fbm(p + warp * 1.1 + vec3(0.0, uTime * 0.045, -uTime * 0.038), uOctaves);
     float wisp = smoothstep(0.42, 0.86, field);
 
-    // Elektrisches Flackern: schnelles, feines Rauschen nur in den Schwaden.
-    float spark = noise3(p * 6.0 + vec3(uTime * 0.9)) * wisp;
-
     vec3 color = mix(uColorA, uColorB, clamp(field * 1.4 - 0.2, 0.0, 1.0));
-    float strength = wisp * (0.18 + 0.82 * rim) + spark * 0.10;
+    // Keine schnelle Funkelkomponente: Bewegung entsteht ausschliesslich
+    // durch das langsam wandernde Feld. Auf feinen, hellen Strukturen
+    // wuerde ein zeitliches Rauschen durch Bloom als Flackern erscheinen.
+    float strength = wisp * (0.18 + 0.82 * rim);
     strength *= uFlow * (1.0 + uAudio);
 
     gl_FragColor = vec4(color * strength, strength);
+  }
+`;
+
+/**
+ * Langsame synaptische Schwaden zwischen Kern und Energiehuelle.
+ *
+ * Zwei versetzte Kugelschalen ergeben den Eindruck eines Volumens. Die
+ * Leuchtdichte selbst pulst nicht: Nur die Koordinaten des kontinuierlichen
+ * Feldes driften. Dadurch bewegen sich Nebeladern und Knoten organisch,
+ * ohne dass einzelne Pixel ein- und ausgeschaltet werden.
+ */
+const SYNAPTIC_MIST_FRAG = /* glsl */ `
+  uniform vec3 uColorA;
+  uniform vec3 uColorB;
+  uniform float uTime;
+  uniform float uDensity;
+  uniform float uTurbulence;
+  uniform float uLayer;
+  varying vec3 vNormal;
+  varying vec3 vView;
+  varying vec3 vLocal;
+  ${NOISE_GLSL}
+  void main() {
+    vec3 n = normalize(vNormal);
+    vec3 v = normalize(vView);
+    float facing = max(dot(n, v), 0.0);
+    vec3 p = normalize(vLocal) * mix(2.35, 3.05, uTurbulence);
+
+    // Sehr langsamer, kontinuierlicher Fluss. Die beiden Schichten bewegen
+    // sich gegeneinander und machen den Zwischenraum raeumlich lesbar.
+    vec3 drift = vec3(
+      uTime * (0.014 + uLayer * 0.004),
+      -uTime * (0.010 + uLayer * 0.003),
+      uTime * 0.008
+    );
+    vec3 warp = vec3(
+      fbm(p * 0.82 + drift + vec3(1.7, 0.0, 4.2), 3),
+      fbm(p * 0.87 - drift.yzx + vec3(0.0, 6.1, 2.4), 3),
+      fbm(p * 0.79 + drift.zxy + vec3(5.2, 3.3, 0.0), 3)
+    ) - 0.5;
+    float broad = fbm(p + warp * (0.72 + uTurbulence * 0.42) + drift, 4);
+    float fine = fbm(p * 2.35 - drift * 1.31 + vec3(3.1, 7.2, 1.4), 3);
+
+    // Helle, weiche Adern und kleine synaptische Verdichtungen innerhalb
+    // eines breiten Nebelfelds. Keine zufaellige Zeitmodulation.
+    float ridge = 1.0 - abs(broad * 2.0 - 1.0);
+    float fibres = smoothstep(0.69, 0.91, ridge * 0.72 + fine * 0.34);
+    float cloud = smoothstep(0.36, 0.76, broad) * 0.36;
+    // Zwei gekreuzte Ridge-Felder bilden verzweigte, synapsenaehnliche
+    // Entladungen. Sie folgen demselben stetigen Fluss wie der Nebel und
+    // schalten daher nicht zufaellig ein und aus.
+    float branchA = 1.0 - abs(fbm(p * 1.52 + warp * 0.92 + drift * 0.74, 4) * 2.0 - 1.0);
+    float branchB = 1.0 - abs(fbm(p.yzx * 1.91 - warp.zxy * 0.68 - drift * 0.61, 3) * 2.0 - 1.0);
+    float synapse = smoothstep(0.875, 0.965, branchA * 0.72 + branchB * 0.38);
+    float nodes = smoothstep(0.76, 0.94, fine + synapse * 0.24) * 0.18;
+    float depth = mix(0.48, 1.0, pow(facing, 0.72));
+    float strength = (cloud + fibres * 0.44 + synapse * 0.62 + nodes) * depth * uDensity;
+    strength = min(strength, 0.38);
+
+    // Farbe wandert im Feld von Blau ueber Cyan zu Violett; es gibt keine
+    // separate zeitliche Helligkeitsmodulation.
+    float colorFlow = clamp(broad * 0.48 + fine * 0.30 + synapse * 0.38, 0.0, 1.0);
+    vec3 color = mix(uColorA, uColorB, colorFlow);
+    color = mix(color, vec3(0.62, 0.94, 1.0), synapse * 0.28);
+    gl_FragColor = vec4(color * strength, strength * 0.82);
   }
 `;
 
@@ -193,16 +278,43 @@ const PLASMA_FRAG = /* glsl */ `
 const SHELL_FRAG = /* glsl */ `
   uniform vec3 uColor;
   uniform float uIntensity;
+  uniform float uTime;
   varying vec3 vNormal;
   varying vec3 vView;
+  varying vec3 vLocal;
+  ${NOISE_GLSL}
   void main() {
     vec3 n = normalize(vNormal);
     vec3 v = normalize(vView);
-    // Hohe Potenz und niedrige Staerke: ein weicher Lichthauch am Rand,
-    // ausdruecklich KEIN gezeichneter Kreis um die Kugel.
-    float rim = pow(1.0 - max(dot(n, v), 0.0), 4.2);
-    float strength = rim * uIntensity;
+    float rim = pow(1.0 - max(dot(n, v), 0.0), 2.35);
+    float field = fbm(normalize(vLocal) * 4.1 + vec3(uTime * 0.025, -uTime * 0.018, 0.0), 3);
+    float filaments = smoothstep(0.42, 0.72, field + rim * 0.23);
+    float strength = rim * (0.04 + filaments * 1.15) * uIntensity;
     gl_FragColor = vec4(uColor * strength, strength);
+  }
+`;
+
+/** Unregelmaessige Energiekorona: macht aus der Kugel ein lebendes Feld. */
+const CORONA_FRAG = /* glsl */ `
+  uniform vec3 uColorA;
+  uniform vec3 uColorB;
+  uniform float uTime;
+  uniform float uIntensity;
+  varying vec3 vNormal;
+  varying vec3 vView;
+  varying vec3 vLocal;
+  ${NOISE_GLSL}
+  void main() {
+    vec3 n = normalize(vNormal);
+    vec3 v = normalize(vView);
+    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+    vec3 p = normalize(vLocal) * 5.0;
+    float broad = fbm(p + vec3(uTime * 0.030, uTime * -0.021, 2.7), 3);
+    float fine = fbm(p * 1.75 + vec3(-uTime * 0.044, 5.1, uTime * 0.026), 3);
+    float ribbon = smoothstep(0.51, 0.77, broad * 0.72 + fine * 0.42 + rim * 0.28);
+    float veil = rim * (0.025 + ribbon * 1.35) * uIntensity;
+    vec3 color = mix(uColorA, uColorB, smoothstep(0.38, 0.78, fine));
+    gl_FragColor = vec4(color * veil, veil);
   }
 `;
 
@@ -230,30 +342,64 @@ const RING_FRAG = /* glsl */ `
     float across = abs(vUv.y - 0.5) * 2.0; // Quer zur Bahn
     float profile = pow(max(0.0, 1.0 - across), 1.7);
 
-    // Das Grundband: von Rauschen unterbrochen, mit wandernder Phase -
-    // die Luecken bleiben nicht stehen, sie ziehen langsam mit.
-    float band = fbm(vec3(u * 5.0 + uSeed * 13.0, uSeed * 7.0, uTime * 0.05), 3);
-    band = smoothstep(uGap, uGap + 0.30, band);
-
-    // Breite atmet leicht entlang der Bahn.
-    float width = 0.75 + 0.25 * noise3(vec3(u * 8.0, uSeed, uTime * 0.08));
+    // Vier deutlich getrennte Bogenstuecke laufen ruhig um den Orb.
+    float orbitPhase = fract(u * 4.0 - uTime * uSpeed * 0.34 + uSeed);
+    float arcDistance = abs(orbitPhase - 0.5) * 2.0;
+    float band = 1.0 - smoothstep(0.22, 0.46, arcDistance);
+    float width = 0.88;
 
     // Zwei Kometenkoepfe mit Schweif, gegenlaeufig unterschiedlich schnell.
     float h1 = fract(u - uTime * uSpeed);
     float h2 = fract(0.37 + uSeed * 0.31 - u * 1.0 + uTime * uSpeed * 0.617);
     float comet = exp(-h1 * 5.5) + exp(-h2 * 8.0) * 0.6;
 
-    // Langsame Helligkeitsdrift, damit kein Ring konstant leuchtet.
-    float drift = 0.75 + 0.25 * sin(uTime * 0.11 + uSeed * 17.0)
-                * cos(uTime * 0.071 + uSeed * 5.0);
-
-    float glow = (0.8 * band * width + comet * 2.0) * profile * uIntensity * drift * 1.25;
+    // Keine permanente Grundlinie: Zwischen den Bogenstuecken ist die Bahn
+    // transparent. Die Leuchtdichte bleibt unter der Bloom-Schwelle.
+    float glow = (0.28 * band * width + comet * 0.26)
+      * profile * uIntensity;
+    glow = min(glow, 0.16);
+    if (glow < 0.004) discard;
     vec3 color = mix(uColorA, uColorB, 0.5 + 0.5 * sin(u * 6.2831 + uSeed * 9.0));
-    gl_FragColor = vec4(color * glow, glow);
+    // AdditiveBlending verwendet Alpha nochmals als Faktor. Die Farbe darf
+    // deshalb nicht bereits mit glow multipliziert sein, sonst werden aus
+    // 16 Prozent effektiv 2,5 Prozent und die Bahn verschwindet.
+    gl_FragColor = vec4(color, glow);
   }
 `;
 
-/** Partikel auf einer Bahn: laufen die Ellipse entlang, flackern, scheren aus. */
+/** Kurze elektrische Uebergabe von der Huelle an eine Atom-Umlaufbahn. */
+const TRANSFER_ARC_FRAG = /* glsl */ `
+  uniform vec3 uColorA;
+  uniform vec3 uColorB;
+  uniform float uProgress;
+  uniform float uIntensity;
+  varying vec2 vUv;
+  void main() {
+    float along = vUv.x;
+    float across = abs(vUv.y - 0.5) * 2.0;
+    float filament = pow(max(0.0, 1.0 - across), 2.2);
+
+    // Ein Energiepaket wandert von der Schale (0) zur Umlaufbahn (1).
+    // Die breite Sinus-Huelle blendet es weich ein und aus; kein hartes
+    // zufaelliges Blitzen und keine wechselnde Grundhelligkeit.
+    if (uProgress < 0.0 || uProgress > 1.0) discard;
+    float cycle = uProgress;
+    float head = 1.0 - smoothstep(0.015, 0.085, abs(along - cycle));
+    float tailDistance = mod(cycle - along + 1.0, 1.0);
+    float tail = exp(-tailDistance * 12.0) * step(along, cycle);
+    float envelope = smoothstep(0.03, 0.18, cycle)
+      * (1.0 - smoothstep(0.82, 0.98, cycle));
+    float glow = (head * 0.70 + tail * 0.24) * filament * envelope * uIntensity;
+    // Deutlich lesbar, aber mit einer harten Obergrenze gegen Bloom-Flare.
+    glow = min(glow, 0.48);
+    if (glow < 0.003) discard;
+
+    vec3 color = mix(uColorA, uColorB, smoothstep(0.18, 0.88, along));
+    gl_FragColor = vec4(color, glow);
+  }
+`;
+
+/** Partikel auf einer Bahn: laufen ruhig die Ellipse entlang und scheren aus. */
 const RING_PARTICLE_VERT = /* glsl */ `
   attribute float aAngle;
   attribute float aSpeed;
@@ -291,10 +437,9 @@ const RING_PARTICLE_FRAG = /* glsl */ `
     vec2 d = gl_PointCoord - 0.5;
     float r = length(d) * 2.0;
     float disc = exp(-r * r * 5.0);
-    // Flackern und gelegentliches Aufleuchten.
-    float flicker = 0.65 + 0.35 * sin(uTime * (1.3 + vSeed * 2.1) + vSeed * 61.0);
-    float flare = smoothstep(0.985, 1.0, sin(uTime * 0.31 + vSeed * 97.0)) * 2.2;
-    float glow = disc * uIntensity * (flicker + flare);
+    // Ruhiges Schimmern statt Flackern. Die frühere harte 2,2-fache
+    // Lichtspitze war auf kleinen Partikeln als Ein-/Ausschalten sichtbar.
+    float glow = min(disc * uIntensity, 0.14);
     gl_FragColor = vec4(uColor * glow, glow);
   }
 `;
@@ -328,8 +473,7 @@ const DUST_FRAG = /* glsl */ `
   void main() {
     vec2 d = gl_PointCoord - 0.5;
     float disc = exp(-dot(d, d) * 18.0);
-    float tw = 0.55 + 0.45 * sin(uTime * (0.7 + vSeed) + vSeed * 40.0);
-    float glow = disc * uIntensity * tw * 0.5;
+    float glow = min(disc * uIntensity * 0.38, 0.11);
     gl_FragColor = vec4(uColor * glow, glow);
   }
 `;
@@ -348,6 +492,8 @@ const EYES_FRAG = /* glsl */ `
   uniform float uCurious;   // subtile Asymmetrie
   uniform float uSurprised; // weiter, runder Blick
   uniform float uUncertain; // fragende Augenhoehe
+  uniform float uProfessor; // runde Professorbrille (weich eingeblendet)
+  uniform vec3 uProfessorColor;
   uniform vec2 uLook;       // kleiner Blickversatz
   uniform float uDx;        // halber Augenabstand
   uniform float uW;         // Kapselbreite
@@ -396,13 +542,16 @@ const EYES_FRAG = /* glsl */ `
     // Fokus: oben abflachen.
     d = max(d, p.y - h * (1.0 - uSquint * 0.55));
 
-    // Freundlich: ein Halbmond. Von der Kapsel wird dieselbe, nach oben
-    // verschobene Form abgezogen - übrig bleibt ein liegender Bogen (u),
-    // der bei jedem Wert von uHappy sichtbar bleibt, statt bei vollem
-    // Lächeln zu verschwinden.
+    // Freundlich und nachdenklich: ein kleiner oberer Bogen wie in der
+    // Referenz. Die eigene Kreisform verhindert hohe, eckige Hufeisen.
     if (uHappy > 0.01) {
-      float oben = kapsel(p - vec2(0.0, h * 1.1 * uHappy), h, w * 0.9);
-      d = max(d, -oben);
+      float radius = max(w * 1.52, 0.035);
+      vec2 q = p - vec2(0.0, -radius * 0.20);
+      float bogen = abs(length(q) - radius) - max(0.006, w * 0.18);
+      // Nur die obere Haelfte des Kreises behalten: eine kleine, ruhige
+      // Augenbraue statt einer hohen, eckigen Hufeisenform.
+      bogen = max(bogen, -(p.y + radius * 0.08));
+      d = mix(d, bogen, smoothstep(0.12, 0.72, uHappy));
     }
     return d;
   }
@@ -425,13 +574,32 @@ const EYES_FRAG = /* glsl */ `
     float symbolMix = clamp(max(uQuestion, uAlert), 0.0, 1.0);
     float dSymbol = mix(fragezeichen(p), ausrufezeichen(p), uAlert);
 
+    // Runde Brille: zwei vollständige Lichtkreise, feiner Steg und kurze
+    // Bügel. Sie liegt als eigene Form über den Augen und bleibt deshalb
+    // auch bei schmalen/nachdenklichen Augen klar lesbar.
+    float glassRadius = 0.104;
+    float glassRight = abs(length(p - vec2(uDx, 0.005)) - glassRadius) - 0.008;
+    float glassLeft = abs(length(p + vec2(uDx, -0.005)) - glassRadius) - 0.008;
+    float glassBridge = segment(
+      p,
+      vec2(-uDx + glassRadius * 0.88, 0.012),
+      vec2(uDx - glassRadius * 0.88, 0.012)
+    ) - 0.007;
+    float glassArmRight = segment(p, vec2(uDx + glassRadius, 0.018), vec2(0.305, 0.045)) - 0.006;
+    float glassArmLeft = segment(p, vec2(-uDx - glassRadius, 0.018), vec2(-0.305, 0.045)) - 0.006;
+    float dGlasses = min(min(glassRight, glassLeft), min(glassBridge, min(glassArmRight, glassArmLeft)));
+
     float eyeBody = smoothstep(0.006, -0.006, dEyes) * (1.0 - symbolMix);
     float symbolBody = smoothstep(0.006, -0.006, dSymbol) * symbolMix;
     float body = eyeBody + symbolBody;
     float d = mix(dEyes, dSymbol, symbolMix);
     float halo = exp(-max(d, 0.0) * 70.0) * 0.32;
-    float glow = (body * 1.25 + halo) * uBright;
-    gl_FragColor = vec4(uColor * glow, glow);
+    float eyeGlow = (body * 1.25 + halo) * uBright;
+    float glassesBody = smoothstep(0.006, -0.006, dGlasses) * uProfessor;
+    float glassesHalo = exp(-max(dGlasses, 0.0) * 55.0) * 0.25 * uProfessor;
+    float glassesGlow = (glassesBody * 1.15 + glassesHalo) * uBright;
+    vec3 color = uColor * eyeGlow + uProfessorColor * glassesGlow;
+    gl_FragColor = vec4(color, max(eyeGlow, glassesGlow));
   }
 `;
 
@@ -443,6 +611,36 @@ const PLANE_VERT = /* glsl */ `
   }
 `;
 
+/**
+ * Animationsebene fuer die aus der Konzeptgrafik gewonnenen Lichtmuster.
+ * Die Textur liefert unveraenderte RGB-Werte; nur ihre transparente
+ * Energieform wird sehr behutsam verformt und gepulst. Dadurch bleibt die
+ * Vorlage erkennbar, ohne zu einem eingefrorenen Bild zu werden.
+ */
+const REFERENCE_FRAG = /* glsl */ `
+  uniform sampler2D uTexture;
+  uniform float uTime;
+  uniform float uOpacity;
+  uniform float uWarp;
+  varying vec2 vUv;
+  void main() {
+    vec2 p = vUv - 0.5;
+    float angle = atan(p.y, p.x);
+    float radius = length(p);
+    vec2 flow = vec2(
+      sin(angle * 3.0 + uTime * 0.23) + sin(p.y * 15.0 - uTime * 0.17),
+      cos(angle * 4.0 - uTime * 0.19) + cos(p.x * 13.0 + uTime * 0.14)
+    );
+    vec2 uv = vUv + flow * uWarp * (0.45 + radius);
+    vec4 source = texture2D(uTexture, uv);
+    // Die Originalpixel behalten eine konstante Leuchtdichte. Das Muster
+    // fliesst nur minimal; Helligkeitspulse an seinen duennen Fasern
+    // erzeugen mit Bloom sonst ein scheinbares Ein-/Ausschalten.
+    gl_FragColor = vec4(source.rgb, source.a * uOpacity);
+    #include <colorspace_fragment>
+  }
+`;
+
 export type OrbEmotionName =
   | "friendly" | "curious" | "surprised"
   | "thoughtful" | "joyful" | "relaxed";
@@ -451,12 +649,39 @@ export type OrbVisualStyle = "standard" | "galactic" | "minimal" | "nature" | "f
 /** Boden-Glow: weiche, elliptische Lichtlache. */
 const GROUND_FRAG = /* glsl */ `
   uniform vec3 uColor;
+  uniform vec3 uAccent;
+  uniform vec3 uWarm;
   uniform float uStrength;
+  uniform float uTime;
+  uniform float uOrbitPhase;
+  uniform float uTransferEnergy;
   varying vec2 vUv;
   void main() {
-    vec2 d = (vUv - 0.5) * vec2(2.0, 3.2);
-    float glow = exp(-dot(d, d) * 3.0) * uStrength;
-    gl_FragColor = vec4(uColor * glow, glow);
+    vec2 p = vUv - 0.5;
+    vec2 d = p * vec2(1.75, 5.2);
+    float pool = exp(-dot(d, d) * 2.25);
+    float r = length(p * vec2(1.0, 4.8));
+    float ring = exp(-pow((r - 0.22) * 17.0, 2.0));
+    float reflection = exp(-pow(p.x * 4.4, 2.0)) * exp(-abs(p.y) * 16.0);
+    float violetLobe = exp(-dot((p - vec2(-0.13, 0.01)) * vec2(3.3, 8.0), (p - vec2(-0.13, 0.01)) * vec2(3.3, 8.0)) * 2.0);
+    float warmLobe = exp(-dot((p - vec2(0.17, 0.0)) * vec2(4.0, 9.0), (p - vec2(0.17, 0.0)) * vec2(4.0, 9.0)) * 2.2);
+    // Spiegelbilder der tatsaechlich umlaufenden Atomsegmente.
+    float a1 = uOrbitPhase * 0.083;
+    float a2 = -uOrbitPhase * 0.061 + 2.1;
+    vec2 orbitPosA = vec2(cos(a1) * 0.29, sin(a1) * 0.028);
+    vec2 orbitPosB = vec2(cos(a2) * 0.34, sin(a2) * 0.035);
+    float orbitA = exp(-dot((p - orbitPosA) * vec2(8.0, 18.0), (p - orbitPosA) * vec2(8.0, 18.0)) * 2.0);
+    float orbitB = exp(-dot((p - orbitPosB) * vec2(9.0, 20.0), (p - orbitPosB) * vec2(9.0, 20.0)) * 2.0);
+    float transfer = exp(-dot((p - vec2(0.30, 0.005)) * vec2(11.0, 22.0), (p - vec2(0.30, 0.005)) * vec2(11.0, 22.0)) * 2.0)
+      * uTransferEnergy;
+
+    vec3 light = uColor * (pool * 0.52 + ring * 0.48 + reflection * 0.30)
+      + uAccent * (violetLobe * 0.18 + orbitA * 0.22 + transfer * 0.28)
+      + uWarm * (warmLobe * 0.12 + orbitB * 0.16);
+    float alpha = (pool * 0.44 + ring * 0.38 + reflection * 0.18
+      + violetLobe * 0.08 + warmLobe * 0.06 + orbitA * 0.10
+      + orbitB * 0.08 + transfer * 0.12) * uStrength;
+    gl_FragColor = vec4(light * uStrength, alpha);
   }
 `;
 
@@ -524,7 +749,70 @@ function ellipseTube(a: number, b: number, tube: number): THREE.TubeGeometry {
     "catmullrom",
     0.5
   );
-  return new THREE.TubeGeometry(curve, 220, tube, 6, true);
+  // 168 Segmente sind bei der kleinen Desktop-Darstellung bereits glatt.
+  // Die eingesparte Geometrie finanziert zwei zusaetzliche Lichtbahnen,
+  // ohne die Bildrate gegenueber der alten Drei-Ring-Version zu belasten.
+  return new THREE.TubeGeometry(curve, 168, tube, 6, true);
+}
+
+/** Ein echtes, physisch getrenntes Teilstueck einer atomaren Umlaufbahn. */
+function ellipseArcTube(
+  a: number, b: number, start: number, length: number, tube: number
+): THREE.TubeGeometry {
+  const curve = new THREE.CatmullRomCurve3(
+    Array.from({ length: 25 }, (_, index) => {
+      const angle = start + (index / 24) * length;
+      return new THREE.Vector3(Math.cos(angle) * a, 0, Math.sin(angle) * b);
+    }),
+    false,
+    "catmullrom",
+    0.22
+  );
+  return new THREE.TubeGeometry(curve, 64, tube, 6, false);
+}
+
+/** Eine geschlossene, unregelmaessig um die Kugel geflochtene Lichtfaser. */
+function filamentTube(
+  radius: number,
+  amplitude: number,
+  lobes: number,
+  phase: number,
+  tube: number
+): THREE.TubeGeometry {
+  const curve = new THREE.CatmullRomCurve3(
+    Array.from({ length: 72 }, (_, i) => {
+      const theta = (i / 72) * Math.PI * 2;
+      const latitude = amplitude * Math.sin(theta * lobes + phase)
+        + amplitude * 0.24 * Math.sin(theta * (lobes + 2) - phase * 0.7);
+      const localRadius = radius
+        + 0.025 * Math.sin(theta * (lobes - 1) + phase * 1.3)
+        + 0.012 * Math.sin(theta * 9.0 - phase);
+      const horizontal = Math.cos(latitude) * localRadius;
+      return new THREE.Vector3(
+        Math.cos(theta) * horizontal,
+        Math.sin(latitude) * localRadius,
+        Math.sin(theta) * horizontal
+      );
+    }),
+    true,
+    "catmullrom",
+    0.5
+  );
+  return new THREE.TubeGeometry(curve, 132, tube, 5, true);
+}
+
+/** Gezackter, aber fester Strompfad zwischen Huelle und Umlaufbahn. */
+function transferArcTube(seed: number, offsetY: number): THREE.TubeGeometry {
+  const points = Array.from({ length: 13 }, (_, index) => {
+    const p = index / 12;
+    const x = 0.77 + p * 0.39;
+    const y = offsetY + Math.sin(p * Math.PI) * 0.07
+      + Math.sin(p * 31.0 + seed * 17.0) * 0.018 * Math.sin(p * Math.PI);
+    const z = 0.10 + Math.sin(p * 18.0 + seed * 11.0) * 0.022 * Math.sin(p * Math.PI);
+    return new THREE.Vector3(x, y, z);
+  });
+  const curve = new THREE.CatmullRomCurve3(points, false, "catmullrom", 0.18);
+  return new THREE.TubeGeometry(curve, 64, 0.008, 5, false);
 }
 
 interface RingBundle {
@@ -533,13 +821,50 @@ interface RingBundle {
   particleMaterial: THREE.ShaderMaterial;
   particles: THREE.Points;
   mesh: THREE.Mesh;
+  arcs: THREE.Mesh[];
+  arcMaterial: THREE.MeshBasicMaterial;
   speed: number;
   gain: number;
   seed: number;
   precession: number;
+  violet: number;
   warmth: number;
   baseTiltX: number;
   baseTiltZ: number;
+}
+
+interface FilamentBundle {
+  group: THREE.Group;
+  material: THREE.ShaderMaterial;
+  mesh: THREE.Mesh;
+  gain: number;
+  seed: number;
+  speed: number;
+  violet: number;
+  warmth: number;
+  baseTiltX: number;
+  baseTiltZ: number;
+}
+
+interface ReferenceCrown {
+  mesh: THREE.Mesh;
+  material: THREE.ShaderMaterial;
+  opacity: number;
+  target: number;
+  scale: number;
+}
+
+interface TransferArcBundle {
+  group: THREE.Group;
+  material: THREE.ShaderMaterial;
+  baseZ: number;
+  speed: number;
+  seed: number;
+  active: boolean;
+  progress: number;
+  duration: number;
+  gain: number;
+  eventGain: number;
 }
 
 /**
@@ -556,14 +881,27 @@ export class EnergyOrb {
 
   private readonly coreMaterial: THREE.ShaderMaterial;
   private readonly plasmaMaterial: THREE.ShaderMaterial;
+  private readonly synapticInnerMaterial: THREE.ShaderMaterial;
+  private readonly synapticOuterMaterial: THREE.ShaderMaterial;
   private readonly shellMaterial: THREE.ShaderMaterial;
+  private readonly coronaMaterial: THREE.ShaderMaterial;
   private readonly eyesMaterial: THREE.ShaderMaterial;
   private readonly groundMaterial: THREE.ShaderMaterial;
   private readonly waveMaterial: THREE.ShaderMaterial;
   private readonly progressMaterial: THREE.ShaderMaterial;
   private readonly dustMaterial: THREE.ShaderMaterial;
+  private readonly referenceCrowns: [ReferenceCrown, ReferenceCrown];
+  private readonly referenceOrbitMaterial: THREE.ShaderMaterial;
+  private readonly referenceInnerMaterial: THREE.ShaderMaterial;
+  private readonly referenceReflectionMaterial: THREE.ShaderMaterial;
+  private readonly referenceOrbit: THREE.Mesh;
+  private readonly referenceInner: THREE.Mesh;
+  private readonly referenceReflection: THREE.Mesh;
+  private readonly referenceTextures = new Map<string, THREE.Texture>();
 
   private readonly rings: RingBundle[] = [];
+  private readonly filaments: FilamentBundle[] = [];
+  private readonly transferArcs: TransferArcBundle[] = [];
   private readonly dust: THREE.Points;
   private readonly wave: THREE.Mesh;
   private readonly progressRing: THREE.Mesh;
@@ -577,17 +915,34 @@ export class EnergyOrb {
   private voiceTarget = 0.0;
   private pointer = new THREE.Vector2(0, 0);
   private pointerActive = false;
+  private professorTarget = 0.0;
+  private professorMix = 0.0;
   private emotion: OrbEmotionName | null = null;
   private emotionUntil = 0;
   private reactionAge = 99.0;
   private reactionKind: "click" | "surprise" = "click";
+  private reactionBaseY = 0.0;
   private styleRingGain = 1.0;
   private styleParticleGain = 1.0;
   /** Integrierte Phasen bleiben auch während Zustandsübergängen stetig. */
   private plasmaPhase = 0.0;
   private ringPhase = 0.0;
+  private transferPhase = 0.0;
+  private transferWait = 1.8 + Math.random() * 4.6;
+  private transferReflection = 0.0;
+  private filamentPhase = 0.0;
   private particlePhase = 0.0;
   private dustPhase = 0.0;
+  private referencePhase = 0.0;
+  private referenceReady = false;
+  private referenceSlot = 0;
+  private referenceState: OrbStateName = "idle";
+  private referenceOrbitOpacity = 0.0;
+  private referenceOrbitTarget = 0.0;
+  private referenceInnerOpacity = 0.0;
+  private referenceInnerTarget = 0.0;
+  private referenceReflectionOpacity = 0.0;
+  private referenceReflectionTarget = 0.0;
 
   /** Blinzeln: Uhr bis zum nächsten Lidschlag und dessen Fortschritt. */
   private blinkIn = 3.5;
@@ -609,6 +964,15 @@ export class EnergyOrb {
    *  Boden-Glow und das Punktlicht weiss gefärbt. */
   private readonly weiss = new THREE.Color(0xffffff);
   private readonly warmesBahnlicht = new THREE.Color(0xffa34d);
+  private readonly violettesBahnlicht = new THREE.Color(0x9d63ff);
+  private readonly freundlichBlau = new THREE.Color(0xa9e3ff);
+  private readonly freudeKern = new THREE.Color(0x35d97a);
+  private readonly freudeGlow = new THREE.Color(0xbcffd9);
+  private readonly freudePartikel = new THREE.Color(0x7dffb5);
+  /** Professorpalette: akademisches Blau/Cyan mit warmem Messingakzent. */
+  private readonly professorKern = new THREE.Color(0x185edb);
+  private readonly professorGlow = new THREE.Color(0x70dcff);
+  private readonly professorPartikel = new THREE.Color(0xffd27a);
   private readonly hslHilfe = { h: 0, s: 0, l: 0 };
 
   constructor(options?: { tempo?: number; helligkeit?: number }, pixelRatio = 1) {
@@ -619,6 +983,68 @@ export class EnergyOrb {
     this.groundGroup = new THREE.Group();
 
     const P = ENERGY_PARAMS;
+
+    // Die transparente Starttextur verhindert einen weissen Platzhalter,
+    // solange Electron die Bilddateien asynchron von der Platte laedt.
+    const emptyData = new Uint8Array([0, 0, 0, 0]);
+    const emptyTexture = new THREE.DataTexture(emptyData, 1, 1, THREE.RGBAFormat);
+    emptyTexture.needsUpdate = true;
+
+    const makeReferenceMaterial = (opacity = 0.0, warp = 0.0): THREE.ShaderMaterial => {
+      const material = new THREE.ShaderMaterial({
+        vertexShader: PLANE_VERT,
+        fragmentShader: REFERENCE_FRAG,
+        uniforms: {
+          uTexture: { value: emptyTexture },
+          uTime: { value: 0.0 },
+          uOpacity: { value: opacity },
+          uWarp: { value: warp },
+        },
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        blending: THREE.NormalBlending,
+        toneMapped: false,
+      });
+      return material;
+    };
+
+    const referenceGeo = new THREE.PlaneGeometry(2.72, 2.66);
+    this.geometries.push(referenceGeo);
+    const crownA = new THREE.Mesh(referenceGeo, makeReferenceMaterial());
+    const crownB = new THREE.Mesh(referenceGeo, makeReferenceMaterial());
+    crownA.renderOrder = 3;
+    crownB.renderOrder = 3;
+    crownA.position.z = 0.69;
+    crownB.position.z = 0.695;
+    this.group.add(crownA, crownB);
+    this.referenceCrowns = [
+      { mesh: crownA, material: crownA.material as THREE.ShaderMaterial, opacity: 0, target: 0, scale: 1 },
+      { mesh: crownB, material: crownB.material as THREE.ShaderMaterial, opacity: 0, target: 0, scale: 1 },
+    ];
+
+    this.referenceOrbitMaterial = makeReferenceMaterial();
+    this.referenceOrbit = new THREE.Mesh(referenceGeo, this.referenceOrbitMaterial);
+    this.referenceOrbit.position.z = 0.68;
+    this.referenceOrbit.renderOrder = 2;
+    this.group.add(this.referenceOrbit);
+
+    // Originale synaptische Lichtzeichnung aus dem Hohlraum der Vorlage.
+    // Sie liegt hinter der Krone und vor dem dunklen Kern; Augen sind aus
+    // der Textur ausgespart und bleiben dadurch komplett interaktiv.
+    this.referenceInnerMaterial = makeReferenceMaterial(0.0, 0.0018);
+    this.referenceInner = new THREE.Mesh(referenceGeo, this.referenceInnerMaterial);
+    this.referenceInner.position.z = 0.685;
+    this.referenceInner.renderOrder = 2;
+    this.group.add(this.referenceInner);
+
+    this.referenceReflectionMaterial = makeReferenceMaterial();
+    this.referenceReflection = new THREE.Mesh(referenceGeo, this.referenceReflectionMaterial);
+    this.referenceReflection.position.z = 0.67;
+    this.referenceReflection.renderOrder = 1;
+    this.group.add(this.referenceReflection);
+
+    this.loadReferenceTextures();
 
     // --- Layer 1: Core -----------------------------------------------------
     const coreGeo = new THREE.SphereGeometry(P.coreRadius, 48, 32);
@@ -655,16 +1081,89 @@ export class EnergyOrb {
     plasma.renderOrder = 1;
     this.group.add(plasma);
 
+    // --- Synaptischer Nebel im Raum zwischen Kern und Huelle -------------
+    const createSynapticMaterial = (layer: number): THREE.ShaderMaterial =>
+      additiveMaterial(BASIC_VERT, SYNAPTIC_MIST_FRAG, {
+        uColorA: { value: new THREE.Color(0x25a9ff) },
+        uColorB: { value: new THREE.Color(0x8c66ff) },
+        uTime: { value: 0.0 },
+        uDensity: { value: layer < 0.5 ? 0.54 : 0.38 },
+        uTurbulence: { value: 0.35 },
+        uLayer: { value: layer },
+      });
+    const synapticInnerGeo = new THREE.SphereGeometry(P.synapticInnerRadius, 40, 28);
+    const synapticOuterGeo = new THREE.SphereGeometry(P.synapticOuterRadius, 44, 30);
+    this.geometries.push(synapticInnerGeo, synapticOuterGeo);
+    this.synapticInnerMaterial = createSynapticMaterial(0.0);
+    this.synapticOuterMaterial = createSynapticMaterial(1.0);
+    const synapticInner = new THREE.Mesh(synapticInnerGeo, this.synapticInnerMaterial);
+    const synapticOuter = new THREE.Mesh(synapticOuterGeo, this.synapticOuterMaterial);
+    synapticInner.rotation.set(0.18, -0.24, 0.09);
+    synapticOuter.rotation.set(-0.13, 0.31, -0.17);
+    synapticInner.renderOrder = 1;
+    synapticOuter.renderOrder = 1;
+    this.group.add(synapticInner, synapticOuter);
+
     // --- Layer 3: Shell ----------------------------------------------------
     const shellGeo = new THREE.SphereGeometry(P.shellRadius, 40, 26);
     this.geometries.push(shellGeo);
     this.shellMaterial = additiveMaterial(BASIC_VERT, SHELL_FRAG, {
       uColor: { value: new THREE.Color(0x3fb6ff) },
-      uIntensity: { value: 0.5 },
+      uIntensity: { value: 0.68 },
+      uTime: { value: 0.0 },
     });
     const shell = new THREE.Mesh(shellGeo, this.shellMaterial);
     shell.renderOrder = 2;
     this.group.add(shell);
+
+    // --- Layer 4: organische Energiekorona -------------------------------
+    const coronaGeo = new THREE.SphereGeometry(P.coronaRadius, 40, 26);
+    this.geometries.push(coronaGeo);
+    this.coronaMaterial = additiveMaterial(BASIC_VERT, CORONA_FRAG, {
+      uColorA: { value: new THREE.Color(0x27caff) },
+      uColorB: { value: new THREE.Color(0x9d63ff) },
+      uTime: { value: 0.0 },
+      uIntensity: { value: 0.58 },
+    });
+    const corona = new THREE.Mesh(coronaGeo, this.coronaMaterial);
+    corona.renderOrder = 2;
+    this.group.add(corona);
+
+    // --- Geflochtene Energiekrone ----------------------------------------
+    // Die Referenz zeigt keine geschlossene Neon-Hohlkugel, sondern viele
+    // unterschiedlich geneigte Lichtfasern. Jede Faser folgt einer leicht
+    // anderen Wellenlinie direkt ueber dem Kern.
+    P.filaments.forEach((def, index) => {
+      const geo = filamentTube(def.radius, def.amplitude, def.lobes, def.phase, def.tube * 1.35);
+      this.geometries.push(geo);
+      const material = additiveMaterial(RING_VERT, RING_FRAG, {
+        uColorA: { value: new THREE.Color(0x28cfff) },
+        uColorB: { value: new THREE.Color(0x9d63ff) },
+        uTime: { value: 0.0 },
+        uSpeed: { value: def.speed },
+        uIntensity: { value: def.gain * 0.28 },
+        uSeed: { value: index * 0.417 + 0.09 },
+        uGap: { value: 0.30 },
+      });
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.renderOrder = 2;
+      const filamentGroup = new THREE.Group();
+      filamentGroup.rotation.set(def.tiltX, 0, def.tiltZ);
+      filamentGroup.add(mesh);
+      this.group.add(filamentGroup);
+      this.filaments.push({
+        group: filamentGroup,
+        material,
+        mesh,
+        gain: def.gain,
+        seed: index * 0.417 + 0.09,
+        speed: def.speed,
+        violet: def.violet,
+        warmth: def.warmth,
+        baseTiltX: def.tiltX,
+        baseTiltZ: def.tiltZ,
+      });
+    });
 
     // --- Energie-Ringe -----------------------------------------------------
     P.rings.forEach((def, index) => {
@@ -677,10 +1176,36 @@ export class EnergyOrb {
         uSpeed: { value: def.speed },
         uIntensity: { value: def.gain },
         uSeed: { value: index * 0.731 + 0.17 },
-        uGap: { value: 0.34 },
+        uGap: { value: 0.25 },
       });
       const mesh = new THREE.Mesh(geo, material);
       mesh.renderOrder = 3;
+
+      // Vier physisch getrennte Bogensegmente bleiben auch beim kompakten
+      // Desktop-Orb sichtbar. Die Luecken sind echte Geometrie; es kann
+      // daher kein geschlossener Neonreifen entstehen.
+      const arcMaterial = new THREE.MeshBasicMaterial({
+        color: 0x4fdcff,
+        transparent: true,
+        opacity: 0.72,
+        depthWrite: false,
+        depthTest: true,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      });
+      const arcs = Array.from({ length: 4 }, (_, arcIndex) => {
+        const arcGeo = ellipseArcTube(
+          def.a,
+          def.b,
+          arcIndex * (Math.PI / 2) + index * 0.21,
+          0.54 + (arcIndex % 2) * 0.12,
+          Math.max(0.012, def.tube * 0.72)
+        );
+        this.geometries.push(arcGeo);
+        const arc = new THREE.Mesh(arcGeo, arcMaterial);
+        arc.renderOrder = 4;
+        return arc;
+      });
 
       // Partikel derselben Bahn – im selben Koordinatensystem, damit sie
       // exakt auf der Ellipse laufen.
@@ -699,6 +1224,7 @@ export class EnergyOrb {
       const ringGroup = new THREE.Group();
       ringGroup.rotation.set(def.tiltX, 0, def.tiltZ);
       ringGroup.add(mesh);
+      ringGroup.add(...arcs);
       ringGroup.add(particles);
       this.group.add(ringGroup);
 
@@ -708,13 +1234,54 @@ export class EnergyOrb {
         particleMaterial,
         particles,
         mesh,
+        arcs,
+        arcMaterial,
         speed: def.speed,
         gain: def.gain,
         seed: index * 0.731 + 0.17,
         precession: (index + 1) * 0.021 * (index % 2 === 0 ? 1 : -1),
+        violet: def.violet,
         warmth: def.warmth,
         baseTiltX: def.tiltX,
         baseTiltZ: def.tiltZ,
+      });
+    });
+
+    // --- Elektrische Transferentladungen ---------------------------------
+    // Energiepakete loesen sich zufaellig an wechselnden Stellen aus der
+    // Huelle und springen in eine Umlaufbahn. Vier Pfade plus frei gewaehlte
+    // Rotation verhindern einen mechanisch wiederholten Einzelblitz.
+    [
+      { seed: 0.19, y: 0.13, z: -0.18, speed: 0.105, gain: 0.88 },
+      { seed: 0.43, y: -0.05, z: 0.23, speed: 0.091, gain: 0.78 },
+      { seed: 0.71, y: -0.16, z: 0.46, speed: 0.078, gain: 0.84 },
+      { seed: 0.91, y: 0.04, z: -0.55, speed: 0.086, gain: 0.72 },
+    ].forEach((definition) => {
+      const geometry = transferArcTube(definition.seed, definition.y);
+      this.geometries.push(geometry);
+      const material = additiveMaterial(RING_VERT, TRANSFER_ARC_FRAG, {
+        uColorA: { value: new THREE.Color(0x8eeeff) },
+        uColorB: { value: new THREE.Color(0x8b64ff) },
+        uProgress: { value: -1.0 },
+        uIntensity: { value: definition.gain },
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.renderOrder = 4;
+      const transferGroup = new THREE.Group();
+      transferGroup.rotation.z = definition.z;
+      transferGroup.add(mesh);
+      this.group.add(transferGroup);
+      this.transferArcs.push({
+        group: transferGroup,
+        material,
+        baseZ: definition.z,
+        speed: definition.speed,
+        seed: definition.seed,
+        active: false,
+        progress: -1.0,
+        duration: 0.55,
+        gain: definition.gain,
+        eventGain: 1.0,
       });
     });
 
@@ -745,6 +1312,8 @@ export class EnergyOrb {
       uCurious: { value: 0.0 },
       uSurprised: { value: 0.0 },
       uUncertain: { value: 0.0 },
+      uProfessor: { value: 0.0 },
+      uProfessorColor: { value: new THREE.Color(0xffd996) },
       uLook: { value: new THREE.Vector2(0, 0) },
       uDx: { value: ENERGY_PARAMS.eyes.dx },
       uW: { value: ENERGY_PARAMS.eyes.width },
@@ -788,7 +1357,12 @@ export class EnergyOrb {
     this.geometries.push(groundGeo);
     this.groundMaterial = additiveMaterial(PLANE_VERT, GROUND_FRAG, {
       uColor: { value: new THREE.Color(0x2f8fd8) },
+      uAccent: { value: new THREE.Color(0x8a5cff) },
+      uWarm: { value: new THREE.Color(0xffa34d) },
       uStrength: { value: ENERGY_PARAMS.ground.strength },
+      uTime: { value: 0.0 },
+      uOrbitPhase: { value: 0.0 },
+      uTransferEnergy: { value: 0.0 },
     });
     const ground = new THREE.Mesh(groundGeo, this.groundMaterial);
     ground.rotation.x = -Math.PI / 2;
@@ -826,6 +1400,114 @@ export class EnergyOrb {
     geometry.setAttribute("aEscape", new THREE.BufferAttribute(escape, 1));
     this.geometries.push(geometry);
     return new THREE.Points(geometry, material);
+  }
+
+  private loadReferenceTextures(): void {
+    const loader = new THREE.TextureLoader();
+    const states = ["idle", "listening", "thinking", "executing", "waiting", "success", "warning", "error", "offline"];
+    const files: Record<string, string> = {
+      crownIdle: "assets/orb/reference-layers/idle-crown.png",
+      innerIdle: "assets/orb/reference-layers/idle-inner-energy.png",
+      orbitIdle: "assets/orb/reference-layers/idle-orbits.png",
+      reflectionIdle: "assets/orb/reference-layers/idle-reflection.png",
+    };
+    for (const state of states) {
+      files[`state:${state}`] = `assets/orb/reference-layers/state-${state}.png`;
+    }
+
+    let remaining = Object.keys(files).length;
+    const loaded = (): void => {
+      remaining -= 1;
+      if (remaining !== 0) return;
+      this.referenceReady = true;
+      this.referenceInnerMaterial.uniforms.uTexture.value = this.referenceTextures.get("innerIdle");
+      this.referenceOrbitMaterial.uniforms.uTexture.value = this.referenceTextures.get("orbitIdle");
+      this.referenceReflectionMaterial.uniforms.uTexture.value = this.referenceTextures.get("reflectionIdle");
+      // Die Quelle besitzt bereits die gewuenschten unterbrochenen Bahnen
+      // und Farbverlaeufe. Die 3D-Bogenstuecke darunter geben ihnen Tiefe.
+      this.referenceInnerTarget = 0.46;
+      this.referenceOrbitTarget = 0.48;
+      this.referenceReflectionTarget = 0.34;
+      for (const ring of this.rings) ring.particles.visible = true;
+      for (const filament of this.filaments) filament.mesh.visible = true;
+      this.showReferenceState(this.referenceState);
+    };
+
+    for (const [key, file] of Object.entries(files)) {
+      loader.load(
+        file,
+        (texture) => {
+          texture.colorSpace = THREE.SRGBColorSpace;
+          // Keine wechselnden Mip-Stufen auf den nur ein bis zwei Pixel
+          // breiten Plasmafasern. Das beseitigt deren Helligkeitsschimmern
+          // beim Schweben des gesamten Orb.
+          texture.minFilter = THREE.LinearFilter;
+          texture.magFilter = THREE.LinearFilter;
+          texture.generateMipmaps = false;
+          this.referenceTextures.set(key, texture);
+          loaded();
+        },
+        undefined,
+        () => loaded()
+      );
+    }
+  }
+
+  private patternForState(state: OrbStateName): { key: string; scale: number; orbit: number; inner: number; reflection: number } {
+    const normalized = state === "busy" ? "executing"
+      : state === "speaking" ? "success"
+        : state === "sleep" ? "offline"
+          : state;
+    // Die Quellgrafik besitzt bereits einen eingebrannten Leuchthof. Mit
+    // dem Live-Bloom darf sie deshalb nur als dezente Bahnzeichnung
+    // zugemischt werden, sonst ueberstrahlt sie nach dem Einblenden.
+    const orbitByState: Record<string, number> = {
+      idle: 0.48, listening: 0.30, thinking: 0.40, executing: 0.52,
+      waiting: 0.34, success: 0.31, warning: 0.45, error: 0.46, offline: 0.16,
+    };
+    const innerByState: Record<string, number> = {
+      idle: 0.46, listening: 0.36, thinking: 0.58, executing: 0.62,
+      waiting: 0.38, success: 0.42, warning: 0.52, error: 0.56, offline: 0.15,
+    };
+    if (normalized === "idle") {
+      return { key: "crownIdle", scale: 1.0, orbit: orbitByState.idle, inner: innerByState.idle, reflection: 0.34 };
+    }
+    return {
+      key: `state:${normalized}`,
+      scale: 0.67,
+      orbit: orbitByState[normalized] ?? 0.36,
+      inner: innerByState[normalized] ?? 0.42,
+      reflection: normalized === "offline" ? 0.12 : 0.30,
+    };
+  }
+
+  private showReferenceState(state: OrbStateName): void {
+    this.referenceState = state;
+    if (!this.referenceReady) return;
+    const pattern = this.patternForState(state);
+    const texture = this.referenceTextures.get(pattern.key) ?? this.referenceTextures.get("crownIdle");
+    if (texture === undefined) return;
+
+    const next = 1 - this.referenceSlot;
+    const crown = this.referenceCrowns[next];
+    crown.material.uniforms.uTexture.value = texture;
+    crown.scale = pattern.scale;
+    crown.mesh.scale.setScalar(pattern.scale);
+    // Auch beim ersten Laden weich einblenden. Zuvor erschien die komplette
+    // helle Textur in einem einzigen Frame und sah wie ein Blitz aus.
+    crown.opacity = 0.0;
+    // Der Quellausschnitt besitzt bereits fotografischen Glow. In der
+    // WebGL-Szene kommt Live-Bloom hinzu; volle Deckkraft wuerde deshalb
+    // nach dem Laden heller als die perfekte Startdarstellung werden.
+    // Die Referenzkrone liefert Formdetails, darf aber die live berechnete
+    // Zustandsfarbe von Nebel, Huelle und Bahnen nicht ueberdecken.
+    crown.target = state === "idle" ? 0.58 : 0.52;
+    crown.material.uniforms.uOpacity.value = crown.opacity;
+    this.referenceCrowns[1 - next].target = 0.0;
+    this.referenceSlot = next;
+    this.referenceOrbitTarget = pattern.orbit;
+    this.referenceInnerTarget = pattern.inner;
+    this.referenceReflectionTarget = pattern.reflection;
   }
 
   private createDust(count: number, material: THREE.ShaderMaterial): THREE.Points {
@@ -868,6 +1550,17 @@ export class EnergyOrb {
     this.pointerActive = active;
   }
 
+  /** Verbindet das exakte Farbmuster der Vorlage mit dem semantischen Zustand. */
+  public setState(state: OrbStateName): void {
+    if (state !== this.referenceState) this.showReferenceState(state);
+  }
+
+  /** Blendet die runde Brille und die akademische Farbmischung weich ein. */
+  public setProfessorMode(active: boolean): void {
+    this.professorTarget = active ? 1.0 : 0.0;
+  }
+
+
   /** Zeigt einen der sechs Ausdruecke aus der Referenz fuer kurze Zeit. */
   public setEmotion(emotion: OrbEmotionName | null, seconds = 2.4): void {
     this.emotion = emotion;
@@ -879,6 +1572,7 @@ export class EnergyOrb {
   public react(kind: "click" | "surprise"): void {
     this.reactionKind = kind;
     this.reactionAge = 0;
+    this.reactionBaseY = this.group.position.y;
     this.flash(kind === "surprise" ? 0.75 : 0.38);
   }
 
@@ -918,46 +1612,137 @@ export class EnergyOrb {
       this.emotion = null;
     }
     if (this.emotion === "joyful") {
-      core.lerp(new THREE.Color(0x35d97a), 0.72);
-      glow.lerp(new THREE.Color(0xbcffd9), 0.72);
-      particle.lerp(new THREE.Color(0x7dffb5), 0.72);
+      core.lerp(this.freudeKern, 0.72);
+      glow.lerp(this.freudeGlow, 0.72);
+      particle.lerp(this.freudePartikel, 0.72);
     } else if (this.emotion === "friendly") {
-      glow.lerp(new THREE.Color(0xb47cff), 0.38);
+      glow.lerp(this.freundlichBlau, 0.38);
     }
 
+    // Im Professorbetrieb bleibt Blau die Basis; Cyan macht das Erklären
+    // heller, ein kleiner Goldanteil gibt ihm einen eigenen akademischen
+    // Charakter, ohne den Orb wieder violett erscheinen zu lassen.
+    core.lerp(this.professorKern, this.professorMix * 0.74);
+    glow.lerp(this.professorGlow, this.professorMix * 0.68);
+    particle.lerp(this.professorPartikel, this.professorMix * 0.34);
+
     this.coreMaterial.uniforms.uGlow.value.copy(glow);
+    (this.coreMaterial.uniforms.uDeep.value as THREE.Color).copy(core).multiplyScalar(0.24);
     this.coreMaterial.uniforms.uGlowStrength.value =
-      (0.55 + a.coreGlow * 0.75) * bright;
+      (0.46 + a.coreGlow * 0.62) * bright;
 
     this.plasmaMaterial.uniforms.uColorA.value.copy(core);
     // Die zweite Plasmafarbe ist die Zustandsfarbe mit VERSCHOBENEM
-    // Farbton: Blau bekommt so den Cyan-Violett-Verlauf des Referenzbildes,
-    // Orange bleibt Orange (rotwärts gespreizt) - feste Mischfarben hatten
-    // den Arbeitszustand pink gefärbt.
-    this.tonVerschieben(glow, 0.10, this.plasmaMaterial.uniforms.uColorB.value as THREE.Color);
-    this.plasmaMaterial.uniforms.uFlow.value = a.energyFlow * bright;
+    // Farbton: Ein kleiner Zug Richtung Cyan hält Blau wirklich blau.
+    // Orange bleibt dabei warm, statt über Rot ins Pink zu kippen.
+    this.tonVerschieben(glow, -0.035, this.plasmaMaterial.uniforms.uColorB.value as THREE.Color);
+    this.plasmaMaterial.uniforms.uFlow.value = a.energyFlow * bright * 0.74;
 
-    this.shellMaterial.uniforms.uColor.value.copy(glow);
-    this.shellMaterial.uniforms.uIntensity.value = 0.20 * a.lightIntensity * bright;
+    // Blau/Cyan traegt violette Nebeladern und Fasern wie die Vorlage.
+    // Eindeutige Statusfarben faerben dagegen das gesamte Energiefeld.
+    core.getHSL(this.hslHilfe, THREE.SRGBColorSpace);
+    const blueFamily = this.hslHilfe.s > 0.25 && this.hslHilfe.h >= 0.50 && this.hslHilfe.h <= 0.72;
+
+    for (const mist of [this.synapticInnerMaterial, this.synapticOuterMaterial]) {
+      this.tonVerschieben(core, -0.055, mist.uniforms.uColorA.value as THREE.Color, 0.44);
+      this.tonVerschieben(glow, 0.035, mist.uniforms.uColorB.value as THREE.Color, 0.46);
+      (mist.uniforms.uColorB.value as THREE.Color).lerp(
+        this.violettesBahnlicht,
+        blueFamily ? 0.48 : 0.06
+      );
+      mist.uniforms.uTurbulence.value = clampNumber(a.smokeTurbulence / 1.6, 0.12, 1.0);
+    }
+    this.synapticInnerMaterial.uniforms.uDensity.value =
+      clampNumber(a.smokeDensity * 0.68 * bright, 0.30, 0.82);
+    this.synapticOuterMaterial.uniforms.uDensity.value =
+      clampNumber(a.smokeDensity * 0.48 * bright, 0.22, 0.62);
+
+    this.tonVerschieben(core, -0.045, this.shellMaterial.uniforms.uColor.value as THREE.Color, 0.50);
+    this.shellMaterial.uniforms.uIntensity.value = 0.36 * a.lightIntensity * bright;
+
+    this.tonVerschieben(core, -0.045, this.coronaMaterial.uniforms.uColorA.value as THREE.Color, 0.46);
+    this.tonVerschieben(core, 0.065, this.coronaMaterial.uniforms.uColorB.value as THREE.Color, 0.48);
+    (this.coronaMaterial.uniforms.uColorB.value as THREE.Color).lerp(
+      this.violettesBahnlicht,
+      blueFamily ? 0.68 : 0.10
+    );
+    this.coronaMaterial.uniforms.uIntensity.value =
+      (0.14 + a.energyFlow * 0.10) * a.lightIntensity * bright;
+
+    for (const filament of this.filaments) {
+      this.tonVerschieben(core, -0.045, filament.material.uniforms.uColorA.value as THREE.Color, 0.46);
+      this.tonVerschieben(core, 0.055, filament.material.uniforms.uColorB.value as THREE.Color, 0.48);
+      (filament.material.uniforms.uColorB.value as THREE.Color).lerp(
+        this.violettesBahnlicht,
+        blueFamily ? filament.violet * 0.82 : filament.violet * 0.06
+      );
+      (filament.material.uniforms.uColorA.value as THREE.Color).lerp(
+        this.violettesBahnlicht,
+        blueFamily ? filament.violet * 0.42 : filament.violet * 0.03
+      );
+      (filament.material.uniforms.uColorB.value as THREE.Color).lerp(
+        this.warmesBahnlicht,
+        blueFamily ? filament.warmth : 0.0
+      );
+      (filament.material.uniforms.uColorA.value as THREE.Color).lerp(
+        this.warmesBahnlicht,
+        blueFamily ? filament.warmth * 0.58 : 0.0
+      );
+      filament.material.uniforms.uIntensity.value =
+        filament.gain * a.ringIntensity * bright * 1.82;
+    }
 
     for (const ring of this.rings) {
       // Beide Bahnfarben aus der Zustandsfarbe, mit gegenläufig
       // verschobenem Farbton und angehobener Helligkeit: leuchtende
       // Plasmabahnen, die die Farbauskunft des Zustands nie verfälschen.
       this.tonVerschieben(core, -0.055, ring.material.uniforms.uColorA.value as THREE.Color, 0.52);
-      this.tonVerschieben(glow, 0.085, ring.material.uniforms.uColorB.value as THREE.Color, 0.58);
+      this.tonVerschieben(core, 0.045, ring.material.uniforms.uColorB.value as THREE.Color, 0.50);
+      (ring.material.uniforms.uColorB.value as THREE.Color).lerp(
+        this.violettesBahnlicht,
+        blueFamily ? ring.violet : ring.violet * 0.06
+      );
+      (ring.material.uniforms.uColorA.value as THREE.Color).lerp(
+        this.violettesBahnlicht,
+        blueFamily ? ring.violet * 0.28 : ring.violet * 0.03
+      );
       // Wie in der Referenz liegt auf einer der hinteren Bahnen ein kleiner
       // warmer Lichtreflex. Er ist nur Akzent und ueberdeckt nie die
       // Zustandsfarbe des Orb.
       (ring.material.uniforms.uColorB.value as THREE.Color).lerp(
         this.warmesBahnlicht,
-        ring.warmth
+        blueFamily ? ring.warmth : 0.0
+      );
+      (ring.material.uniforms.uColorA.value as THREE.Color).lerp(
+        this.warmesBahnlicht,
+        blueFamily ? ring.warmth * 0.55 : 0.0
       );
       ring.material.uniforms.uIntensity.value =
-        ring.gain * a.ringIntensity * bright * this.styleRingGain;
+        ring.gain * a.ringIntensity * bright * this.styleRingGain * 0.72;
+      ring.arcMaterial.color.copy(ring.material.uniforms.uColorA.value as THREE.Color).lerp(
+        ring.material.uniforms.uColorB.value as THREE.Color,
+        0.34
+      );
+      ring.arcMaterial.opacity = clampNumber(
+        0.42 + ring.gain * a.ringIntensity * bright * 0.22,
+        0.42,
+        0.78
+      );
       ring.particleMaterial.uniforms.uColor.value.copy(particle);
       ring.particleMaterial.uniforms.uIntensity.value =
-        ring.gain * a.particleIntensity * bright * this.styleParticleGain;
+        ring.gain * a.particleIntensity * bright * this.styleParticleGain * 0.22;
+    }
+
+    for (const transfer of this.transferArcs) {
+      this.tonVerschieben(glow, -0.045, transfer.material.uniforms.uColorA.value as THREE.Color, 0.55);
+      this.tonVerschieben(glow, 0.055, transfer.material.uniforms.uColorB.value as THREE.Color, 0.50);
+      (transfer.material.uniforms.uColorB.value as THREE.Color).lerp(
+        this.violettesBahnlicht,
+        blueFamily ? 0.55 : 0.08
+      );
+      transfer.gain = 0.82 * a.ringIntensity * bright;
+      transfer.material.uniforms.uIntensity.value =
+        transfer.gain * (transfer.active ? transfer.eventGain : 1.0);
     }
 
     this.dustMaterial.uniforms.uColor.value.copy(particle);
@@ -986,6 +1771,12 @@ export class EnergyOrb {
     this.eyesMaterial.uniforms.uUncertain.value = expression?.[6] ?? a.eyeUncertain;
 
     this.groundMaterial.uniforms.uColor.value.copy(core);
+    (this.groundMaterial.uniforms.uAccent.value as THREE.Color).copy(
+      blueFamily ? this.violettesBahnlicht : glow
+    );
+    (this.groundMaterial.uniforms.uWarm.value as THREE.Color).copy(
+      blueFamily ? this.warmesBahnlicht : glow
+    );
     this.waveMaterial.uniforms.uColor.value.copy(glow);
     this.light.color.copy(core);
     this.light.intensity = 1.6 * a.lightIntensity * bright;
@@ -996,10 +1787,48 @@ export class EnergyOrb {
    */
   public update(elapsed: number, delta: number, a: StateAppearance): void {
     const t = elapsed * this.tempoFactor;
+    const professorEase = 1.0 - Math.exp(-delta * 5.0);
+    this.professorMix += (this.professorTarget - this.professorMix) * professorEase;
+    this.eyesMaterial.uniforms.uProfessor.value = this.professorMix;
     this.plasmaPhase += delta * this.tempoFactor * (0.7 + a.speed * 0.5);
     this.ringPhase += delta * this.tempoFactor * a.ringSpeed;
+    this.transferPhase += delta * this.tempoFactor * (0.55 + a.energyFlow * 0.28);
+    this.filamentPhase += delta * this.tempoFactor * (0.45 + a.energyFlow * 0.38);
     this.particlePhase += delta * this.tempoFactor * a.particleSpeed;
     this.dustPhase += delta * this.tempoFactor * (0.6 + a.speed * 0.4);
+    this.referencePhase += delta * this.tempoFactor * (0.45 + a.energyFlow * 0.28);
+
+    const referenceEase = 1.0 - Math.exp(-delta * 5.5);
+    for (const crown of this.referenceCrowns) {
+      crown.opacity += (crown.target - crown.opacity) * referenceEase;
+      crown.material.uniforms.uOpacity.value = crown.opacity * this.brightFactor;
+      crown.material.uniforms.uTime.value = this.referencePhase;
+      crown.mesh.scale.setScalar(crown.scale);
+      crown.mesh.rotation.z = 0.0;
+    }
+    this.referenceOrbitOpacity +=
+      (this.referenceOrbitTarget - this.referenceOrbitOpacity) * referenceEase;
+    this.referenceInnerOpacity +=
+      (this.referenceInnerTarget - this.referenceInnerOpacity) * referenceEase;
+    this.referenceReflectionOpacity +=
+      (this.referenceReflectionTarget - this.referenceReflectionOpacity) * referenceEase;
+    this.referenceOrbitMaterial.uniforms.uOpacity.value =
+      this.referenceOrbitOpacity * this.brightFactor;
+    this.referenceInnerMaterial.uniforms.uOpacity.value =
+      this.referenceInnerOpacity * this.brightFactor;
+    this.referenceReflectionMaterial.uniforms.uOpacity.value =
+      this.referenceReflectionOpacity * this.brightFactor;
+    this.referenceOrbitMaterial.uniforms.uTime.value = this.referencePhase * 0.72;
+    this.referenceInnerMaterial.uniforms.uTime.value = this.referencePhase * 0.58;
+    this.referenceReflectionMaterial.uniforms.uTime.value = this.referencePhase * 0.42;
+    // Die getrennten Originalbahnen praezedieren langsam und verformen sich
+    // gleichzeitig im Shader. So sind sie weder starr noch ein durchgehender
+    // technisch perfekter Kreis.
+    // Das exakte Bahnkunstwerk bleibt rasterstabil. Bewegung liefern die
+    // darauf laufenden Partikel; eine Subpixelrotation der duennen Linien
+    // verursachte auf manchen Displays trotz 60 FPS ein starkes Flimmern.
+    this.referenceOrbit.rotation.z = 0.0;
+    this.referenceOrbit.scale.set(1.0, 1.0, 1.0);
 
     // Sprechpegel: schnell hinauf, langsam hinunter (wie bisher).
     const anstieg = 1.0 - Math.exp(-delta * 24.0);
@@ -1028,7 +1857,7 @@ export class EnergyOrb {
       if (this.wave.visible) {
         this.wave.scale.setScalar(1.2 + waveT * 2.4);
         this.waveMaterial.uniforms.uStrength.value =
-          Math.sin(waveT * Math.PI) * 0.9 * this.flashStrength;
+          Math.sin(waveT * Math.PI) * 0.38 * this.flashStrength;
       }
     } else {
       this.wave.visible = false;
@@ -1040,11 +1869,27 @@ export class EnergyOrb {
     // Plasma läuft mit der Zustandsgeschwindigkeit – hier arbeitet die Energie.
     this.plasmaMaterial.uniforms.uTime.value = this.plasmaPhase;
     this.plasmaMaterial.uniforms.uAudio.value = audio + plasmaBoost;
+    this.synapticInnerMaterial.uniforms.uTime.value = this.plasmaPhase;
+    this.synapticOuterMaterial.uniforms.uTime.value = this.plasmaPhase * 0.91;
+    this.shellMaterial.uniforms.uTime.value = this.plasmaPhase;
+    this.coronaMaterial.uniforms.uTime.value = this.plasmaPhase * 0.86;
+    this.groundMaterial.uniforms.uTime.value = t;
+
+    for (const filament of this.filaments) {
+      filament.material.uniforms.uTime.value = this.filamentPhase;
+      filament.material.uniforms.uIntensity.value =
+        filament.gain * a.ringIntensity * this.brightFactor * ringDamp * 1.82;
+      filament.group.rotation.y = this.filamentPhase * filament.speed * 0.24;
+      filament.group.rotation.x = filament.baseTiltX
+        + Math.sin(t * 0.031 + filament.seed * 19.0) * 0.014;
+      filament.group.rotation.z = filament.baseTiltZ
+        + Math.cos(t * 0.027 + filament.seed * 23.0) * 0.012;
+    }
 
     for (const ring of this.rings) {
       ring.material.uniforms.uTime.value = this.ringPhase;
       ring.material.uniforms.uIntensity.value =
-        ring.gain * a.ringIntensity * this.brightFactor * ringDamp * this.styleRingGain;
+        ring.gain * a.ringIntensity * this.brightFactor * ringDamp * this.styleRingGain * 0.72;
       ring.particleMaterial.uniforms.uTime.value = this.particlePhase;
 
       // Räumliche Präzession: Jede Bahn dreht langsam um eine eigene,
@@ -1054,10 +1899,57 @@ export class EnergyOrb {
         + Math.sin(t * 0.043 + ring.seed * 20.0) * 0.026;
       ring.group.rotation.z = ring.baseTiltZ
         + Math.cos(t * 0.037 + ring.seed * 31.0) * 0.022;
+      for (const arc of ring.arcs) {
+        arc.rotation.y = this.ringPhase * ring.speed * 1.8;
+      }
     }
+
+    // Seltene, echte Ereignisse statt eines periodischen Shaderzyklus.
+    // Die Pause, der Pfad, die Dauer und die leichte Pfadabweichung werden
+    // nur beim Start einer Entladung zufaellig bestimmt. Waerend des
+    // Ereignisses bleibt die Bewegung kontinuierlich und flackerfrei.
+    this.transferWait -= delta;
+    if (this.transferWait <= 0 && !this.transferArcs.some((arc) => arc.active)) {
+      const chosen = this.transferArcs[Math.floor(Math.random() * this.transferArcs.length)];
+      if (chosen !== undefined) {
+        chosen.active = true;
+        chosen.progress = 0.0;
+        chosen.duration = 0.52 + Math.random() * 0.58;
+        chosen.group.rotation.z = Math.random() * Math.PI * 2.0;
+        chosen.group.rotation.x = (Math.random() - 0.5) * 0.34;
+        chosen.group.rotation.y = (Math.random() - 0.5) * 0.30;
+        chosen.eventGain = 0.82 + Math.random() * 0.34;
+        chosen.material.uniforms.uIntensity.value = chosen.gain * chosen.eventGain;
+      }
+      // Selten entsteht kurz danach eine zweite Entladung; meistens folgt
+      // eine deutlich laengere, unregelmaessige Ruhephase.
+      this.transferWait = Math.random() < 0.20
+        ? 0.22 + Math.random() * 0.42
+        : 1.4 + Math.random() * 4.4;
+    }
+    let transferEnergy = 0.0;
+    for (const transfer of this.transferArcs) {
+      if (!transfer.active) {
+        transfer.material.uniforms.uProgress.value = -1.0;
+        continue;
+      }
+      transfer.progress += delta / transfer.duration;
+      if (transfer.progress >= 1.0) {
+        transfer.active = false;
+        transfer.progress = -1.0;
+        transfer.material.uniforms.uProgress.value = -1.0;
+        continue;
+      }
+      transfer.material.uniforms.uProgress.value = transfer.progress;
+      transferEnergy = Math.max(transferEnergy, Math.sin(transfer.progress * Math.PI));
+    }
+    const reflectionEase = 1.0 - Math.exp(-delta * (transferEnergy > this.transferReflection ? 18.0 : 7.0));
+    this.transferReflection += (transferEnergy - this.transferReflection) * reflectionEase;
 
     this.dustMaterial.uniforms.uTime.value = this.dustPhase;
     this.progressMaterial.uniforms.uTime.value = t;
+    this.groundMaterial.uniforms.uOrbitPhase.value = this.ringPhase;
+    this.groundMaterial.uniforms.uTransferEnergy.value = this.transferReflection;
 
     // --- Augen: Blinzeln und Blick -------------------------------------------
     this.blinkIn -= delta;
@@ -1101,7 +1993,7 @@ export class EnergyOrb {
         g.strength * a.lightIntensity * (1.0 - height * 0.7) * this.brightFactor;
       // Knapp unter den Orb, nicht an den Fensterrand: Der Schein gehört
       // optisch zum Objekt, erst dadurch liest sich das Schweben.
-      ground.position.y = g.y * this.baseScale * 1.7;
+      ground.position.y = g.y * this.baseScale * 1.05;
     }
 
     // Gesamtgröße: Grundgröße × sehr subtile Eigenpulsation.
@@ -1110,7 +2002,7 @@ export class EnergyOrb {
     if (this.reactionAge < 0.72) {
       if (this.reactionKind === "surprise") {
         const p = this.reactionAge / 0.72;
-        this.group.position.y += Math.sin(p * Math.PI) * 0.18;
+        this.group.position.y = this.reactionBaseY + Math.sin(p * Math.PI) * 0.18;
         reactionScale += Math.sin(p * Math.PI * 2.0) * 0.055 * (1.0 - p);
       } else {
         reactionScale += Math.sin(this.reactionAge * 18.0) * 0.045
@@ -1118,8 +2010,10 @@ export class EnergyOrb {
       }
     }
 
-    const pulse = 1.0 + Math.sin(t * 1.07) * a.pulseAmount * 0.5
-      + Math.sin(t * 0.61 + 1.3) * a.pulseAmount * 0.3;
+    // Duenne Aussenbahnen duerfen nicht sichtbar ueber Pixelgrenzen
+    // gepumpt werden. Der Kern atmet weiterhin, nur deutlich subtiler.
+    const pulse = 1.0 + Math.sin(t * 1.07) * a.pulseAmount * 0.12
+      + Math.sin(t * 0.61 + 1.3) * a.pulseAmount * 0.07;
     const totalScale = this.baseScale * pulse * reactionScale * (1.0 + coreBoost * 0.05);
     this.group.scale.setScalar(totalScale);
 
@@ -1135,9 +2029,16 @@ export class EnergyOrb {
     // Dritter Ring und Staub erst ab Mittel; die Bahnen selbst bleiben –
     // ein Energy-Orb ohne Energiebahnen wäre keiner mehr.
     this.rings.forEach((ring, index) => {
-      const visible = q >= 1 || index < 2;
+      const visible = q >= 2 || (q >= 1 ? index < 4 : index < 2);
+      // Die Referenztextur liefert Farbe und Silhouette; diese echten
+      // 3D-Bahnen liefern die fehlende raeumliche Bewegung. Sie bleiben
+      // deshalb auch nach dem Laden sichtbar, aber bewusst sehr gedimmt.
       ring.mesh.visible = visible;
+      for (const arc of ring.arcs) arc.visible = visible;
       ring.particles.visible = visible && (q >= 1 || index < 1);
+    });
+    this.filaments.forEach((filament, index) => {
+      filament.mesh.visible = q >= 2 || (q >= 1 ? index < 7 : index < 4);
     });
     this.dust.visible = q >= 1;
   }
@@ -1183,16 +2084,28 @@ export class EnergyOrb {
     }
     this.coreMaterial.dispose();
     this.plasmaMaterial.dispose();
+    this.synapticInnerMaterial.dispose();
+    this.synapticOuterMaterial.dispose();
     this.shellMaterial.dispose();
+    this.coronaMaterial.dispose();
     this.eyesMaterial.dispose();
     this.groundMaterial.dispose();
     this.waveMaterial.dispose();
     this.progressMaterial.dispose();
     this.dustMaterial.dispose();
+    for (const crown of this.referenceCrowns) crown.material.dispose();
+    this.referenceOrbitMaterial.dispose();
+    this.referenceReflectionMaterial.dispose();
+    for (const texture of this.referenceTextures.values()) texture.dispose();
     for (const ring of this.rings) {
       ring.material.dispose();
       ring.particleMaterial.dispose();
+      ring.arcMaterial.dispose();
     }
+    for (const filament of this.filaments) {
+      filament.material.dispose();
+    }
+    for (const transfer of this.transferArcs) transfer.material.dispose();
   }
 }
 

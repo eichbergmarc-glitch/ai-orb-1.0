@@ -46,6 +46,10 @@ PORTABLE_ENVIRONMENT_VARIABLE = "AI_ORB_PORTABLE"
 #: Diese Umgebungsvariable überschreibt den Benutzerordner vollständig.
 DATA_DIRECTORY_ENVIRONMENT_VARIABLE = "AI_ORB_DATA_DIR"
 
+#: Overrides only the log directory. Tests and diagnostics use this so their
+#: synthetic events can never contaminate real runtime logs.
+LOG_DIRECTORY_ENVIRONMENT_VARIABLE = "AI_ORB_LOG_DIR"
+
 #: Unterordner, die im Benutzerordner angelegt werden.
 USER_SUBDIRECTORIES: tuple[str, ...] = (
     "logs",
@@ -234,7 +238,8 @@ def get_env_path() -> Path:
 def get_logs_dir() -> Path:
     """Gibt den Ordner für Protokolldateien zurück und legt ihn an."""
 
-    directory = get_user_dir() / "logs"
+    override = os.environ.get(LOG_DIRECTORY_ENVIRONMENT_VARIABLE, "").strip()
+    directory = Path(override).expanduser() if override else get_user_dir() / "logs"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

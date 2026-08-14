@@ -122,6 +122,16 @@ const api = {
     ipcRenderer.send("window:ignore-mouse", { ignore });
   },
 
+  /** Haelt den Orb waehrend Menue, Chat oder Hover an seiner Position. */
+  setInteractionLock: (active: boolean, reason: string): void => {
+    ipcRenderer.send("window:interaction-lock", { active, reason });
+  },
+
+  /** Gibt dem Chat voruebergehend Tastaturfokus und gibt ihn danach frei. */
+  setChatFocus: (active: boolean): void => {
+    ipcRenderer.send("window:chat-focus", { active });
+  },
+
   /**
    * Meldet dem Hauptprozess, ob der Orb gerade spricht.
    *

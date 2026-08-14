@@ -53,6 +53,13 @@ class SummaryEngine:
         if len(stripped) < 400:
             return stripped
 
+        # A short conversation must not launch another full model request
+        # while the app is closing. That shutdown summary regularly consumed
+        # the complete 15 s shutdown budget. The local extractive summary is
+        # immediate and sufficient until there is substantial material.
+        if len(stripped) < 2000:
+            return summarize(stripped, max_sentences=max_sentences)
+
         if self._provider_manager is not None:
             try:
                 prompt = (

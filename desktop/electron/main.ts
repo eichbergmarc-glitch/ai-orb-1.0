@@ -325,10 +325,11 @@ function createOrbWindow(): BrowserWindow {
     console.error(`[AI-Orb] Der Renderer wurde beendet: ${details.reason}.`);
   });
 
-  window.on("moved", () => {
-    const [x, y] = window.getPosition();
-    windowManager?.savePosition(x, y);
-  });
+  // Automatische Platzierungen werden absichtlich nicht bei jedem
+  // `moved` gespeichert. Sonst wuerde eine voruebergehende Ausweichposition
+  // (oder eine fehlerhafte Ecke) beim naechsten Start zur Benutzerposition.
+  // Manuelle Positionen werden nach dem Ziehen in
+  // `window:commit-position` sowie ueber "Position merken" gespeichert.
 
   window.on("closed", () => {
     orbWindow = null;
@@ -472,12 +473,19 @@ function setupSmartDesktop(window: BrowserWindow): void {
     },
     {
       onPositionChosen: (candidate) => {
+        const [windowWidth, windowHeight] = window.getSize();
+        // PlacementEngine bewertet Fenster-Rechtecke und liefert deren
+        // linke obere Ecke. moveOrbTo erwartet dagegen den sichtbaren
+        // Orb-Mittelpunkt. Die bisher direkte Übergabe setzte einen
+        // Kandidaten bei (48, 48) mit seinem Mittelpunkt in die Ecke.
+        const centerX = candidate.x + windowWidth / 2;
+        const centerY = candidate.y + windowHeight / 2;
         // Weiche Bewegung: Das Fenster wird schrittweise verschoben, nie
         // teleportiert.
-        moveOrbTo(window, candidate.x, candidate.y);
+        moveOrbTo(window, centerX, centerY);
         sendToRenderer("orb.position.chosen", {
-          x: candidate.x,
-          y: candidate.y,
+          x: centerX,
+          y: centerY,
           score: candidate.score,
         });
       },
@@ -716,14 +724,14 @@ function registerIpcHandlers(): void {
     if (orbWindow === null || orbWindow.isDestroyed()) return;
     // Während der Benutzer zieht, mischt sich die automatische Platzierung
     // nicht ein.
-    desktopManager?.suspend(true);
+    desktopManager?.setSuspended("drag", true);
     const [x, y] = orbWindow.getPosition();
     orbWindow.setPosition(Math.round(x + dx), Math.round(y + dy));
   });
 
   ipcMain.on("window:commit-position", (_event, { manual }: { manual: boolean }) => {
     if (orbWindow === null || orbWindow.isDestroyed()) return;
-    desktopManager?.suspend(false);
+    desktopManager?.setSuspended("drag", false);
 
     // Nach dem Ziehen sitzt der Orb wieder mittig im Fenster, damit ihm in
     // alle Richtungen gleich viel Bewegungsraum bleibt.
@@ -764,6 +772,28 @@ function registerIpcHandlers(): void {
     // `forward: true` sorgt dafür, dass der Renderer weiterhin
     // Mausbewegungen sieht und den Hover-Zustand erkennen kann.
     orbWindow.setIgnoreMouseEvents(ignore, { forward: true });
+  });
+
+  ipcMain.on(
+    "window:interaction-lock",
+    (_event, { active, reason }: { active: boolean; reason: string }) => {
+      const allowed = new Set(["menu", "chat", "pointer"]);
+      if (!allowed.has(reason)) return;
+      desktopManager?.setSuspended(reason, active);
+    }
+  );
+
+  ipcMain.on("window:chat-focus", (_event, { active }: { active: boolean }) => {
+    if (orbWindow === null || orbWindow.isDestroyed()) return;
+    // Der Orb ist im Normalbetrieb absichtlich nicht fokussierbar. Ein
+    // Textfeld kann dann jedoch keine Tastatureingaben annehmen. Nur fuer
+    // den sichtbaren Chat wird der Fokus freigegeben und aktiv angefordert;
+    // beim Schliessen kehrt das schwebende, nicht stoerende Verhalten zurueck.
+    orbWindow.setFocusable(active);
+    if (active) {
+      orbWindow.show();
+      orbWindow.focus();
+    }
   });
 
   ipcMain.on("orb:context-menu", () => {

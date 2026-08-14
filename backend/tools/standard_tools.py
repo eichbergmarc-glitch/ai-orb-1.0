@@ -564,6 +564,7 @@ def build_standard_tools(
     # Die Internet-Werkzeuge liegen in einem eigenen Modul; der Import hier
     # unten hält die Abhängigkeit in eine Richtung.
     from backend.tools.install_tools import InstallPackageTool, InstallProgramTool
+    from backend.tools.terminal_tools import build_terminal_tools
     from backend.tools.web_tools import (
         OpenInBrowserTool,
         ReadWebpageTool,
@@ -591,6 +592,7 @@ def build_standard_tools(
         # kann nichts dagegen tun".
         InstallProgramTool(),
         InstallPackageTool(),
+        *build_terminal_tools(),
     ]
 
     if memory is not None:
