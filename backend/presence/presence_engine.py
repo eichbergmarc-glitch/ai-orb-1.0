@@ -300,6 +300,19 @@ class PresenceEngine:
 
         self._suppressed_until = 0.0
 
+    @property
+    def is_suppressed(self) -> bool:
+        """Ob der Benutzer gerade ausdrücklich um Ruhe gebeten hat.
+
+        Getrennt von :meth:`may_speak_unprompted` und mit Absicht schmaler:
+        Dort spielt auch der Mindestabstand zwischen zwei Hinweisen hinein,
+        und der darf eine Terminerinnerung nicht verschlucken. "In zehn
+        Minuten beginnt dein Termin" ist eine halbe Stunde später falsch,
+        nicht nur verspätet.
+        """
+
+        return time.time() < self._suppressed_until
+
     # --- Auskunft ---------------------------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:

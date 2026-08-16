@@ -139,6 +139,20 @@ _STOPPWOERTER: frozenset[str] = frozenset(
     "dann wenn weil damit um".split()
 )
 
+# Handlungswoerter aus kombinierten Auftraegen. Bei "suche X und erstelle
+# daraus eine PDF mit Grafiken" beschreiben sie das AUSGABEFORMAT, nicht das
+# Thema. Blieben sie in der Anfrage, gewichteten Suchmaschinen "PDF" und
+# "erstellen" staerker als X - im Protokoll kamen dadurch Toyota, Smartphone-
+# Link und franzoesische Formularseiten statt Bogenschiessen zurueck.
+_SUCH_AKTIONSWOERTER: frozenset[str] = frozenset(
+    {
+        "ja", "suchen", "suche", "erstelle", "erstellen", "erstellt",
+        "erstell", "daraus", "pdf", "pdf-datei", "datei", "grafik",
+        "grafiken", "bilder", "bildung", "speichere", "speichern",
+        "generiere", "generieren", "solchen", "solche", "solches",
+    }
+)
+
 
 def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
     """Macht aus einem gesprochenen Satz einen brauchbaren Suchbegriff.
@@ -165,7 +179,7 @@ def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
             behalten.append(roh)
             continue
         wort = re.sub(r"[^0-9a-zäöüß-]+", "", roh)
-        if not wort or wort in _STOPPWOERTER:
+        if not wort or wort in _STOPPWOERTER or wort in _SUCH_AKTIONSWOERTER:
             continue
         behalten.append(wort)
 
@@ -174,6 +188,50 @@ def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
         ergebnis = ergebnis[:hoechstens].rsplit(" ", 1)[0]
     # Bleibt nichts uebrig (sehr kurze Frage), lieber der Originaltext.
     return ergebnis or " ".join(str(text).split())[:hoechstens]
+
+
+def _suchwoerter(query: str) -> list[str]:
+    """Tragende Woerter fuer eine billige Relevanzpruefung."""
+
+    cleaned = suchbegriff_aus(query, hoechstens=180)
+    words = [
+        re.sub(r"[^0-9a-zäöüß-]+", "", word.lower())
+        for word in cleaned.split()
+    ]
+    return [word for word in words if len(word) >= 4 and not word.startswith("site:")]
+
+
+def _relevante_treffer(
+    query: str, results: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """Verwirft offensichtlich themenfremde Treffer einer Suchmaschine.
+
+    Eine technisch gueltige RSS-Liste ist noch kein Suchergebnis. Bing gab
+    zuletzt zu einer Bogenfrage voellig fremde, aber korrekt geparste Links
+    zurueck. Bei mindestens vier tragenden Suchwoertern verlangen wir deshalb
+    zwei Uebereinstimmungen; bei kuerzeren Anfragen eine. Ein-Wort-Suchen
+    bleiben unveraendert, damit Eigennamen und seltene Begriffe funktionieren.
+    """
+
+    terms = _suchwoerter(query)
+    if len(terms) < 2:
+        return results
+    required = 2 if len(terms) >= 4 else 1
+    relevant: list[dict[str, str]] = []
+    for item in results:
+        haystack = " ".join(
+            str(item.get(key, "")) for key in ("titel", "beschreibung", "url")
+        ).lower()
+        matches = 0
+        for term in terms:
+            # Ein kurzer Stamm faengt deutsche Beugungen ab, ohne beliebige
+            # Teilstrings wie "art" in "Smartphone" gelten zu lassen.
+            stem = term[: max(5, min(len(term), 8))]
+            if term in haystack or stem in haystack:
+                matches += 1
+        if matches >= required:
+            relevant.append(item)
+    return relevant
 
 
 def _fetch(url: str, *, data: bytes | None = None, timeout: float = 12.0) -> bytes:
@@ -743,21 +801,59 @@ def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
     dem Benutzer sagen kann, woran es liegt.
     """
 
+    query = suchbegriff_aus(query, hoechstens=180)
+
+    # ZUERST die Dienste, die einen Automaten nicht abweisen koennen.
+    #
+    # Das ist die Lehre aus dem Protokoll vom 15.08.2026: Mojeek und Ecosia
+    # antworteten mit 403, beide DuckDuckGo-Zugaenge wiesen ab, und Bing
+    # lieferte eine Sperrseite von 1356 Zeichen. Fuenf von fuenf. Gegen
+    # dieses Ergebnis hilft kein besserer Kopfzeilensatz - es ist genau die
+    # Antwort, die diese Dienste auf einen Automaten geben sollen.
+    #
+    # GDELT, Wikipedia, OpenAlex und Crossref dagegen SIND fuer Programme
+    # gemacht. Sie verlangen keine Tarnung, sondern eine ehrliche Kennung.
+    # Deshalb stehen sie hier vorn und die Trefferseiten dahinter - nicht
+    # umgekehrt.
+    try:
+        from backend.research.offene_quellen import offene_suche
+
+        offene, benutzt = offene_suche(query, limit=limit)
+        if offene:
+            logger.info(
+                "Suche ueber offene Quellen beantwortet (%s).", ", ".join(benutzt)
+            )
+            return offene[:limit]
+    except Exception:  # noqa: BLE001 - der alte Weg bleibt als Ausweg bestehen.
+        logger.exception("Die offenen Quellen liessen sich nicht befragen.")
+
     letzter: _Suchfehler | None = None
     gruende: list[str] = []
     for maschine in _SUCHMASCHINEN:
         try:
             treffer = _einmal_suchen(maschine, query, limit)
+            relevante = _relevante_treffer(query, treffer)
+            if not relevante:
+                raise _Suchfehler(
+                    "unlesbar",
+                    f"{maschine.name} lieferte nur themenfremde Treffer.",
+                )
             if maschine is not _SUCHMASCHINEN[0]:
                 logger.info("Suche ueber %s (Ausweichmaschine).", maschine.name)
-            return treffer
+            return relevante[:limit]
         except _Suchfehler as fehler:
             logger.warning("Suche ueber %s gescheitert: %s", maschine.name, fehler)
             gruende.append(str(fehler))
             letzter = fehler
 
     art = letzter.art if letzter is not None else "unlesbar"
-    raise _Suchfehler(art, " ".join(gruende) or "Kein Zugang hat geantwortet.")
+    raise _Suchfehler(
+        art,
+        (" ".join(gruende) or "Kein Zugang hat geantwortet.")
+        + " Auch die offenen Quellen (GDELT, Wikipedia, OpenAlex) haben nichts "
+          "geliefert. Womit das zusammenhaengt, zeigt SUCHE-PRUEFEN.bat: Es "
+          "fragt jede Quelle einzeln und nennt den Grund im Klartext.",
+    )
 
 
 class WebSearchTool(Tool):

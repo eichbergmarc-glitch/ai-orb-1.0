@@ -163,6 +163,15 @@ _EIGENES_UMFELD: tuple[str, ...] = (
     # Der Orb als Programm
     "einstellung", "konfiguration", "config", "quelltext",
     "protokoll", "werkzeug", "gedächtnis", "gedaechtnis",
+    # Der eigene Kalender.
+    #
+    # Mit fuehrendem Leerzeichen, und das ist hier wichtiger als sonst:
+    # Ohne es faengt "termin" auch "Wahltermin" und "Liefertermin", und
+    # dann unterbleibt bei einer Frage nach dem Wahltermin in den USA die
+    # Suche - obwohl sie genau dort noetig waere.
+    " termin", " kalender", " verabredung", " besprechung",
+    "was steht an", "was habe ich vor", "was steht heute an",
+    "was steht morgen an", "wann habe ich", "im kalender",
 )
 
 
@@ -216,6 +225,12 @@ _WERKZEUG_TAETIGKEITEN: tuple[str, ...] = (
     "such", "recherchier", "nachschlagen", "im internet", "webseite",
     # Mail
     "mail", "e-mail", "schreib eine mail", "sende",
+    # Kalender. "Trag mir morgen 14 Uhr den Zahnarzt ein" enthaelt weder
+    # das Wort Termin noch das Wort Kalender - und ohne diese Verben faellt
+    # genau der Satz durch, mit dem man einen Termin eintraegt.
+    "trag ein", "trag mir", "trag bitte", "eintrag", "eintragen",
+    "vereinbar", "verschieb", "sag ab", "absagen", "erinner",
+    "termin", "kalender",
 )
 
 
@@ -232,6 +247,41 @@ def braucht_werkzeuge(text: str) -> bool:
     # Ist von Bildschirm, Datei oder Dokument die Rede, geht es fast immer
     # um etwas, das auf diesem Rechner zu tun ist.
     return betrifft_eigenes_umfeld(text)
+
+
+def will_pdf_erstellen(text: str) -> bool:
+    """Ob der Benutzer jetzt eine PDF-Datei als Ergebnis verlangt."""
+
+    knapp = " " + " ".join((text or "").lower().split()) + " "
+    if "pdf" not in knapp:
+        return False
+    return any(
+        marker in knapp
+        for marker in (
+            "erstell", "mach", "generier", "speicher", "exportier",
+            "anleg", "druck", "als pdf", "pdf-datei",
+        )
+    )
+
+
+def pdf_titel_aus(text: str) -> str:
+    """Leitet fuer den deterministischen Rueckfall einen kurzen Titel ab."""
+
+    cleaned = " ".join((text or "").strip().split())
+    match = _re.search(
+        r"(?:zum thema|zum|über|ueber|zu)\s+(.+?)(?:\s+und\s+(?:erstell|mach|speicher)|[.!?]?$)",
+        cleaned,
+        flags=_re.IGNORECASE,
+    )
+    candidate = match.group(1) if match else cleaned
+    candidate = _re.sub(
+        r"\b(?:erstelle?n?|mach(?:e)?|generiere?n?|pdf(?:-datei)?|mit grafiken?)\b",
+        " ",
+        candidate,
+        flags=_re.IGNORECASE,
+    )
+    candidate = " ".join(candidate.split()).strip(" -.,")
+    return (candidate[:90].strip() or "AI-Orb Dokument")
 
 
 def braucht_aktuelles(text: str) -> bool:
@@ -889,6 +939,7 @@ class Orchestrator:
         # Werkzeug trotzdem noch einmal an, darf daraus kein zweiter, teurer
         # Lauf werden (bei der Bildanalyse waren das zuletzt weitere 25 s).
         vorab_ergebnisse: dict[str, str] = {}
+        vorab_suchkontext = ""
         # Browser-Befehle sind KEINE Suchanfragen: "öffne ein Browserfenster
         # und führe eine Suche durch" löste vorher acht Suchläufe mit dem
         # wörtlichen Befehlssatz aus - alle leer, und für den Benutzer sah
@@ -896,9 +947,14 @@ class Orchestrator:
         if tools_available and braucht_aktuelles(text) and not ist_browser_befehl(text):
             frisch = await self._vorab_suchen(text)
             if frisch:
+                vorab_suchkontext = frisch
                 context_block = "\n\n".join(
                     part for part in (context_block, frisch) if part
                 )
+                # Das Ergebnis liegt dem Modell bereits vor. Fordert es die
+                # identische Suche trotzdem an, wird die vorhandene Antwort
+                # benutzt statt erneut mehrere Suchmaschinen zu belasten.
+                vorab_ergebnisse["internet_suchen"] = frisch.split("\n\n", 1)[-1].strip()
 
         # Bittet jemand ausdruecklich, auf den Bildschirm zu sehen, dann WIRD
         # hingesehen - deterministisch, nicht auf gut Glueck.
@@ -1080,6 +1136,56 @@ class Orchestrator:
                 preexecuted=vorab_ergebnisse,
             )
             tool_runs = len(runs)
+
+            # Letzte Zuverlaessigkeitsschicht fuer PDF-Auftraege: Manche
+            # Modelle liefern nach Recherche bereits einen vollstaendigen,
+            # gut gegliederten Inhalt, vergessen aber trotz Nachhaken den
+            # eigentlichen Schreibaufruf. Dann wird genau dieser Inhalt
+            # deterministisch gespeichert. Eine Ausrede oder ein kurzer
+            # Platzhalter wird bewusst NICHT in eine nutzlose PDF gegossen.
+            # Einige Integrationen/Test-Doubles liefern fuer einen Lauf nur
+            # einen opaken Marker. Solche Eintraege sind kein PDF-Erfolg, duerfen
+            # aber die normale Werkzeugantwort auch nicht abbrechen.
+            pdf_done = any(
+                getattr(run, "tool", "") == "pdf_erstellen"
+                and bool(getattr(getattr(run, "result", None), "ok", False))
+                for run in runs
+            )
+            lowered_answer = answer_text.lower()
+            pdf_excuse = any(
+                marker in lowered_answer
+                for marker in (
+                    "kann kein pdf", "keine pdf erstellen", "nicht als pdf",
+                    "kein werkzeug", "kann ich nicht", "nicht möglich",
+                    "nicht moeglich",
+                )
+            )
+            if (
+                will_pdf_erstellen(text)
+                and not pdf_done
+                and not pdf_excuse
+                and len(answer_text.strip()) >= 120
+            ):
+                urls = _re.findall(r"https?://[^\s<>]+", vorab_suchkontext)
+                lauf = await self._tool_engine.direkt_ausfuehren(
+                    "pdf_erstellen",
+                    {
+                        "titel": pdf_titel_aus(text),
+                        "inhalt": answer_text,
+                        "quellen": "\n".join(dict.fromkeys(url.rstrip(".,)") for url in urls)),
+                    },
+                    actor="pdf-auftrag",
+                )
+                runs.append(lauf)
+                tool_runs = len(runs)
+                if lauf.result.ok:
+                    answer_text = str(lauf.result.output)
+                else:
+                    answer_text = (
+                        answer_text
+                        + "\n\nDie PDF-Datei konnte nicht gespeichert werden: "
+                        + str(lauf.result.error or "unbekannter Fehler")
+                    )
 
         # Was während des Denkens schon gesprochen wurde, darf nicht noch
         # einmal kommen. Nach einem Werkzeugaufruf steht meist eine ganz

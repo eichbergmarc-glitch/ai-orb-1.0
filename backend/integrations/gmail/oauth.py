@@ -62,6 +62,24 @@ _TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 #: Der voreingestellte Rechteumfang. Lesen, Entwürfe, Senden – nicht mehr.
 DEFAULT_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 
+#: Der Kalender. ``calendar.events`` genügt für Ansehen, Anlegen, Ändern und
+#: Löschen von Terminen. Bewusst NICHT ``calendar`` (Vollzugriff): Damit
+#: könnte man ganze Kalender anlegen und löschen, und das braucht hier
+#: niemand – Least Privilege, dieselbe Überlegung wie oben bei Gmail.
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+
+
+def kalender_bereich_enthalten(scope: str) -> bool:
+    """Ob ein erteilter Rechteumfang den Kalender einschließt.
+
+    Wichtig für die Übergangszeit: Wer sich vor dieser Erweiterung angemeldet
+    hat, besitzt ein gültiges Token – aber eines ohne Kalenderrecht. Google
+    antwortet darauf mit einem nichtssagenden 403. Die Prüfung hier macht
+    daraus einen verständlichen Satz: einmal neu anmelden.
+    """
+
+    return "calendar" in (scope or "")
+
 
 @dataclass(slots=True)
 class OAuthConfig:
@@ -74,18 +92,35 @@ class OAuthConfig:
     redirect_port: int = 0
 
     @classmethod
-    def from_env(cls) -> OAuthConfig:
+    def from_env(cls, *, mit_kalender: bool = True) -> OAuthConfig:
         """Liest die Anmeldedaten aus den Umgebungsvariablen.
 
         Die Namen sind fest, die Werte stehen in der ``.env``. Fehlt die
         ID, ist Gmail schlicht nicht eingerichtet – das ist kein Fehler,
         sondern ein Zustand, den der Agent verständlich meldet.
+
+        Args:
+            mit_kalender: Ob der Kalender mit erfragt wird. Beides in EINER
+                Anmeldung zu erledigen ist Absicht: Es ist dieselbe
+                Google-Anmeldung mit derselben Client-ID, und den Benutzer
+                zweimal durch dieselbe Zustimmungsseite zu schicken wäre
+                Umstand ohne Gewinn. Wer ``GMAIL_SCOPE`` selbst setzt,
+                bestimmt den Umfang vollständig – dann wird nichts ergänzt.
         """
+
+        eigener = os.environ.get("GMAIL_SCOPE", "").strip()
+        if eigener:
+            scope = eigener
+        else:
+            teile = [DEFAULT_SCOPE]
+            if mit_kalender:
+                teile.append(CALENDAR_SCOPE)
+            scope = " ".join(teile)
 
         return cls(
             client_id=os.environ.get("GMAIL_CLIENT_ID", "").strip(),
             client_secret=os.environ.get("GMAIL_CLIENT_SECRET", "").strip(),
-            scope=os.environ.get("GMAIL_SCOPE", DEFAULT_SCOPE).strip() or DEFAULT_SCOPE,
+            scope=scope,
         )
 
     @property
@@ -180,6 +215,16 @@ class GmailAuth:
 
         token = self._load_token()
         return token is not None and bool(token.refresh_token)
+
+    def granted_scopes(self) -> str:
+        """Welche Rechte tatsächlich erteilt wurden – nicht welche erbeten.
+
+        Der Unterschied ist der ganze Punkt: Was in der Konfiguration steht,
+        ist ein Wunsch. Was im Token steht, ist die Wirklichkeit.
+        """
+
+        token = self._load_token()
+        return token.scope if token else ""
 
     # --- Token laden und sichern ----------------------------------------------
 

@@ -239,6 +239,46 @@ def test_eine_abgewiesene_maschine_reicht_die_suche_weiter(monkeypatch):
     assert treffer, "Die zweite Maschine lieferte Treffer, sie kamen aber nicht an."
 
 
+def test_themenfremde_rss_treffer_werden_nicht_als_erfolg_akzeptiert(monkeypatch):
+    """Das reale Fehlerbild: Toyota statt intuitivem Bogenschiessen."""
+
+    calls: list[str] = []
+
+    def _search(machine, query, limit):  # noqa: ANN001
+        calls.append(machine.name)
+        if len(calls) == 1:
+            return [{
+                "titel": "Used Toyota Camry Cars For Sale",
+                "url": "https://cars.example/camry",
+                "beschreibung": "Find your next used vehicle.",
+            }]
+        return [{
+            "titel": "Intuitives Bogenschiessen mit dem Reiterbogen",
+            "url": "https://archery.example/reiterbogen",
+            "beschreibung": "Anleitung zu Technik, Daumenablass und Sicherheit.",
+        }]
+
+    monkeypatch.setattr(web_tools, "_einmal_suchen", _search)
+    results = web_tools.search_web(
+        "Suche eine Anleitung zum intuitiven Bogenschiessen und erstelle eine PDF",
+        limit=5,
+    )
+
+    assert len(calls) == 2
+    assert results[0]["url"] == "https://archery.example/reiterbogen"
+
+
+def test_ausgabeformat_verschmutzt_den_suchbegriff_nicht():
+    query = web_tools.suchbegriff_aus(
+        "Suche nach einer Anleitung zum intuitiven Bogenschießen und erstelle "
+        "daraus eine PDF-Datei mit Grafiken."
+    )
+
+    assert "bogenschießen" in query
+    for noise in ("erstelle", "pdf", "grafiken", "daraus"):
+        assert noise not in query
+
+
 # --- Und das Protokoll ----------------------------------------------------------------
 
 

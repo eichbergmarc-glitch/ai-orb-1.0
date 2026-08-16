@@ -176,10 +176,18 @@ class Runtime:
         from backend.evolution.live_development import LiveDevelopmentService
         from backend.tools.development_tools import build_development_tools
         from backend.tools.file_tools import build_file_tools
+        from backend.tools.grafik_tools import build_grafik_tools
+        from backend.tools.pdf_tools import build_pdf_tools
         from backend.tools.self_tools import build_self_tools
 
         self.neustarter = baue_neustarter(self.config)
         self.tools.register_many(build_file_tools(self.security))
+        self.tools.register_many(build_pdf_tools(self.security))
+        # Bilder: selbst gezeichnete Diagramme, gesuchte Fotos, erzeugte
+        # Illustrationen. Sie stehen direkt neben dem PDF-Werkzeug, weil sie
+        # fast immer dafuer gebraucht werden - alle drei liefern einen Pfad,
+        # und genau den nimmt 'pdf_erstellen' entgegen.
+        self.tools.register_many(build_grafik_tools(self.security))
         self.tools.register_many(
             build_self_tools(
                 rollback=self.evolution.rollback,
@@ -341,6 +349,44 @@ class Runtime:
             self.tools.register_many(build_gmail_tools(self.gmail))
         except Exception:  # noqa: BLE001 - ohne Gmail laeuft der Rest weiter.
             logger.exception("Die Gmail-Werkzeuge liessen sich nicht anmelden.")
+
+        # Der Kalender: dieselbe Google-Anmeldung wie Gmail, dieselbe
+        # Client-ID, dasselbe Token. Deshalb steht er hier gleich daneben -
+        # wer Gmail eingerichtet hat, hat den Kalender fast schon
+        # eingerichtet.
+        self.kalender = None
+        self.terminerinnerung = None
+        if bool(self.config.get("kalender.enabled", True)):
+            try:
+                from backend.integrations.gmail.oauth import GmailAuth
+                from backend.integrations.kalender.client import KalenderClient
+                from backend.integrations.kalender.erinnerung import Terminerinnerung
+                from backend.tools.kalender_tools import build_kalender_tools
+
+                self.kalender = KalenderClient(
+                    GmailAuth(),
+                    kalender=str(self.config.get("kalender.kalender_id", "primary")),
+                )
+                self.tools.register_many(build_kalender_tools(self.kalender))
+
+                if bool(self.config.get("kalender.erinnerung.enabled", True)):
+                    self.terminerinnerung = Terminerinnerung(
+                        self.kalender,
+                        self._termin_ansagen,
+                        vorlaufzeiten=list(
+                            self.config.get("kalender.erinnerung.vorlaufzeiten", [60, 10])
+                            or [60, 10]
+                        ),
+                        takt_sekunden=int(
+                            self.config.get("kalender.erinnerung.takt_sekunden", 180)
+                        ),
+                        # Die einzige Regel der Praesenzschicht, die auch
+                        # fuer Termine gilt: Wer um Ruhe gebeten hat,
+                        # bekommt sie.
+                        darf_sprechen=lambda: not self.presence.is_suppressed,
+                    )
+            except Exception:  # noqa: BLE001 - ohne Kalender laeuft der Rest weiter.
+                logger.exception("Die Kalender-Werkzeuge liessen sich nicht anmelden.")
             self.gmail = None
 
         from backend.tools.memory_tools import build_memory_tools
@@ -529,6 +575,23 @@ class Runtime:
         self._started_at = time.time()
         logger.info("AI-Orb Kern gestartet.")
 
+    async def _termin_ansagen(self, satz: str) -> bool:
+        """Sagt eine Terminerinnerung an - gesprochen und in der Oberflaeche.
+
+        Beides, nicht eines von beiden: Wer den Ton aus hat, soll die
+        Erinnerung trotzdem sehen; wer nicht hinsieht, soll sie hoeren.
+        """
+
+        with contextlib.suppress(Exception):
+            await self.event_bus.publish(
+                "kalender.erinnerung", {"text": satz, "zeitpunkt": time.time()}
+            )
+        try:
+            return await self.voice.say(satz, emotion="aufmerksam")
+        except Exception:  # noqa: BLE001 - eine stumme Erinnerung ist besser als ein Absturz.
+            logger.exception("Die Terminerinnerung liess sich nicht sprechen.")
+            return False
+
     async def _sync_provider_mode(self, event: Any) -> None:
         """Haelt Modell- und Sprach-Offlinebetrieb synchron."""
 
@@ -554,6 +617,13 @@ class Runtime:
         )
 
         self.background_tasks.create("ai-orb-maintenance", self._maintenance_loop())
+
+        # Der Blick in den Kalender. Erst hier und nicht im Aufbau: Dort gibt
+        # es noch keine laufende Schleife, in die sich eine Daueraufgabe
+        # haengen koennte.
+        if self.terminerinnerung is not None:
+            with contextlib.suppress(Exception):
+                self.terminerinnerung.starten()
 
         # „Ich bin da." – der einzige Moment, in dem der Orb von sich aus
         # etwas meldet, ohne gefragt worden zu sein. Er steht hier und
@@ -675,6 +745,10 @@ class Runtime:
             # Beenden noch eine Sekunde weiterhört, wäre genau das, was die
             # Datenschutzvorgabe ausschließt.
             await self.voice.stop()
+
+            if self.terminerinnerung is not None:
+                with contextlib.suppress(Exception):
+                    await self.terminerinnerung.anhalten()
 
             # Ein etwaig offenes Browserfenster mit schliessen.
             browser = getattr(self, "browsersteuerung", None)

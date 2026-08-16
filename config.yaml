@@ -18,7 +18,7 @@ app:
   # des Orb, jene im Ladebildschirm - liefen sie auseinander, zeigte das
   # Programm zwei verschiedene Fassungen an, und niemand wusste mehr,
   # welche davon wirklich laeuft. Genau das war passiert.
-  version: "0.26.19"
+  version: "0.26.21"
   # Umgebung: development | production
   environment: "development"
   # Sprache der Oberfläche und von Systemmeldungen.
@@ -145,7 +145,7 @@ orb:
     # "schneller / langsamer" – Grundtempo der Umkreisung.
     tempo: 1.0
     # "heller / dunkler" – Leuchtkraft.
-    helligkeit: 1.3
+    helligkeit: 1.69
     # "andere Farben" – die zwei Farbtöne (0..1 im Farbkreis, oder ein
     # Name wie rot/blau/grün, den das Werkzeug übersetzt). Rot ist 1.0,
     # damit der Übergang beim Verschmelzen über Violett läuft, nicht Grün.
@@ -1595,6 +1595,38 @@ browser:
   # Wie lange (in Millisekunden) auf ein Element gewartet wird, bevor eine
   # Aktion als gescheitert gilt.
   zeitlimit_ms: 15000
+
+# =============================================================================
+# Google Kalender
+# =============================================================================
+# Termine ansehen, anlegen, aendern, loeschen - und von sich aus an
+# anstehende erinnern.
+#
+# Die Anmeldung ist DIESELBE wie bei Gmail: dieselbe GMAIL_CLIENT_ID aus der
+# .env, dasselbe Token, eine Zustimmungsseite fuer beides. Wer Gmail schon
+# eingerichtet hat, muss sich nur einmal neu anmelden - das alte Token
+# kannte den Kalender noch nicht. Dazu sagen: "Melde mich bei Gmail an".
+kalender:
+  enabled: true
+
+  # Welcher Kalender. "primary" ist der Hauptkalender des angemeldeten
+  # Kontos. Fuer einen anderen hier dessen Kennung eintragen (steht in den
+  # Google-Kalendereinstellungen unter "Kalender-ID").
+  kalender_id: "primary"
+
+  erinnerung:
+    # Der Orb sagt von sich aus Bescheid, bevor ein Termin ansteht.
+    enabled: true
+
+    # Wie viele Minuten vorher erinnert wird. Mehrere Werte ergeben mehrere
+    # Erinnerungen je Termin - eine zur Vorbereitung, eine zum Aufbrechen.
+    # Ganztaegige Termine bleiben aussen vor: Bei ihnen gibt es keine
+    # Uhrzeit, auf die sich ein Vorlauf beziehen koennte.
+    vorlaufzeiten: [60, 10]
+
+    # Wie oft nachgesehen wird, in Sekunden. Haeufiger als der kleinste
+    # Vorlauf zu schauen ist noetig, sonst wird eine Erinnerung verpasst.
+    takt_sekunden: 180
 
 # =============================================================================
 # Plugins (Phase 6)

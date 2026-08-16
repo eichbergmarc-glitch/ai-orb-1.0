@@ -175,6 +175,20 @@ KNOWN_PERMISSIONS: dict[str, Permission] = {
             RiskLevel.HIGH,
         ),
         _permission(
+            "read_calendar",
+            "Termine im Kalender ansehen",
+            RiskLevel.MODERATE,
+        ),
+        _permission(
+            # Getrennt vom Lesen, und das mit Absicht: Einen Termin
+            # anzusehen ist folgenlos, einen zu loeschen nicht. Wer nur
+            # wissen will, was ansteht, soll dafuer nicht das Recht zum
+            # Aendern erteilen muessen.
+            "write_calendar",
+            "Termine anlegen, ändern und löschen",
+            RiskLevel.HIGH,
+        ),
+        _permission(
             "send_email",
             "Eine E-Mail versenden",
             RiskLevel.CRITICAL,

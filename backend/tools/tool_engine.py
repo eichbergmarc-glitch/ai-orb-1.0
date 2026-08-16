@@ -95,6 +95,10 @@ _AUSREDEN: tuple[str, ...] = (
     "kann kein video", "kann kein bild", "keinen bildschirm",
     "nicht auswerten", "nicht angemeldet", "nicht aktiviert",
     "kann den bildschirm nicht", "sehe den bildschirm nicht",
+    # Dateien/PDF: Seit es ein Schreib- und PDF-Werkzeug gibt, ist auch das
+    # eine falsche Ausrede und muss denselben Nachhakweg nehmen.
+    "kann kein pdf", "keine pdf erzeug", "kein pdf erzeug",
+    "pdf nicht erstellen", "kein werkzeug, das eine pdf",
 )
 
 
@@ -119,6 +123,20 @@ def _ausdruecklich_verlangtes_werkzeug(
         if role != "user":
             continue
         knapp = str(content or "").lower()
+        # Natuerliche Auftraege nennen selten den technischen Werkzeugnamen.
+        # "Erstelle eine PDF" ist trotzdem genauso eindeutig wie "benutze
+        # pdf_erstellen" und darf nicht als freiwillige Option behandelt
+        # werden.
+        if "pdf" in knapp and any(
+            marker in knapp
+            for marker in (
+                "erstell", "mach", "generier", "speicher", "exportier",
+                "anleg", "druck",
+            )
+        ):
+            return "pdf_erstellen"
+        if any(marker in knapp for marker in ("such", "recherchier", "schau nach")):
+            return "internet_suchen"
         if not any(wort in knapp for wort in ("benutz", "nutz", "verwende", "werkzeug")):
             return ""
         for name in names:
@@ -536,6 +554,11 @@ class ToolEngine:
         "Ihr folgst du.\n\n"
         "Nach der Suche liest du den brauchbarsten Treffer mit "
         "'webseite_lesen'. Eine Trefferliste ist keine Antwort.\n\n"
+        "Verlangt der Benutzer eine PDF, lieferst du nicht bloss den Text "
+        "oder eine Anleitung zum manuellen Drucken: Du erstellst den "
+        "vollstaendigen Inhalt und rufst danach 'pdf_erstellen' auf. Erst "
+        "wenn das Werkzeug den gespeicherten Pfad bestaetigt, ist der "
+        "Auftrag erledigt.\n\n"
         "Du hast Zugang zum Netz. Sage nie, du koenntest nicht ins Internet "
         "oder habest keinen Zugriff auf ein Werkzeug - du hast ihn. Geht "
         "etwas schief, meldet dir das Werkzeug selbst, woran es lag.\n\n"
@@ -767,7 +790,8 @@ class ToolEngine:
                                     "Doch - du HAST Werkzeuge, sie stehen oben im "
                                     "Systemprompt (unter anderem bildschirm_ansehen, "
                                     "bildschirm_lesen, internet_suchen, "
-                                    "webseite_lesen, browser_bedienen). Braucht die "
+                                    "webseite_lesen, pdf_erstellen, "
+                                    "browser_bedienen). Braucht die "
                                     "Aufgabe eines davon, dann RUFE es im "
                                     "vorgesehenen Format auf, statt zu sagen, du "
                                     "koennest nicht. Willst du sehen, was gerade auf "
