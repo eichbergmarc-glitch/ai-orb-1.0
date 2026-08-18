@@ -342,6 +342,75 @@ _BILDSCHIRM_SEHEN: tuple[str, ...] = (
 )
 
 
+#: Woran ein WISSENSAUFTRAG zu erkennen ist: Der Benutzer will nicht eine
+#: Antwort, sondern dass sich der Orb etwas dauerhaft erarbeitet.
+#:
+#: Belegt am 17.08.2026, 21:36: "Suche nach Markus Gabriel und eigne dir
+#: sein Wissen an." Das Werkzeug dafuer existiert (wissen_aneignen), das
+#: Modell nannte es - und rief es nicht. Auf "ja, mach das" behauptete es,
+#: es habe nie einen Auftrag gegeben. Die bewaehrte Antwort auf dieses
+#: Muster steht schon zweimal im Ablauf (Suche, Bildschirm): Wo die
+#: Entscheidung feststeht, wird sie nicht delegiert.
+_WISSENSAUFTRAG_ZEICHEN: tuple[str, ...] = (
+    "eigne dir", "aneignen", "arbeite dich ein", "arbeite dich in",
+    "einarbeiten", "lerne alles", "lern alles", "grundwissen",
+    "vertiefe dein wissen", "vertief dein wissen", "dazulernen",
+    "merke dir das wissen", "merk dir das wissen", "merke dir sein wissen",
+    "merk dir sein wissen", "merke dir ihr wissen", "sein wissen an",
+    "speichere das wissen", "speichere sein wissen", "studiere",
+    "und merke dir sein", "und merk dir sein", "wissen aufbauen",
+)
+
+
+def will_wissensauftrag(text: str) -> bool:
+    """Ob der Benutzer verlangt, dass sich der Orb Wissen ANEIGNET."""
+
+    knapp = " " + " ".join((text or "").lower().split()) + " "
+    return any(zeichen in knapp for zeichen in _WISSENSAUFTRAG_ZEICHEN)
+
+
+def wissensthema_aus(text: str) -> str:
+    """Zieht das Thema aus einem Wissensauftrag heraus.
+
+    "Suche nach dem Philosophen Markus Gabriel und eigne dir sein Wissen
+    an" -> "Philosophen Markus Gabriel". Erst wird das Stueck hinter
+    ueber/zu/von/nach genommen und am Auftragsteil abgeschnitten; traegt
+    das nichts, bleiben die Inhaltsworte des ganzen Satzes.
+    """
+
+    knapp = " ".join((text or "").split())
+    treffer = _re.search(
+        r"(?:^|\s)(?:ueber|über|zum thema|zur|zum|zu|von|nach|in die|in den|in das)\s+(.{3,80}?)"
+        r"(?:\s+und\s+|\s*[.,!?;]|$)",
+        knapp,
+        _re.I,
+    )
+    kandidat = treffer.group(1).strip() if treffer else ""
+    # Fuehrende Artikel abwerfen - "dem Philosophen" -> "Philosophen".
+    kandidat = _re.sub(
+        r"^(?:dem|der|die|das|den|des|einem|einer|dich in die|dich in|dich)\s+",
+        "", kandidat, flags=_re.I,
+    )
+    # Das nachklappende Stueck des trennbaren Verbs ("eigne dir ... AN",
+    # "arbeite dich ... EIN") ist kein Teil des Themas.
+    kandidat = _re.sub(r"\s+(?:an|ein)$", "", kandidat, flags=_re.I)
+    kandidat = _re.sub(r"^(?:dem|der|die|das|den|des)\s+", "", kandidat, flags=_re.I)
+    # Ein Kandidat, der selbst nur Auftragsworte enthaelt, ist keiner.
+    if kandidat and not will_wissensauftrag(kandidat):
+        return kandidat
+
+    from backend.research.offene_quellen import _inhaltsworte
+
+    worte = [
+        wort for wort in _inhaltsworte(knapp)
+        if not any(zeichen.startswith(wort) for zeichen in _WISSENSAUFTRAG_ZEICHEN)
+        and wort not in ("wissen", "eigne", "aneignen", "merke", "merk",
+                         "speichere", "studiere", "lerne", "alles", "dich",
+                         "einmal", "arbeite")
+    ]
+    return " ".join(worte[:6])
+
+
 def will_bildschirm(text: str) -> bool:
     """Ob der Benutzer AUSDRUECKLICH auf den Bildschirm sehen lassen will.
 
@@ -956,6 +1025,20 @@ class Orchestrator:
                 # benutzt statt erneut mehrere Suchmaschinen zu belasten.
                 vorab_ergebnisse["internet_suchen"] = frisch.split("\n\n", 1)[-1].strip()
 
+        # Ein Wissensauftrag ("eigne dir X an") WIRD angenommen - nicht dem
+        # Modell ueberlassen, das ihn am 17.08. erst zerredete und dann
+        # abstritt. Die Einarbeitung startet im Hintergrund; das Modell
+        # bekommt die Zusage als Kontext und bestaetigt sie ehrlich.
+        if tools_available and will_wissensauftrag(text):
+            zusage = await self._vorab_wissen(text)
+            if zusage:
+                context_block = "\n\n".join(
+                    part for part in (context_block, zusage) if part
+                )
+                vorab_ergebnisse["wissen_aneignen"] = (
+                    "Der Auftrag läuft bereits im Hintergrund - nicht erneut starten."
+                )
+
         # Bittet jemand ausdruecklich, auf den Bildschirm zu sehen, dann WIRD
         # hingesehen - deterministisch, nicht auf gut Glueck.
         #
@@ -1511,10 +1594,27 @@ class Orchestrator:
             "wiederhol", "noch einmal such", "nochmal such", "nochmals such",
             "such nochmal", "such noch einmal", "erneut such", "such erneut",
         ))
-        if ist_wiederholung and self._letzter_suchbegriff:
+        # "Ja, bitte suche gezielt danach" benennt kein Thema - es ZEIGT auf
+        # eines, naemlich das der vorigen Frage. Am 17.08. wurde genau dieser
+        # Satz woertlich gesucht: 'gezielt danach', fuenf beliebige
+        # Wikipedia-Treffer, dem Modell als frische Ergebnisse vorgelegt -
+        # und die Antwort darauf war erfunden. Ob ein Satz ein Thema
+        # benennt, pruefen die Inhaltsworte; tut er es nicht, gilt er als
+        # Fortsetzung der letzten Suche.
+        from backend.research.offene_quellen import _inhaltsworte
+
+        ohne_thema = not _inhaltsworte(text)
+        if (ist_wiederholung or ohne_thema) and self._letzter_suchbegriff:
             begriff = self._letzter_suchbegriff
             such_text = begriff
-            logger.info("Suche wiederholt mit dem letzten Begriff: %r", begriff)
+            logger.info("Suche fortgesetzt mit dem letzten Begriff: %r", begriff)
+        elif ohne_thema:
+            # Kein Thema und keine letzte Suche: Eine woertliche Suche nach
+            # Verweiswoertern liefert nur Zufallstreffer, die das Modell in
+            # die Irre fuehren. Dann lieber gar keine Vorabsuche - das
+            # Modell hat seine Werkzeuge und den Gespraechsverlauf.
+            logger.info("Vorabsuche uebersprungen: %r benennt kein Thema.", text[:60])
+            return ""
         else:
             begriff = suchbegriff_aus(text)
             self._letzter_suchbegriff = begriff
@@ -1547,6 +1647,63 @@ class Orchestrator:
             "nicht geklappt: " + str(lauf.result.error or "kein Ergebnis") +
             " Sage dem Benutzer, dass die Suche gerade nicht geht, statt aus dem "
             "Gedächtnis zu antworten."
+        )
+
+    async def _vorab_wissen(self, text: str) -> str:
+        """Startet einen Wissensauftrag - deterministisch, im Hintergrund.
+
+        Das Gegenstueck zur erzwungenen Vorabsuche, fuers Aneignen. Belegt
+        am 17.08.2026, 21:36: "Eigne dir sein Wissen an" - das Modell
+        nannte das Werkzeug und rief es nicht; auf "ja, mach das" stritt es
+        den Auftrag ab. Wo die Entscheidung feststeht, wird sie nicht
+        delegiert: Der Orb startet die Einarbeitung selbst.
+
+        Im HINTERGRUND, nicht davor: Das Einlesen mehrerer Quellen samt
+        Destillat dauert eine halbe Minute und mehr. Der Benutzer bekommt
+        sofort eine ehrliche Zusage; das Ergebnis landet im Themenwissen
+        und ist ab dann abrufbar.
+        """
+
+        if self._tool_engine is None:
+            return ""
+        thema = wissensthema_aus(text)
+        if not thema:
+            return ""
+
+        engine = self._tool_engine
+
+        async def _lauf() -> None:
+            try:
+                lauf = await engine.direkt_ausfuehren(
+                    "wissen_aneignen", {"thema": thema, "max_quellen": 3}
+                )
+                if lauf.result.ok:
+                    logger.info("Wissensauftrag erledigt: %r.", thema)
+                else:
+                    logger.warning(
+                        "Wissensauftrag %r fehlgeschlagen: %s",
+                        thema, lauf.result.error,
+                    )
+            except Exception:  # noqa: BLE001 - Hintergrundarbeit stuerzt nie durch.
+                logger.exception("Wissensauftrag %r abgebrochen.", thema)
+
+        auftrag = asyncio.create_task(_lauf(), name=f"wissensauftrag:{thema[:30]}")
+        # Verwahren, sonst raeumt der Speicherbereiniger die Aufgabe ab.
+        laufende = getattr(self, "_wissensauftraege", None)
+        if laufende is None:
+            laufende = set()
+            self._wissensauftraege = laufende
+        laufende.add(auftrag)
+        auftrag.add_done_callback(laufende.discard)
+
+        logger.info("Wissensauftrag angenommen: %r.", thema)
+        return (
+            f"WISSENSAUFTRAG ANGENOMMEN. Die Einarbeitung in '{thema}' läuft "
+            "bereits im Hintergrund: Es werden mehrere Quellen gelesen, "
+            "belegte Aussagen destilliert und dauerhaft behalten. Sage dem "
+            "Benutzer genau das kurz zu. Behaupte NICHT, es sei schon "
+            "fertig, lehne den Auftrag NICHT ab, und rufe 'wissen_aneignen' "
+            "NICHT noch einmal - es läuft schon."
         )
 
     async def _vorab_bildschirm(self, text: str) -> str:

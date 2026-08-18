@@ -285,6 +285,14 @@ class VoicePipeline:
             )
         )
         self._barge_in = bool(config.get("voice.barge_in", True))
+        #: Ob im Nachfragefenster geprueft wird, ob der Orb gemeint ist.
+        self._hintergrund_erkennen = bool(
+            config.get("voice.hintergrund_erkennen", True)
+        )
+        #: Ob der Orb selbst zuletzt eine Rueckfrage gestellt hat. Nur dann
+        #: zaehlt ein blosses "ja" als Antwort AN IHN und nicht als
+        #: Zustimmung in einem Gespraech, das ihm nicht galt.
+        self._wartet_auf_antwort = False
         self._acknowledge = bool(config.get("voice.acknowledge_wake", True))
         self._acknowledge_text = str(config.get("voice.acknowledge_text", "Ja?"))
 
@@ -332,6 +340,7 @@ class VoicePipeline:
             language=str(config.get("voice.input.language", "de")),
             device=str(config.get("voice.input.device", "auto")),
             compute_type=str(config.get("voice.input.compute_type", "int8")),
+            cpu_threads=int(config.get("voice.input.cpu_threads", 0)),
             beam_size=int(config.get("voice.input.beam_size", 1)),
             anfangshinweis=str(config.get("voice.input.initial_prompt", "")),
         )
@@ -355,7 +364,18 @@ class VoicePipeline:
             language=str(config.get("voice.input.language", "de")),
             device=str(config.get("voice.input.device", "auto")),
             compute_type=str(config.get("voice.input.compute_type", "int8")),
+            # Bewusst WENIGE Kerne: Dieses Modell laeuft, waehrend das
+            # grosse erkennt und der Orb spricht. Wuerden beide alle Kerne
+            # nehmen, machten sie einander langsam - genau die Traegheit,
+            # die hier verhindert werden soll. "base" ist mit zwei Kernen
+            # fuer ein Drei-Sekunden-Fenster schnell genug.
+            cpu_threads=2,
             beam_size=1,
+            # Derselbe Anker wie beim grossen Modell: Er verankert Weckwort
+            # und Stop-Woerter. Seit dieses Modell im Schlaf auch das
+            # Weckwort sichtet, ist das keine Feinheit mehr - ohne Anker
+            # wird aus "Hallo Orb" bei 'base' zu oft "Hallo Robert".
+            anfangshinweis=str(config.get("voice.input.initial_prompt", "")),
         )
 
         # --- Auf wen gehoert wird ------------------------------------------
@@ -925,8 +945,21 @@ class VoicePipeline:
             # Stimme des Orb, die das Mikrofon mithört. Deshalb wird hier
             # trotz laufender Ausgabe transkribiert, aber nichts als Befehl
             # ausgeführt.
+            #
+            # Und zwar mit dem KLEINEN Modell und kurzer Verfallszeit. Am
+            # 17.08. lief hier das grosse: Waehrend einer langen Antwort
+            # wurde jeder mitgehoerte Schnipsel der eigenen Stimme voll
+            # erkannt, die Schlange wuchs auf drei Minuten, und der echte
+            # Satz des Benutzers kam nie an. Fuer die Frage "fiel das
+            # Stop-Wort?" reicht das kleine Modell; ein Fenster, das
+            # aelter als ein paar Sekunden ist, ist ohnehin kein Stop mehr.
             if self._listening_for_stop:
-                transcript = await self._transcriber.transcribe(path)
+                erkenner = (
+                    self._transcriber
+                    if self._stop_transcriber.load_failed
+                    else self._stop_transcriber
+                )
+                transcript = await erkenner.transcribe(path, verfallen_nach=6.0)
                 if self._contains_stop_word(transcript.text):
                     logger.info("Stop-Wort erkannt – Sprachausgabe wird beendet.")
                     self.interrupt()
@@ -996,7 +1029,51 @@ class VoicePipeline:
             # abgeschlossen - die naechste Rede darf wieder sprechen.
             self._neue_rede()
 
-            transcript = await self._transcriber.transcribe(path)
+            # Im Schlaf hoert der Orb nur auf sein Weckwort - und dafuer
+            # braucht es das grosse Modell nicht.
+            #
+            # Genau hier entstand die Traegheit der letzten Tage: Am 14.08.
+            # wurden 600 von 646 Aeusserungen voll transkribiert und danach
+            # weggeworfen - Zimmergeraeusche, Gespraechsfetzen, die eigene
+            # Lautsprecherstimme. Jede kostete 5-8 Sekunden Rechenzeit, in
+            # der die Saetze des Benutzers warteten. Deshalb sichtet im
+            # Schlaf zuerst das KLEINE Modell (das ohnehin fuers Stop-Wort
+            # laeuft, zwei Kerne, 3-4x schneller). Nur wenn es das Weckwort
+            # findet, liest das grosse Modell die Aufnahme noch einmal
+            # richtig - dann lohnt sich die Sorgfalt, denn im selben Satz
+            # steht meist schon der Auftrag.
+            if self._is_asleep():
+                # Ein Weckruf braucht Stimme: "Hallo Orb" dauert laenger als
+                # eine Dreiviertelsekunde. Kuerzeres ist Knacken, Husten,
+                # ein Wortfetzen - keine Erkennung wert.
+                if duration < 0.75:
+                    return
+                if not self._stop_transcriber.load_failed:
+                    vorpruefung = await self._stop_transcriber.transcribe(
+                        path, verfallen_nach=15.0
+                    )
+                    # Die Sichtung ist absichtlich GROSSZUEGIG: Sie darf
+                    # Muell durchlassen (das grosse Modell raeumt dann auf),
+                    # aber nie einen echten Weckruf verschlucken. Deshalb
+                    # geht neben dem erkannten Weckwort auch jeder Anklang
+                    # davon zur grossen Erkennung weiter.
+                    klein = vorpruefung.text.lower()
+                    weckverdacht = (
+                        self._wake_word.detect(vorpruefung.text).detected
+                        or "orb" in klein
+                        or "hallo" in klein
+                        or "halo" in klein
+                    )
+                    if not weckverdacht:
+                        trace.mark("transcript_ready")
+                        turn.transcript = vorpruefung.text
+                        return
+
+            # Mit Verfallszeit: Eine Aufnahme, die eine halbe Minute auf die
+            # Erkennung gewartet hat, ist keine Anweisung mehr - der
+            # Benutzer hat laengst neu gesprochen oder aufgegeben. Sie doch
+            # zu erkennen verzoegert nur die Aufnahme, die noch zaehlt.
+            transcript = await self._transcriber.transcribe(path, verfallen_nach=25.0)
             trace.mark("transcript_ready")
             turn.transcript = transcript.text
             turn.confidence = transcript.confidence
@@ -1598,6 +1675,42 @@ class VoicePipeline:
             self._wake()
             return
 
+        # Bin ich ueberhaupt gemeint?
+        #
+        # Im Nachfragefenster galt bisher JEDE Aeusserung mit der Stimme des
+        # Benutzers als Anweisung. Im Protokoll vom 17.08.2026 stehen die
+        # Folgen: "Vielen Dank.", "Die Kirchenweine und Schachtwaesche.",
+        # "Ihr seid, wenn ihr sich etwas spuertzuschreifen ..." - ein
+        # Gespraech im Raum, ein Fernseher, die eigene Lautsprecherstimme.
+        # Alles verarbeitet, alles beantwortet.
+        #
+        # Die Frage ist nicht "verstehe ich den Satz?", sondern "war er an
+        # MICH gerichtet?". Im Zweifel wird zugehoert und geschwiegen: Ein
+        # uebersehener Auftrag kostet eine Wiederholung, eine Antwort auf
+        # ein fremdes Gespraech kostet Vertrauen.
+        if self._hintergrund_erkennen:
+            from backend.voice.gespraechsrichtung import einschaetzen
+
+            richtung = einschaetzen(
+                text,
+                sicherheit=transcript.confidence,
+                wurde_gefragt=self._wartet_auf_antwort,
+            )
+            if not richtung.antworten:
+                logger.info(
+                    "Nicht an mich gerichtet (%s): %r - %s",
+                    richtung.art, text[:70], richtung.grund,
+                )
+                await self._event_bus.publish(
+                    "voice.background.detected",
+                    {"text": text[:200], **richtung.to_dict()},
+                )
+                # Wach bleiben, aber schweigen: Wer nebenher spricht, will
+                # oft gleich darauf doch etwas vom Orb.
+                self._wake()
+                return
+            self._wartet_auf_antwort = False
+
         # Nachfragen statt raten.
         #
         # Kurze Aeusserungen und das Stop-Wort bleiben ausgenommen: Sie
@@ -1616,6 +1729,7 @@ class VoicePipeline:
                 text[:80],
             )
             self._wake()
+            self._wartet_auf_antwort = True
             await self._set_state(VoiceState.LISTENING)
             await self._say(self._rueckfrage_text, emotion="fragend")
             return

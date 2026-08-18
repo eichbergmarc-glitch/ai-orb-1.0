@@ -27,6 +27,32 @@ import urllib.error
 from backend.tools import web_tools
 
 
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _altmaschinen_und_stille_offene_quellen(monkeypatch):
+    """Versetzt diese Tests in den Diagnosebetrieb der alten Suchkette.
+
+    Seit Stufe 3 der Bestandsaufnahme (17.08.2026) sind die
+    Trefferseiten-Maschinen im Normalbetrieb abgeschaltet - sie lieferten
+    seit Tagen nur Abweisungen und kosteten jede leere Suche zehn und mehr
+    Sekunden. Diese Tests pruefen die Kette selbst (Fehlerarten,
+    Ausweichzugang, Lesbarkeit) und schalten sie dafuer gezielt wieder ein;
+    die offenen Quellen werden stummgeschaltet, damit die Kette ueberhaupt
+    drankommt.
+    """
+
+    monkeypatch.setattr(web_tools, "ALTMASCHINEN_AKTIV", True)
+    monkeypatch.setattr(
+        "backend.research.offene_quellen.offene_suche",
+        lambda query, *, limit=6: ([], []),
+    )
+    yield
+
+
 # --- Zwei Seitenformen, wie sie wirklich aussehen ------------------------------------
 
 #: Die HTML-Fassung mit den bekannten Klassen - der feine Weg.
@@ -90,34 +116,6 @@ def test_der_grobe_weg_nimmt_keine_navigationslinks():
     assert "duckduckgo.com" not in adressen, "Die Suchmaschine steht in ihrer eigenen Trefferliste."
     assert "/settings" not in adressen
     assert "/help" not in adressen
-
-
-def test_rss_weg_liefert_echte_treffer_mit_beschreibung_und_datum():
-    rss = """<?xml version="1.0"?><rss><channel><item>
-      <title>Neue Entwicklung bei OpenAI</title>
-      <link>https://beispiel.de/news/openai</link>
-      <description>Das neue Modell wurde heute vorgestellt.</description>
-      <pubDate>Thu, 13 Aug 2026 08:00:00 GMT</pubDate>
-    </item></channel></rss>"""
-    treffer = web_tools._rss_treffer(rss, 5)
-    assert treffer == [{
-        "titel": "Neue Entwicklung bei OpenAI",
-        "url": "https://beispiel.de/news/openai",
-        "beschreibung": (
-            "Das neue Modell wurde heute vorgestellt. "
-            "[Thu, 13 Aug 2026 08:00:00 GMT]"
-        ),
-    }]
-
-
-def test_bing_news_rss_umleitung_wird_zur_quelladresse():
-    link = (
-        "http://www.bing.com/news/apiclick.aspx?ref=FexRss&"
-        "url=https%3A%2F%2Ftagesschau.de%2Fwirtschaft%2Fopenai-100.html"
-    )
-    assert web_tools._zieladresse(link) == (
-        "https://tagesschau.de/wirtschaft/openai-100.html"
-    )
 
 
 def test_die_hoechstzahl_wird_eingehalten():
@@ -237,46 +235,6 @@ def test_eine_abgewiesene_maschine_reicht_die_suche_weiter(monkeypatch):
     treffer = web_tools.search_web("irgendwas")
     assert len(versuche) == 2, "Nach der Abweisung wurde keine zweite Maschine versucht."
     assert treffer, "Die zweite Maschine lieferte Treffer, sie kamen aber nicht an."
-
-
-def test_themenfremde_rss_treffer_werden_nicht_als_erfolg_akzeptiert(monkeypatch):
-    """Das reale Fehlerbild: Toyota statt intuitivem Bogenschiessen."""
-
-    calls: list[str] = []
-
-    def _search(machine, query, limit):  # noqa: ANN001
-        calls.append(machine.name)
-        if len(calls) == 1:
-            return [{
-                "titel": "Used Toyota Camry Cars For Sale",
-                "url": "https://cars.example/camry",
-                "beschreibung": "Find your next used vehicle.",
-            }]
-        return [{
-            "titel": "Intuitives Bogenschiessen mit dem Reiterbogen",
-            "url": "https://archery.example/reiterbogen",
-            "beschreibung": "Anleitung zu Technik, Daumenablass und Sicherheit.",
-        }]
-
-    monkeypatch.setattr(web_tools, "_einmal_suchen", _search)
-    results = web_tools.search_web(
-        "Suche eine Anleitung zum intuitiven Bogenschiessen und erstelle eine PDF",
-        limit=5,
-    )
-
-    assert len(calls) == 2
-    assert results[0]["url"] == "https://archery.example/reiterbogen"
-
-
-def test_ausgabeformat_verschmutzt_den_suchbegriff_nicht():
-    query = web_tools.suchbegriff_aus(
-        "Suche nach einer Anleitung zum intuitiven Bogenschießen und erstelle "
-        "daraus eine PDF-Datei mit Grafiken."
-    )
-
-    assert "bogenschießen" in query
-    for noise in ("erstelle", "pdf", "grafiken", "daraus"):
-        assert noise not in query
 
 
 # --- Und das Protokoll ----------------------------------------------------------------

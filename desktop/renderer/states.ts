@@ -283,7 +283,11 @@ export function buildStates(
       coreColor: theme.base,
       glowColor: theme.accent,
       particleColor: theme.accent,
-      speed: 0.78,
+      // 0.78 -> 1.05: Das Tempo treibt die Plasmaphase, und die Phase ist
+      // das Fliessen der Farben. Beim Start (busy: 1.2) fanden die Farben
+      // sichtbar in Bewegung - in Ruhe sollen sie nur wenig langsamer
+      // ziehen, nicht stehen.
+      speed: 1.05,
       particleIntensity: 0.4,
       lightIntensity: 1.0,
       pulseAmount: 0.025,
@@ -295,13 +299,18 @@ export function buildStates(
       smokeDensity: 0.85,
       smokePulse: 0.0,
       smokeWarning: 0.0,
-      // Ruhig genug, um es stundenlang anzusehen: langsame Bahnen, wenig
-      // Partikel, schwaches Leuchten. "Er wartet entspannt."
-      ringSpeed: 0.44,
-      ringIntensity: 0.78,
-      particleSpeed: 0.48,
-      energyFlow: 0.62,
-      coreGlow: 0.62,
+      // Lebendig auch in Ruhe: Die Plasmaschwaden fliessen sichtbar, wie
+      // in den ersten Sekunden nach dem Start - der Zustand, den der
+      // Benutzer am 17.08. als den schoensten benannt hat. Vorher stand
+      // energyFlow bei 0.62, und damit waren die wandernden Farbfelder so
+      // schwach, dass sie stillzustehen schienen. Die BAHNEN bleiben
+      // gemaechlich (ringSpeed unveraendert niedrig): Bewegung soll aus
+      // dem Inneren kommen, nicht aus kreisender Unruhe.
+      ringSpeed: 0.48,
+      ringIntensity: 0.82,
+      particleSpeed: 0.62,
+      energyFlow: 1.08,
+      coreGlow: 0.68,
       eyeOpen: 1.0,
       eyeHappy: 0.0,
       eyeSquint: 0.0,

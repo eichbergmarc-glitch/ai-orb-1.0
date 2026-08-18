@@ -92,6 +92,7 @@ class Transcriber:
         language: str = "de",
         device: str = "auto",
         compute_type: str = "int8",
+        cpu_threads: int = 0,
         beam_size: int = 1,
         models_directory: Path | None = None,
         anfangshinweis: str = "",
@@ -116,6 +117,19 @@ class Transcriber:
         self._model_size = model_size
         self._language = language
         self._device = device
+        #: Rechenkerne fuer die Erkennung. 0 heisst: selbst bestimmen.
+        #:
+        #: faster-whisper nimmt ohne Angabe genau VIER Threads, gleichgueltig
+        #: wie viele Kerne der Rechner hat. Die Messung vom 16.08.2026 zeigt
+        #: die Erkennung bei 5,2 Sekunden im Median - auf der CPU fast reine
+        #: Rechenzeit. Ein Kern bleibt frei: Sprachausgabe und Animation
+        #: laufen gleichzeitig, und eine voll belegte CPU laesst den Orb
+        #: ruckeln.
+        gewuenscht = int(cpu_threads or 0)
+        if gewuenscht <= 0:
+            import os as _os
+            gewuenscht = max(4, (_os.cpu_count() or 4) - 1)
+        self._cpu_threads = gewuenscht
         self._compute_type = compute_type
         self._beam_size = max(1, beam_size)
         self._models_directory = models_directory
@@ -124,6 +138,13 @@ class Transcriber:
         self._model: Any | None = None
         self._load_lock = threading.Lock()
         self._load_failed = False
+        #: Es erkennt immer nur EINE Aufnahme zugleich.
+        #:
+        #: Ohne diese Sperre laufen mehrere Erkennungen gleichzeitig auf
+        #: demselben Modell und nehmen sich gegenseitig die Rechenkerne weg -
+        #: jede einzelne wird dadurch langsamer, und unter Last wird aus
+        #: Sekunden eine Schlange. Am 17.08.2026 stand sie bei 194 Sekunden.
+        self._reihen_sperre = threading.Lock()
 
     # --- Verfügbarkeit ---------------------------------------------------------
 
@@ -222,6 +243,7 @@ class Transcriber:
                         groesse,
                         device=self._device,
                         compute_type=self._compute_type,
+                        cpu_threads=self._cpu_threads,
                         download_root=(
                             str(self._models_directory) if self._models_directory else None
                         ),
@@ -274,19 +296,65 @@ class Transcriber:
 
     # --- Erkennung ----------------------------------------------------------------
 
-    async def transcribe(self, audio_path: Path) -> Transcript:
+    async def transcribe(
+        self, audio_path: Path, *, verfallen_nach: float | None = None
+    ) -> Transcript:
         """Wandelt eine Audiodatei in Text um.
 
         Args:
             audio_path: Pfad zu einer WAV-Datei (16 kHz, mono).
+            verfallen_nach: Nach so vielen Sekunden Wartezeit wird die
+                Aufnahme verworfen statt erkannt. Das ist der Riegel gegen
+                die Schlange vom 17.08.2026: Während der Orb eine lange
+                Antwort sprach, hörte das Mikrofon ihn selbst mit, jede
+                dieser Aufnahmen stellte sich zur Erkennung an, und als der
+                Benutzer dann wirklich sprach, wartete sein Satz drei
+                Minuten - "Kannst du mich jetzt verstehen?" wurde um 13:48
+                klar erkannt und kam trotzdem nie an. Eine Aufnahme, die
+                Minuten alt ist, ist keine Anweisung mehr; sie zu erkennen
+                verzögert nur die, die es noch ist.
 
         Returns:
-            Das Erkennungsergebnis. Bei einem Fehler ist der Text leer.
+            Das Erkennungsergebnis. Bei einem Fehler oder einer verfallenen
+            Aufnahme ist der Text leer.
         """
 
-        return await asyncio.to_thread(self._transcribe_blocking, audio_path)
+        abgegeben = time.monotonic()
+        return await asyncio.to_thread(
+            self._transcribe_blocking, audio_path, abgegeben, verfallen_nach
+        )
 
-    def _transcribe_blocking(self, audio_path: Path) -> Transcript:
+    def _transcribe_blocking(
+        self,
+        audio_path: Path,
+        abgegeben: float | None = None,
+        verfallen_nach: float | None = None,
+    ) -> Transcript:
+        with self._reihen_sperre:
+            return self._transcribe_geordnet(audio_path, abgegeben, verfallen_nach)
+
+    def _transcribe_geordnet(
+        self,
+        audio_path: Path,
+        abgegeben: float | None = None,
+        verfallen_nach: float | None = None,
+    ) -> Transcript:
+        # ERST die Frische pruefen, DANN rechnen. Die Wartezeit entsteht in
+        # der Schlange vor der Sperre - genau hier ist der Moment, in dem
+        # eine veraltete Aufnahme noch nichts gekostet hat.
+        if (
+            verfallen_nach is not None
+            and abgegeben is not None
+            and time.monotonic() - abgegeben > verfallen_nach
+        ):
+            logger.info(
+                "Aufnahme verworfen: Sie wartete %.0f s auf die Erkennung "
+                "(Grenze %.0f s) und ist damit keine Anweisung mehr.",
+                time.monotonic() - abgegeben,
+                verfallen_nach,
+            )
+            return Transcript()
+
         model = self._load_model()
         if model is None:
             return Transcript()

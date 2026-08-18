@@ -56,10 +56,13 @@ import html
 import json
 import os
 import re
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 
 from backend.system.logging_setup import get_logger
@@ -77,7 +80,38 @@ _OPENALEX = "https://api.openalex.org/works"
 _CROSSREF = "https://api.crossref.org/works"
 _GOOGLE_CSE = "https://www.googleapis.com/customsearch/v1"
 
-_ZEITLIMIT = 15
+#: Wie lange EINE Quelle antworten darf.
+#:
+#: Sechs Sekunden, nicht fünfzehn. Das ist die Lehre aus der Messung vom
+#: 16.08.2026: Die Zeit bis zur ersten Frage ans Sprachmodell stieg von 6,2
+#: auf 22,5 Sekunden im Median, im schlimmsten Fall auf 77. Wer eine Antwort
+#: hören will, wartet nicht eine Minute auf eine Fussnote. Eine Quelle, die
+#: nach sechs Sekunden nicht geantwortet hat, hilft dem Gespräch nicht mehr.
+_ZEITLIMIT = 6
+
+#: Wie lange die GESAMTE Suche dauern darf, über alle Quellen hinweg.
+#: Danach wird mit dem geantwortet, was da ist. Lieber zwei Treffer sofort
+#: als fünf in einer Minute.
+_GESAMTBUDGET = 8.0
+
+#: GDELT lässt ungefähr eine Anfrage alle fünf Sekunden je Adresse zu und
+#: antwortet sonst mit 429. Im Protokoll des Benutzers stand fast bei jedem
+#: Durchgang "antwortete mit 429" - weil die Nachrichtenrunde sechs Quellen
+#: gleichzeitig fragt und damit sechs GDELT-Anfragen im selben Augenblick
+#: abfeuert. Ohne diese Bremse ruft der Orb einen Dienst an, der ihn
+#: garantiert abweist, und wartet dafür auch noch.
+_GDELT_ABSTAND = 5.5
+#: Wie lange eine Anfrage auf einen freien Platz wartet, bevor sie aufgibt.
+_GDELT_WARTEN = 2.0
+_gdelt_sperre = threading.Lock()
+_gdelt_zuletzt = 0.0
+_gdelt_pause_bis = 0.0
+
+#: Kurzes Gedächtnis für gleiche Anfragen. Die Nachrichtenrunde stellt
+#: sechsmal beinahe dieselbe Frage; ohne das hier zahlt sie sechsmal.
+_SPEICHER_DAUER = 180.0
+_speicher: dict[str, tuple[float, list, list]] = {}
+_speicher_sperre = threading.Lock()
 
 
 class OffeneQuelleFehler(RuntimeError):
@@ -146,6 +180,48 @@ def _gdelt_datum(roh: str) -> str:
         return ""
 
 
+#: Zeichen, an denen sich GDELT verschluckt. Der Dienst antwortet darauf
+#: mit Klartext statt JSON: "One or more of your keywords contained an
+#: illegal character. To use a dash in a word, place it in quotes."
+_GDELT_VERBOTEN = re.compile(r"[-–—+~^\"'()\[\]{}:;,!?/\\*]")
+
+
+def _gdelt_begriffe(query: str) -> str:
+    """Macht aus einer gesprochenen Frage eine Anfrage, die GDELT annimmt.
+
+    Bindestriche waren der Stolperstein: "Oral-History-Berichten" liess die
+    ganze Anfrage scheitern. Sie werden zu Leerzeichen, und alles, was zu
+    kurz ist, um zu tragen, fliegt heraus - GDELT sucht sonst nach
+    Füllwörtern und liefert Beliebiges.
+    """
+
+    sauber = _GDELT_VERBOTEN.sub(" ", str(query or ""))
+    worte = [w for w in sauber.split() if len(w) > 2]
+    return " ".join(worte[:12])
+
+
+def _gdelt_slot(budget: float) -> bool:
+    """Wartet, bis GDELT wieder gefragt werden darf. ``False`` = überspringen."""
+
+    global _gdelt_zuletzt
+
+    jetzt = time.monotonic()
+    if jetzt < _gdelt_pause_bis:
+        return False
+    if not _gdelt_sperre.acquire(timeout=max(0.0, budget)):
+        return False
+    try:
+        warten = _GDELT_ABSTAND - (time.monotonic() - _gdelt_zuletzt)
+        if warten > 0:
+            if warten > budget:
+                return False
+            time.sleep(warten)
+        _gdelt_zuletzt = time.monotonic()
+        return True
+    finally:
+        _gdelt_sperre.release()
+
+
 def gdelt_suchen(
     query: str,
     *,
@@ -172,7 +248,9 @@ def gdelt_suchen(
         OffeneQuelleFehler: Wenn der Dienst nicht erreichbar war.
     """
 
-    begriffe = " ".join(str(query or "").split())
+    global _gdelt_pause_bis
+
+    begriffe = _gdelt_begriffe(query)
     if not begriffe:
         return []
 
@@ -181,6 +259,15 @@ def gdelt_suchen(
         teile.append(f"sourcelang:{sprache.strip()}")
     if domain.strip():
         teile.append(f"domain:{domain.strip()}")
+
+    # Nur kurz auf einen freien Platz warten, nicht das ganze Zeitlimit.
+    #
+    # Die Nachrichtenrunde fragt sechs Haeuser auf einmal. Wuerde jede
+    # Anfrage die volle Sperrfrist abwarten, dauerte die Runde allein dafuer
+    # eine halbe Minute. So kommt die erste durch, die anderen treten
+    # sofort beiseite - und die uebrigen Quellen antworten unterdessen.
+    if not _gdelt_slot(_GDELT_WARTEN):
+        raise OffeneQuelleFehler("ist gerade gesperrt (Anfragetakt)")
 
     frage = urllib.parse.urlencode(
         {
@@ -192,7 +279,15 @@ def gdelt_suchen(
             "timespan": zeitraum,
         }
     )
-    daten = _json_holen(f"{_GDELT}?{frage}")
+    try:
+        daten = _json_holen(f"{_GDELT}?{frage}")
+    except OffeneQuelleFehler as fehler:
+        if "429" in str(fehler):
+            # Eine Minute Ruhe. Weiter gegen eine geschlossene Tür zu laufen
+            # kostet nur Zeit, die der Benutzer als Wartezeit erlebt.
+            _gdelt_pause_bis = time.monotonic() + 60.0
+            logger.info("GDELT bremst uns aus - eine Minute Pause.")
+        raise
 
     treffer: list[dict[str, str]] = []
     gesehen: set[str] = set()
@@ -337,6 +432,124 @@ def crossref_suchen(query: str, *, limit: int = 4) -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+#: Die Schlagzeilen-Feeds der grossen Häuser. Feste Adressen, seit Jahren
+#: dieselben - und Feeds sind das Gegenteil einer Trefferseite: Sie sind
+#: DAFÜR da, von Programmen abgeholt zu werden. Kein 403, kein Takt, keine
+#: Sperrseite. Reuters fehlt mit Absicht: Das Haus hat seine öffentlichen
+#: Feeds 2020 eingestellt.
+STANDARD_FEEDS: tuple[tuple[str, str], ...] = (
+    ("tagesschau (DE)", "https://www.tagesschau.de/index~rss2.xml"),
+    ("NZZ (CH)", "https://www.nzz.ch/recent.rss"),
+    ("BBC (UK)", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("Al Jazeera (QA)", "https://www.aljazeera.com/xml/rss/all.xml"),
+    ("Le Monde (FR)", "https://www.lemonde.fr/rss/une.xml"),
+    ("NPR (US)", "https://feeds.npr.org/1001/rss.xml"),
+)
+
+#: Wörter, die in einer Nachrichtenfrage nichts tragen. "Was gibt es Neues
+#: aus aller Welt" enthält vier Wörter über drei Buchstaben - und keins
+#: davon taugt als Filter für Schlagzeilen.
+_FUELLWOERTER = frozenset((
+    "gibt", "neues", "neue", "aller", "welt", "aktuell", "aktuelle",
+    "aktuellen", "aktuelles", "heute", "gestern", "gerade", "news",
+    "nachricht", "nachrichten", "schlagzeile", "schlagzeilen", "lage",
+    "passiert", "geschieht", "bitte", "eine", "einen", "einer", "über",
+    "ueber", "sich", "sind", "wird", "werden", "diese", "dieser", "dieses",
+    "presse", "medien", "bericht", "berichte", "meldung", "meldungen",
+    "erzaehl", "erzähl", "sage", "sagen", "lies", "vorlesen", "such",
+    "suche", "mal", "doch", "dann", "auch", "noch", "schon", "jetzt",
+    # Verweiswoerter. "Ja, bitte suche gezielt danach" hat am 17.08. eine
+    # woertliche Suche nach 'gezielt danach' ausgeloest - fuenf beliebige
+    # Wikipedia-Treffer, als frische Suchergebnisse vorgelegt. Diese
+    # Woerter benennen nie ein Thema, sie zeigen nur auf eines.
+    "gezielt", "danach", "davon", "darueber", "darüber", "dazu", "damit",
+    "hierzu", "genau", "genauer", "weiter", "suchet", "zusammen",
+    "neuigkeiten", "neuigkeit", "mehr", "nach", "wieder", "etwas",
+))
+
+
+def _inhaltsworte(query: str) -> list[str]:
+    """Die Wörter einer Frage, die wirklich ein Thema benennen."""
+
+    worte = re.split(r"\W+", str(query or "").lower())
+    return [w for w in worte if len(w) > 3 and w not in _FUELLWOERTER]
+
+
+def schlagzeilen_suchen(
+    query: str,
+    *,
+    limit: int = 6,
+    feeds: tuple[tuple[str, str], ...] | None = None,
+) -> list[dict[str, str]]:
+    """Holt Schlagzeilen direkt von den Zeitungen - ohne jede Suchmaschine.
+
+    Benennt die Frage ein Thema, werden die Schlagzeilen danach gefiltert.
+    Benennt sie keins ("was gibt es Neues"), sind die obersten Schlagzeilen
+    selbst die Antwort - genau dafür gibt es eine Titelseite.
+
+    Die Feeds werden gleichzeitig geholt. Ein Feed, der nicht antwortet,
+    fällt still weg; die anderen tragen trotzdem bei.
+    """
+
+    quellen = list(feeds if feeds is not None else STANDARD_FEEDS)
+    if not quellen:
+        return []
+    thema = " ".join(_inhaltsworte(query))
+    je_feed = max(2, limit // 2 if thema else 2)
+
+    def _ein_feed(adresse: str) -> list[dict[str, str]]:
+        eintraege = rss_lesen(adresse, limit=je_feed, filter_text=thema)
+        if eintraege or not thema:
+            return eintraege
+        # Das Thema hat alles weggefiltert - haeufig, weil deutsch gefragt
+        # und englisch getitelt wird ("Nahen Osten" findet "Middle East"
+        # nie). Dann lieber die ECHTEN obersten Schlagzeilen als gar
+        # nichts: Am 17.08. bekam das Modell in dieser Lage null Treffer
+        # vorgelegt und erfand daraufhin welche. Echte, als allgemein
+        # erkennbare Schlagzeilen machen das unmoeglich.
+        return rss_lesen(adresse, limit=2, filter_text="")
+
+    gesammelt: list[dict[str, str]] = []
+    pool = ThreadPoolExecutor(max_workers=min(6, len(quellen)))
+    try:
+        auftraege = {
+            pool.submit(_ein_feed, adresse): name for name, adresse in quellen
+        }
+        wait(auftraege, timeout=_ZEITLIMIT)
+        for auftrag, name in auftraege.items():
+            if not auftrag.done():
+                auftrag.cancel()
+                continue
+            try:
+                eintraege = auftrag.result()
+            except Exception:  # noqa: BLE001 - ein Feed reisst die andern nicht mit.
+                logger.info("Feed %s war nicht lesbar.", name)
+                continue
+            for eintrag in eintraege:
+                eintrag["beschreibung"] = (
+                    f"{name}: {eintrag['beschreibung']}".strip().rstrip(":")
+                )
+                gesammelt.append(eintrag)
+    finally:
+        pool.shutdown(wait=False)
+
+    # Reihum mischen statt feedweise anhaengen: Sonst bestuende die ganze
+    # Liste aus dem ersten Haus, und die Vielfalt der Quellen - der Grund
+    # fuer mehrere Feeds - waere wieder weg.
+    nach_haus: dict[str, list[dict[str, str]]] = {}
+    for eintrag in gesammelt:
+        haus = eintrag["beschreibung"].split(":")[0]
+        nach_haus.setdefault(haus, []).append(eintrag)
+    gemischt: list[dict[str, str]] = []
+    while len(gemischt) < limit and any(nach_haus.values()):
+        for stapel in nach_haus.values():
+            if stapel:
+                gemischt.append(stapel.pop(0))
+            if len(gemischt) >= limit:
+                break
+    return gemischt
+
+
 def rss_lesen(adresse: str, *, limit: int = 6, filter_text: str = "") -> list[dict[str, str]]:
     """Liest einen RSS- oder Atom-Feed.
 
@@ -453,6 +666,9 @@ _NACHRICHTLICH = (
     "news", "nachricht", "schlagzeil", "presse", "aktuell", "heute", "gestern",
     "diese woche", "gerade", "derzeit", "momentan", "neueste", "was gibt es neues",
     "was passiert", "krieg", "wahl", "gipfel", "streik", "prozess",
+    # "Neuigkeiten zu neuen AI-Modellen" lief am 17.08. als Sachfrage zu
+    # OpenAlex - und bekam Fachaufsaetze statt Meldungen vorgelegt.
+    "neuigkeit", "neue entwicklungen", "was tut sich",
 )
 
 #: Woran eine wissenschaftliche Frage zu erkennen ist.
@@ -483,6 +699,28 @@ def _domain_aus(query: str) -> tuple[str, str]:
         return "", query
     rest = (query[: treffer.start()] + " " + query[treffer.end():]).strip()
     return treffer.group(1).lower(), rest
+
+
+def _aus_speicher(schluessel: str) -> tuple[list[dict[str, str]], list[str]] | None:
+    """Dieselbe Frage innerhalb weniger Minuten kostet nichts mehr."""
+
+    with _speicher_sperre:
+        eintrag = _speicher.get(schluessel)
+        if eintrag is None:
+            return None
+        zeitpunkt, treffer, benutzt = eintrag
+        if time.monotonic() - zeitpunkt > _SPEICHER_DAUER:
+            _speicher.pop(schluessel, None)
+            return None
+    logger.info("Offene Suche aus dem Kurzgedächtnis beantwortet.")
+    return list(treffer), list(benutzt)
+
+
+def _in_speicher(schluessel: str, treffer: list, benutzt: list) -> None:
+    with _speicher_sperre:
+        if len(_speicher) > 80:
+            _speicher.clear()
+        _speicher[schluessel] = (time.monotonic(), list(treffer), list(benutzt))
 
 
 def offene_suche(query: str, *, limit: int = 6) -> tuple[list[dict[str, str]], list[str]]:
@@ -518,9 +756,16 @@ def offene_suche(query: str, *, limit: int = 6) -> tuple[list[dict[str, str]], l
                                  limit=limit, domain=domain, zeitraum="1w"),
         ))
     elif art == "nachricht":
-        wege.append(("GDELT", lambda: gdelt_suchen(ohne_domain, limit=limit, zeitraum="3d")))
+        # ZUERST die Zeitungen selbst. Am 16.08. um 21:26 stand im
+        # Protokoll, wie die Nachrichtensuche an GDELT allein zugrunde
+        # ging: Taktsperre, dann SSL-Timeout, dann der Rueckfall in die
+        # fuenf gesperrten Suchmaschinen. Feeds kennen das alles nicht -
+        # sie sind zum Abholen gebaut.
+        wege.append(("Schlagzeilen", lambda: schlagzeilen_suchen(ohne_domain, limit=limit)))
+        # GDELT bleibt als Tiefensuche dahinter: Es findet auch den Artikel
+        # von vorgestern, der aus keiner Titelseite mehr hervorgeht.
         wege.append((
-            "GDELT (deutsch)",
+            "GDELT",
             lambda: gdelt_suchen(ohne_domain, limit=limit, sprache="german", zeitraum="1w"),
         ))
         wege.append(("Wikipedia", lambda: wikipedia_suchen(ohne_domain, limit=3)))
@@ -529,36 +774,71 @@ def offene_suche(query: str, *, limit: int = 6) -> tuple[list[dict[str, str]], l
         wege.append(("Crossref", lambda: crossref_suchen(ohne_domain, limit=3)))
         wege.append(("Wikipedia", lambda: wikipedia_suchen(ohne_domain, limit=3)))
     else:
+        # Eine Sachfrage braucht keine Nachrichtensuche. GDELT stünde hier
+        # nur im Weg: Es kostet eine Sperrfrist und liefert zu "Wer war
+        # Bismarck" Tagesmeldungen statt einer Auskunft.
         wege.append(("Wikipedia", lambda: wikipedia_suchen(ohne_domain, limit=limit)))
         wege.append((
             "Wikipedia (englisch)",
             lambda: wikipedia_suchen(ohne_domain, limit=3, sprache="en"),
         ))
-        wege.append(("GDELT", lambda: gdelt_suchen(ohne_domain, limit=3, zeitraum="1w")))
         wege.append(("OpenAlex", lambda: openalex_suchen(ohne_domain, limit=3)))
+
+    # Alle Quellen GLEICHZEITIG fragen, nicht nacheinander.
+    #
+    # Nacheinander war der Grund für die Langsamkeit: Vier Quellen mit je
+    # fünfzehn Sekunden Geduld ergeben im schlechten Fall eine Minute, in
+    # der der Benutzer eine stumme Kugel ansieht. Gleichzeitig kostet das
+    # Ganze so lange wie die langsamste - und länger als das Gesamtbudget
+    # sowieso nie.
+    #
+    # Die REIHENFOLGE bleibt trotzdem erhalten: Zusammengesetzt wird nach
+    # der Rangfolge oben, nicht danach, wer zuerst fertig war. Sonst
+    # entschiede die Tagesform des Netzes, welche Quelle vorn steht.
+    schluessel = f"{limit}|{begriffe.lower()}"
+    zwischengespeichert = _aus_speicher(schluessel)
+    if zwischengespeichert is not None:
+        return zwischengespeichert
+
+    ende = time.monotonic() + _GESAMTBUDGET
+    ergebnisse: dict[str, list[dict[str, str]]] = {}
+
+    pool = ThreadPoolExecutor(max_workers=min(4, len(wege)) or 1)
+    try:
+        auftraege = {pool.submit(sucher): name for name, sucher in wege}
+        wait(auftraege, timeout=max(0.5, ende - time.monotonic()))
+        for auftrag, name in auftraege.items():
+            if not auftrag.done():
+                auftrag.cancel()
+                logger.info("Offene Quelle %s: kam nicht rechtzeitig.", name)
+                continue
+            try:
+                ergebnisse[name] = auftrag.result()
+            except OffeneQuelleFehler as fehler:
+                logger.info("Offene Quelle %s: %s", name, fehler)
+            except Exception:  # noqa: BLE001 - eine Quelle reisst die andern nicht mit.
+                logger.exception("Offene Quelle %s abgebrochen.", name)
+    finally:
+        # OHNE Warten beenden. Mit ``with`` wartet der Ausstieg auf jeden
+        # noch laufenden Faden - dann waere das Zeitbudget oben nur eine
+        # Behauptung und die langsamste Quelle bestimmte doch wieder alles.
+        # Ein Nachzuegler laeuft im Hintergrund aus; laenger als das
+        # Zeitlimit einer einzelnen Anfrage kann er nicht brauchen.
+        pool.shutdown(wait=False)
 
     gesammelt: list[dict[str, str]] = []
     gesehen: set[str] = set()
     benutzt: list[str] = []
 
-    for name, sucher in wege:
+    for name, _ in wege:
         if len(gesammelt) >= limit:
             break
-        try:
-            gefunden = sucher()
-        except OffeneQuelleFehler as fehler:
-            logger.info("Offene Quelle %s: %s", name, fehler)
-            continue
-        except Exception:  # noqa: BLE001 - eine Quelle darf die anderen nicht mitreissen.
-            logger.exception("Offene Quelle %s abgebrochen.", name)
-            continue
-
         neu = 0
-        for eintrag in gefunden:
-            schluessel = eintrag["url"].rstrip("/").lower()
-            if schluessel in gesehen:
+        for eintrag in ergebnisse.get(name, []):
+            adresse = eintrag["url"].rstrip("/").lower()
+            if adresse in gesehen:
                 continue
-            gesehen.add(schluessel)
+            gesehen.add(adresse)
             gesammelt.append(eintrag)
             neu += 1
             if len(gesammelt) >= limit:
@@ -571,4 +851,5 @@ def offene_suche(query: str, *, limit: int = 6) -> tuple[list[dict[str, str]], l
             "Offene Suche zu '%s': %d Treffer über %s.",
             begriffe[:60], len(gesammelt), ", ".join(benutzt),
         )
+        _in_speicher(schluessel, gesammelt, benutzt)
     return gesammelt, benutzt

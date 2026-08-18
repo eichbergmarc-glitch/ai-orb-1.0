@@ -62,6 +62,16 @@ class GmailAgent(BaseAgent):
         self._pending_draft_id = ""
         self._pending_summary = ""
 
+        #: Die laufende Anmeldung: (verifier, redirect_uri).
+        #:
+        #: Ohne dieses Gedaechtnis ist der Rueckweg tot. Google schickt den
+        #: Einmalcode an den lokalen Server zurueck, und der Tausch gegen
+        #: das Token braucht den PKCE-Pruefwert aus Schritt eins. Am
+        #: 17.08.2026 stand der Benutzer mit dem Code im Browser - und
+        #: niemand nahm ihn an: begin_login gab den Pruefwert zurueck, aber
+        #: keiner hob ihn auf, und die Callback-Route gab es gar nicht.
+        self._pending_login: tuple[str, str] | None = None
+
     # --- Zustand --------------------------------------------------------------
 
     @property
@@ -229,6 +239,10 @@ class GmailAgent(BaseAgent):
         except Exception:  # noqa: BLE001 - ein fehlender Browser ist kein Absturz.
             logger.info("Konnte den Browser nicht öffnen; URL wird nur angezeigt.")
 
+        # Fuer den Rueckweg aufheben: Der Callback-Empfaenger braucht den
+        # Pruefwert, um den Einmalcode gegen das Token zu tauschen.
+        self._pending_login = (verifier, redirect_uri)
+
         return {
             "ok": True,
             "url": url,
@@ -236,6 +250,44 @@ class GmailAgent(BaseAgent):
             "redirect_uri": redirect_uri,
             "hinweis": "Melde dich im Browser bei Google an und erteile die Erlaubnis.",
         }
+
+    def complete_login(self, code: str) -> dict[str, Any]:
+        """Schliesst die Anmeldung ab: tauscht den Einmalcode gegen das Token.
+
+        Wird vom lokalen Server gerufen, sobald Google den Browser auf
+        ``/gmail/callback`` zurueckschickt. Erst mit diesem Schritt ist die
+        Anmeldung wirklich geschehen - alles davor war nur die Erlaubnis.
+        """
+
+        if not code.strip():
+            return {"ok": False, "fehler": "Es kam kein Anmeldecode an."}
+        if self._pending_login is None:
+            return {
+                "ok": False,
+                "fehler": (
+                    "Es laeuft gerade keine Anmeldung. Sage zuerst "
+                    "„Melde mich bei Gmail an“."
+                ),
+            }
+
+        verifier, redirect_uri = self._pending_login
+        try:
+            token = self._auth.exchange_code(code.strip(), redirect_uri, verifier)
+        except Exception as fehler:  # noqa: BLE001 - der Grund gehoert in die Antwort.
+            logger.exception("Der Tausch des Anmeldecodes ist fehlgeschlagen.")
+            return {"ok": False, "fehler": f"Google hat den Code nicht angenommen: {fehler}"}
+
+        # Erst nach dem Erfolg vergessen: Schlaegt der Tausch fehl (etwa
+        # weil der Benutzer die Seite neu laedt), darf er es mit derselben
+        # Anmeldung noch einmal versuchen.
+        self._pending_login = None
+
+        mit_kalender = "calendar" in (token.scope or "")
+        logger.info(
+            "Google-Anmeldung abgeschlossen (Kalender: %s).",
+            "ja" if mit_kalender else "nein",
+        )
+        return {"ok": True, "kalender": mit_kalender}
 
     def logout(self) -> dict[str, Any]:
         """Meldet ab und löscht das Token."""

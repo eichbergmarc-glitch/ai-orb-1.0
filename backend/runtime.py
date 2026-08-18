@@ -254,6 +254,10 @@ class Runtime:
         # nutzt die Bestaetigung "Offlinebetrieb ist aktiv" bereits Piper/
         # SAPI und nicht versehentlich ElevenLabs.
         self.event_bus.subscribe("ai.provider.changed", self._sync_provider_mode)
+        # Gelingt die Google-Anmeldung, sagt der Orb es auch. Der Benutzer
+        # sieht sonst nur die Browserseite und fragt sich, ob der Orb es
+        # mitbekommen hat.
+        self.event_bus.subscribe("gmail.login.completed", self._gmail_angemeldet)
 
         # Die Stimmwerkzeuge erst hier: Sie brauchen die Sprachschicht, und
         # die entsteht nach der Werkzeugliste. Ein Werkzeug ohne seine
@@ -292,6 +296,29 @@ class Runtime:
         if bool(self.config.get("learning.curriculum", True)):
             with contextlib.suppress(Exception):
                 lehrplan_anlegen(self.themen)
+
+        # Der grosse Lehrplan: Personen und Gebiete des Denkens.
+        #
+        # Auftrag des Benutzers vom 18.08.2026 - Philosophie, Mathematik,
+        # Geschichtswissenschaft, Quantenphysik, Physik, Chemie, Biologie,
+        # Religionen, Sprachwissenschaft, und die Personen dahinter. Jede
+        # Person wird ein eigenes Thema; die Fragen zielen auf Kern,
+        # Beleg, Einwand und heutige Geltung - das, was einen Lehrenden
+        # ausmacht.
+        if bool(self.config.get("learning.grosser_lehrplan", True)):
+            with contextlib.suppress(Exception):
+                from backend.learning.lehrplan_wissenschaft import (
+                    umfang,
+                    wissenschaftlicher_lehrplan,
+                )
+
+                neu = lehrplan_anlegen(self.themen, wissenschaftlicher_lehrplan())
+                themen_anzahl, fragen_anzahl = umfang()
+                if neu:
+                    logger.info(
+                        "Grosser Lehrplan: %d neue Fragen (insgesamt %d Themen, "
+                        "%d Fragen).", neu, themen_anzahl, fragen_anzahl,
+                    )
 
         # Und das Gelernte dem Denken zurueckgeben. Ohne diesen Anschluss
         # waere das Themenwissen eine abgeschottete Ablage: Der Orb wuesste
@@ -592,6 +619,18 @@ class Runtime:
             logger.exception("Die Terminerinnerung liess sich nicht sprechen.")
             return False
 
+    async def _gmail_angemeldet(self, event: Any) -> None:
+        """Bestätigt die gelungene Google-Anmeldung hörbar."""
+
+        payload = getattr(event, "payload", {}) or {}
+        satz = "Die Anmeldung bei Google ist geschafft."
+        if payload.get("kalender"):
+            satz += " Post und Kalender sind jetzt verbunden."
+        else:
+            satz += " Der Kalender war nicht dabei - melde dich dafür einmal neu an."
+        with contextlib.suppress(Exception):
+            await self.voice.say(satz, emotion="freundlich")
+
     async def _sync_provider_mode(self, event: Any) -> None:
         """Haelt Modell- und Sprach-Offlinebetrieb synchron."""
 
@@ -617,6 +656,8 @@ class Runtime:
         )
 
         self.background_tasks.create("ai-orb-maintenance", self._maintenance_loop())
+        if bool(self.config.get("learning.autonomous", True)):
+            self.background_tasks.create("ai-orb-lernen", self._lernschleife())
 
         # Der Blick in den Kalender. Erst hier und nicht im Aufbau: Dort gibt
         # es noch keine laufende Schleife, in die sich eine Daueraufgabe
@@ -673,9 +714,22 @@ class Runtime:
             except Exception:  # noqa: BLE001 - Wartung darf den Kern nicht stoppen.
                 logger.exception("Fehler bei der Wartung.")
 
+    async def _lernschleife(self) -> None:
+        """Arbeitet im Leerlauf offene Fragen ab - in eigenem Takt.
+
+        Vom Wartungstakt getrennt, seit der grosse Lehrplan dazukam: Der
+        umfasst rund tausend Fragen, und bei einer Frage je halbe Stunde
+        waere er erst in drei Wochen durchgearbeitet. Die Wartung dagegen
+        soll SELTEN laufen - sie raeumt auf, und Aufraeumen im
+        Sieben-Minuten-Takt waere Unfug. Zwei Aufgaben, zwei Takte.
+        """
+
+        takt = max(60.0, float(self.config.get("learning.takt_sekunden", 420)))
+        while True:
+            await asyncio.sleep(takt)
             try:
                 await self._offene_frage_bearbeiten()
-            except Exception:  # noqa: BLE001 - dasselbe gilt hier.
+            except Exception:  # noqa: BLE001 - Lernen darf den Kern nicht stoppen.
                 logger.exception("Fehler beim selbststaendigen Weiterlernen.")
 
     async def _offene_frage_bearbeiten(self) -> None:

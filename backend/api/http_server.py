@@ -199,8 +199,29 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def _send_html(self, status: int, html: str) -> bool:
+        """Schickt eine Seite fuer einen Menschen statt JSON fuer ein Programm.
+
+        Gebraucht wird das genau an einer Stelle: der Rueckkehr von der
+        Google-Anmeldung. Dort sitzt kein Frontend vor dem Ergebnis,
+        sondern der Benutzer in seinem Browser - und der soll einen Satz
+        lesen, kein JSON.
+        """
+
+        try:
+            body = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return True
+        except self.CLIENT_GONE:
+            return False
+
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        zerlegt = urlparse(self.path)
+        path = zerlegt.path
 
         if path == self.sse_path:
             self._stream_events()
@@ -211,6 +232,17 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not_found", "path": path})
             return
 
+        # Die Abfrageparameter mitgeben. Google haengt den Anmeldecode als
+        # ?code=... an - ohne diesen Schritt kaeme er hier an und
+        # verschwaende ungelesen.
+        from urllib.parse import parse_qs
+
+        params = {
+            name: werte[0]
+            for name, werte in parse_qs(zerlegt.query).items()
+            if werte
+        }
+
         # Erst rechnen, dann senden – und beides getrennt.
         #
         # Vorher stand der Versand mit im try des Handlers. Brach die
@@ -219,12 +251,15 @@ class _RequestHandler(BaseHTTPRequestHandler):
         # schicken. Die zweite Ausnahme fing niemand mehr; sie stieg bis
         # in den socketserver auf und riss den Kern mit.
         try:
-            payload = handler({})
+            payload = handler(params)
         except Exception as exc:  # noqa: BLE001 - kein Request darf den Server beenden.
             logger.exception("Fehler in GET %s", path)
             self._send_json(500, {"error": "internal_error", "detail": str(exc)})
             return
 
+        if isinstance(payload, dict) and "_html" in payload:
+            self._send_html(int(payload.get("_status", 200)), str(payload["_html"]))
+            return
         self._send_json(200, payload)
 
     def do_POST(self) -> None:  # noqa: N802

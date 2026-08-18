@@ -793,6 +793,12 @@ def _mitschnitt(name: str, adresse: str, seite: str) -> None:
         pass
 
 
+#: Ob die alten Trefferseiten-Maschinen noch als letzter Ausweg laufen.
+#: Seit dem 15.08.2026 liefern sie ausschliesslich Abweisungen - siehe die
+#: Begruendung in search_web. Nur fuer Diagnosezwecke wieder einschalten.
+ALTMASCHINEN_AKTIV = False
+
+
 def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
     """Sucht im Internet und gibt Titel, Adresse und Beschreibung zurueck.
 
@@ -826,6 +832,25 @@ def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
             return offene[:limit]
     except Exception:  # noqa: BLE001 - der alte Weg bleibt als Ausweg bestehen.
         logger.exception("Die offenen Quellen liessen sich nicht befragen.")
+
+    # Die Trefferseiten-Maschinen sind ABGESCHALTET (Stufe 3 der
+    # Bestandsaufnahme vom 17.08.2026).
+    #
+    # Die Bilanz war eindeutig: Bing, Mojeek, beide DuckDuckGo-Zugaenge und
+    # Ecosia haben seit dem 15.08. keinen einzigen brauchbaren Treffer
+    # geliefert - nur 403, Sperrseiten und Themenfremdes. Jeder Fehlschlag
+    # der offenen Quellen zog trotzdem die volle Runde durch alle fuenf und
+    # kostete zehn und mehr Sekunden, vierzig Warnungen an einem einzigen
+    # Tag. Eine Kette, die nie liefert, ist kein Rueckhalt, sondern eine
+    # Wartezeit. Wer sie zu Diagnosezwecken doch braucht, setzt den
+    # Schalter hier um - die Maschinerie selbst bleibt erhalten.
+    if not ALTMASCHINEN_AKTIV:
+        raise _Suchfehler(
+            "abgewiesen",
+            "Die offenen Quellen (GDELT, Wikipedia, OpenAlex, Feeds) haben "
+            "nichts geliefert. Woran es liegt, zeigt SUCHE-PRUEFEN.bat - es "
+            "fragt jede Quelle einzeln und nennt den Grund im Klartext.",
+        )
 
     letzter: _Suchfehler | None = None
     gruende: list[str] = []
@@ -1291,11 +1316,53 @@ class WebseiteErkundenTool(Tool):
 
 
 async def _eine_quelle(
-    name: str, einschraenkung: str, frage: str, treffer: int
+    name: str,
+    einschraenkung: str,
+    frage: str,
+    treffer: int,
+    feed: str = "",
 ) -> tuple[str, list[dict[str, str]]]:
-    """Sucht bei EINER Quelle. Fehler ergeben eine leere Liste."""
+    """Sucht bei EINER Quelle. Fehler ergeben eine leere Liste.
+
+    Hat das Haus einen Feed, wird DER gelesen - nicht eine Suchmaschine
+    nach ``site:haus.de`` gefragt. Der Unterschied stand am 16.08.2026 im
+    Protokoll: Sechs site:-Suchen liefen gleichzeitig in die Taktsperre von
+    GDELT und dann in die 403 der Suchmaschinen; jede Quelle meldete
+    "lieferte nichts". Der Feed dagegen ist die Titelseite des Hauses
+    selbst, zum Abholen gebaut, und weist nie ab.
+    """
 
     import asyncio
+
+    if feed.strip():
+        from backend.research.offene_quellen import _inhaltsworte, rss_lesen
+
+        try:
+            thema = " ".join(_inhaltsworte(frage))
+            ergebnis = await asyncio.to_thread(
+                rss_lesen, feed.strip(), limit=treffer, filter_text=thema
+            )
+            if not ergebnis and thema:
+                # Das Thema hat alles weggefiltert - meist, weil deutsch
+                # gefragt und englisch getitelt wird. Dann die obersten
+                # Schlagzeilen des Hauses, als solche gekennzeichnet: echte
+                # Meldungen von jetzt, aus denen das Modell nichts erfinden
+                # muss. Die Suchmaschinen dahinter waeren ohnehin nur die
+                # fuenf Abweisungen vom 15.08. gewesen.
+                ergebnis = await asyncio.to_thread(
+                    rss_lesen, feed.strip(), limit=min(3, treffer), filter_text=""
+                )
+                for eintrag in ergebnis:
+                    eintrag["beschreibung"] = (
+                        "[Titelseite, nicht zum Suchwort gefiltert] "
+                        + eintrag["beschreibung"]
+                    ).strip()
+        except Exception as fehler:  # noqa: BLE001
+            logger.info("Feed von '%s' nicht lesbar: %s", name, fehler)
+            ergebnis = []
+        if ergebnis:
+            return name, ergebnis
+        # Der Feed war gar nicht lesbar - dann die Tiefensuche.
 
     anfrage = f"{frage} {einschraenkung}".strip()
     try:
@@ -1336,6 +1403,7 @@ async def mehrquellensuche(
                 str(quelle.get("einschraenkung", "")),
                 frage,
                 je_quelle,
+                feed=str(quelle.get("feed", "")),
             )
 
     ergebnisse = await asyncio.gather(

@@ -18,7 +18,7 @@ app:
   # des Orb, jene im Ladebildschirm - liefen sie auseinander, zeigte das
   # Programm zwei verschiedene Fassungen an, und niemand wusste mehr,
   # welche davon wirklich laeuft. Genau das war passiert.
-  version: "0.26.21"
+  version: "0.27.0"
   # Umgebung: development | production
   environment: "development"
   # Sprache der Oberfläche und von Systemmeldungen.
@@ -978,8 +978,28 @@ voice:
   enabled: true
   # Beim Start selbsttaetig zuhoeren. Es wird vorher nach dem Mikrofon gefragt.
   autostart: true
+  # Hintergrundgespraeche erkennen.
+  #
+  # Im Nachfragefenster galt frueher JEDE Aeusserung als Anweisung. Am
+  # 17.08.2026 stand deshalb im Protokoll, wie der Orb "Vielen Dank.",
+  # "Die Kirchenweine und Schachtwaesche." und ganze Gespraechsfetzen aus
+  # dem Raum verarbeitete - ein Fernseher, ein Gespraech nebenan, seine
+  # eigene Lautsprecherstimme.
+  #
+  # Jetzt prueft er zuerst, ob er ueberhaupt gemeint ist: Name, Befehlsform,
+  # Anrede in der zweiten Person, Frage - oder eben nicht. Im Zweifel
+  # schweigt er und hoert weiter zu. Auf 'false' setzen, wenn er ausnahmslos
+  # auf alles reagieren soll.
+  hintergrund_erkennen: true
+
   # Wie lange der Orb nach einer Antwort noch ohne Weckwort zuhoert.
-  follow_up_seconds: 25
+  #
+  # Von 25 auf 45 erhoeht: Am 17.08. um 12:44:58 sagte der Benutzer klar
+  # verstanden (0,92) "Suche meine Neuigkeiten zu neuen AI-Modellen" -
+  # fuenf Sekunden nach Ablauf des Fensters. Der Orb schwieg, und das
+  # wirkt wie ein Haenger. Wer eine Antwort anhoert und kurz nachdenkt,
+  # braucht mehr als 25 Sekunden.
+  follow_up_seconds: 45
   # Aufhoeren zu sprechen, sobald der Benutzer beginnt (akustisch).
   #
   # Standardmaessig AUS. Grund: Der Lautsprecher spielt die Stimme des Orb
@@ -1226,6 +1246,11 @@ voice:
     # cpu | cuda | auto
     device: "auto"
     compute_type: "int8"
+    # Rechenkerne fuer die Spracherkennung. 0 heisst: selbst bestimmen
+    # (alle Kerne bis auf einen). faster-whisper nimmt sonst genau vier,
+    # gleichgueltig wie viele der Rechner hat - die Messung vom 16.08.2026
+    # zeigt die Erkennung bei 5,2 Sekunden im Median, fast reine Rechenzeit.
+    cpu_threads: 0
     # 2 statt 1: Whisper wagt einen zweiten Deutungsversuch je Wort.
     # Merklich genauer bei Dialekt und Nebengeraeuschen, kaum langsamer.
     # Wie viele Moeglichkeiten gleichzeitig verfolgt werden.
@@ -1519,16 +1544,27 @@ recherche:
   # Doha ist anders gerahmt als dieselbe aus London oder Zuerich, und
   # genau dieser Unterschied ist die Auskunft.
   #
-  # 'einschraenkung' geht als site:-Zusatz in die Suchanfrage. Wer eine
-  # Quelle herausnehmen will, loescht die Zeile; wer eine hinzufuegen
-  # will, braucht Name und Domaene.
+  # 'feed' ist die RSS-Titelseite des Hauses. Sie wird DIREKT gelesen -
+  # ohne Suchmaschine, und damit ohne die Abweisungen, an denen die
+  # Nachrichtenrunde am 16.08.2026 gescheitert ist. 'einschraenkung'
+  # bleibt als Tiefensuche fuer Themen, die von der Titelseite schon
+  # verschwunden sind.
+  #
+  # Reuters ist nicht mehr dabei: Das Haus hat seine oeffentlichen Feeds
+  # 2020 eingestellt. Dafuer NPR aus den USA - der Sprachraum fehlte.
   quellen:
-    - {name: "tagesschau (DE)",    einschraenkung: "site:tagesschau.de"}
-    - {name: "NZZ (CH)",           einschraenkung: "site:nzz.ch"}
-    - {name: "BBC (UK)",           einschraenkung: "site:bbc.com"}
-    - {name: "Al Jazeera (QA)",    einschraenkung: "site:aljazeera.com"}
-    - {name: "Le Monde (FR)",      einschraenkung: "site:lemonde.fr"}
-    - {name: "Reuters",            einschraenkung: "site:reuters.com"}
+    - {name: "tagesschau (DE)",    einschraenkung: "site:tagesschau.de",
+       feed: "https://www.tagesschau.de/index~rss2.xml"}
+    - {name: "NZZ (CH)",           einschraenkung: "site:nzz.ch",
+       feed: "https://www.nzz.ch/recent.rss"}
+    - {name: "BBC (UK)",           einschraenkung: "site:bbc.com",
+       feed: "https://feeds.bbci.co.uk/news/world/rss.xml"}
+    - {name: "Al Jazeera (QA)",    einschraenkung: "site:aljazeera.com",
+       feed: "https://www.aljazeera.com/xml/rss/all.xml"}
+    - {name: "Le Monde (FR)",      einschraenkung: "site:lemonde.fr",
+       feed: "https://www.lemonde.fr/rss/une.xml"}
+    - {name: "NPR (US)",           einschraenkung: "site:npr.org",
+       feed: "https://feeds.npr.org/1001/rss.xml"}
 
   # --- Die eigenen Favoriten als Rechercheziel ------------------------------
   #
@@ -1679,6 +1715,24 @@ pipeline:
 # =============================================================================
 learning:
   enabled: true
+
+  # Der grosse Lehrplan: Personen und Gebiete des Denkens.
+  #
+  # Auftrag vom 18.08.2026: Philosophie, Mathematik, Geschichtswissenschaft,
+  # Quantenphysik, Physik, Chemie, Biologie, Religionen, Sprachwissenschaft -
+  # und die Personen dahinter, von Sokrates bis Harari. Rund 240 Themen mit
+  # etwa 970 Fragen. Jede Person wird ein eigenes Thema, damit sich spaeter
+  # gezielt fragen laesst ("was weisst du ueber Emmy Noether").
+  grosser_lehrplan: true
+
+  # In welchem Takt der Orb im Leerlauf eine offene Frage abarbeitet.
+  #
+  # Getrennt vom Wartungstakt, seit der grosse Lehrplan dazukam: Bei einer
+  # Frage je halber Stunde waere er erst in drei Wochen durch. Sieben
+  # Minuten ergeben rund 200 Fragen am Tag - der ganze Plan also in gut
+  # fuenf Tagen Leerlauf. Kleiner setzen heisst schneller lernen und mehr
+  # Netzverkehr; er arbeitet ohnehin nur, wenn gerade nichts zu tun ist.
+  takt_sekunden: 420
 
   # Ob der Orb an offenen Fragen weiterarbeitet, wenn gerade nichts zu tun ist.
   #

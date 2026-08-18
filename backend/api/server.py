@@ -51,6 +51,78 @@ def build_router(runtime: Runtime) -> ApiRouter:
 
         return get_config().raw
 
+    # --- Die Rueckkehr von der Google-Anmeldung -----------------------------
+    #
+    # Google schickt den Browser nach der Zustimmung auf
+    # http://127.0.0.1:8756/gmail/callback?code=... zurueck. Diese Route
+    # FEHLTE: Am 17.08.2026 stand der Benutzer mit dem Einmalcode in der
+    # Adresszeile vor einem {"error": "not_found"} - er hatte alles richtig
+    # gemacht, und niemand nahm den Code an. Hier wird er angenommen, gegen
+    # das Token getauscht und dem Benutzer im Browser gesagt, woran er ist.
+
+    def gmail_callback(params: dict[str, Any]) -> dict[str, Any]:
+        def _seite(titel: str, text: str, gut: bool) -> dict[str, Any]:
+            farbe = "#2e9e5b" if gut else "#c0392b"
+            return {
+                "_html": (
+                    "<!DOCTYPE html><html lang='de'><head><meta charset='utf-8'>"
+                    "<title>AI-Orb</title></head>"
+                    "<body style='font-family:Segoe UI,system-ui,sans-serif;"
+                    "background:#0e1420;color:#dce8f7;display:flex;"
+                    "align-items:center;justify-content:center;height:100vh;margin:0'>"
+                    "<div style='max-width:30rem;text-align:center'>"
+                    f"<h1 style='color:{farbe};font-size:1.4rem'>{titel}</h1>"
+                    f"<p style='line-height:1.6'>{text}</p></div></body></html>"
+                ),
+                "_status": 200 if gut else 400,
+            }
+
+        agent = getattr(runtime, "gmail", None)
+        if agent is None:
+            return _seite(
+                "Gmail ist nicht eingerichtet",
+                "Der Orb hat kein Gmail-Modul geladen. Einzelheiten stehen im "
+                "Protokoll.",
+                gut=False,
+            )
+
+        if params.get("error"):
+            return _seite(
+                "Anmeldung abgebrochen",
+                f"Google meldet: {params['error']}. Du kannst dieses Fenster "
+                "schliessen und es im Orb erneut versuchen.",
+                gut=False,
+            )
+
+        ergebnis = agent.complete_login(str(params.get("code", "")))
+        if not ergebnis.get("ok"):
+            return _seite(
+                "Anmeldung fehlgeschlagen",
+                str(ergebnis.get("fehler", "Unbekannter Fehler.")),
+                gut=False,
+            )
+
+        # Dem Orb Bescheid geben, damit er es auch SAGT - der Benutzer
+        # sieht sonst nur den Browser und fragt sich, ob der Orb es weiss.
+        with_kalender = bool(ergebnis.get("kalender"))
+        runtime.publish(
+            "gmail.login.completed", {"kalender": with_kalender}
+        )
+        zusatz = (
+            " Auch der Kalender ist freigegeben."
+            if with_kalender
+            else " Der Kalender ist NICHT dabei - dann fehlte der Haken auf "
+                 "der Google-Seite."
+        )
+        return _seite(
+            "Anmeldung erfolgreich",
+            "Der Orb ist jetzt mit deinem Google-Konto verbunden." + zusatz +
+            " Du kannst dieses Fenster schliessen.",
+            gut=True,
+        )
+
+    router.get("/gmail/callback", gmail_callback)
+
     router.get("/health", health)
     router.get("/status", status)
     router.get("/config", config_view)

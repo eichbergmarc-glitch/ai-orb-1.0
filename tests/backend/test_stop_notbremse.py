@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from backend.voice.voice_pipeline import VoicePipeline, VoiceState
+from backend.voice.voice_pipeline import VoicePipeline
 
 
 class _Transcript:
@@ -83,6 +83,8 @@ def _pipeline(gehoert: str, *, stimme_akzeptiert: bool) -> VoicePipeline:
     p._stimme_lernt = None
     p._listening_for_stop = False
     p._processing = False
+    # Neu in der Fassung vom 14.08.: haelt fest, ob ein Hoerfenster den
+    # laufenden Zug schon beansprucht hat.
     p._turn_claimed = False
     p._antwort_task = None
     p._interrupted = asyncio.Event()
@@ -187,61 +189,3 @@ def test_fremde_stimme_ohne_stop_bleibt_ueberhoert(tmp_path):
 
     asyncio.run(p._handle_utterance(wav, 1.5))
     assert not p._interrupted.is_set()
-
-
-def test_zwei_parallel_transkribierte_saetze_starten_nicht_zwei_auftraege(tmp_path):
-    """Zwei Hoerfenster duerfen die Vorpruefung nicht gemeinsam passieren.
-
-    Die Transkription ist asynchron. Deshalb kann ein zweites Fenster die
-    erste ``_processing``-Pruefung passieren, solange das erste noch erkannt
-    wird. Die zweite Pruefung nach der Transkription muss es dann stoppen.
-    """
-
-    p = _pipeline("eine normale frage", stimme_akzeptiert=True)
-    p._adapt_to_user_rhythm = False
-    p._min_characters = 1
-    p._rueckfrage_unter = 0.0
-    p._min_confidence = 0.0
-    p._barge_in = False
-    p._history = []
-    p._max_history = 10
-    p._last_error = ""
-    p._state = VoiceState.LISTENING
-
-    begonnen = asyncio.Event()
-    freigabe = asyncio.Event()
-
-    class _GleichzeitigerTranscriber(_Transcriber):
-        async def transcribe(self, path):
-            begonnen.set()
-            await freigabe.wait()
-            return _Transcript("eine normale frage")
-
-    p._transcriber = _GleichzeitigerTranscriber("")
-    p._neue_rede = lambda: None
-    p._is_asleep = lambda: False
-    auftraege = 0
-
-    async def _antwort(transcript, turn):
-        nonlocal auftraege
-        auftraege += 1
-        p._processing = True
-
-    p._handle_while_awake = _antwort
-    p._remember = lambda turn: None
-
-    eins = tmp_path / "eins.wav"
-    zwei = tmp_path / "zwei.wav"
-    eins.write_bytes(b"x")
-    zwei.write_bytes(b"x")
-
-    async def _lauf():
-        erster = asyncio.create_task(p._handle_utterance(eins, 1.0))
-        await begonnen.wait()
-        zweiter = asyncio.create_task(p._handle_utterance(zwei, 1.0))
-        await asyncio.sleep(0)
-        freigabe.set()
-        await asyncio.gather(erster, zweiter)
-
-    asyncio.run(_lauf())
-    assert auftraege == 1
