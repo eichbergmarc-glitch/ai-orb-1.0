@@ -18,7 +18,7 @@ app:
   # des Orb, jene im Ladebildschirm - liefen sie auseinander, zeigte das
   # Programm zwei verschiedene Fassungen an, und niemand wusste mehr,
   # welche davon wirklich laeuft. Genau das war passiert.
-  version: "0.27.0"
+  version: "0.28.2"
   # Umgebung: development | production
   environment: "development"
   # Sprache der Oberfläche und von Systemmeldungen.
@@ -1029,7 +1029,41 @@ voice:
   #
   # Die Fenster ueberlappen sich um die Haelfte. Kuerzer heisst schneller,
   # aber ein Wort passt dann womoeglich nicht mehr ganz hinein.
-  stop_window_ms: 1200
+  # Am 19.08.2026 stand hier 1200. Das Fenster ist die halbe Miete:
+  # Ein gerufenes "Stopp" dauert etwa 400 Millisekunden. In 1200 ms
+  # Fenster macht es ein Drittel aus - der Rest ist der eigene
+  # Lautsprecher, und die Erkennung schreibt auf, was ueberwiegt.
+  # In 800 ms macht es die Haelfte aus. Bei halber Ueberlappung
+  # (Sprung 400 ms) landet ein kurzer Ruf weiterhin sicher ganz in
+  # mindestens einem Fenster.
+  stop_window_ms: 800
+
+  # Der Anker fuer das kleine Modell, das NUR Weckwort und
+  # Abbruchwort sucht.
+  #
+  # Absichtlich kurz und absichtlich ein anderer als
+  # voice.input.initial_prompt: Ein Anker lenkt die Erkennung auf
+  # das, was er nennt. Dem grossen Modell "Historiografie" und
+  # "Bruttoinlandsprodukt" mitzugeben ist richtig - dem Spaeher,
+  # der Schnipsel von unter einer Sekunde liest, nimmt es genau
+  # die Woerter aus dem Sinn, auf die es hier ankommt.
+  # Leer lassen faellt auf einen eingebauten Anker zurueck.
+  # NICHT die Abbruchwoerter hineinschreiben.
+  #
+  # Am 19.08.2026 stand hier "Stopp. Halt. Warte. Hör auf." - und
+  # der Orb hat sich daraufhin dauernd selbst unterbrochen. Der
+  # Grund ist die Arbeitsweise von Whisper: Der Anker ist fuer das
+  # Modell der Text unmittelbar VOR dem Fenster. Es setzt fort, was
+  # dort steht. Auf einem undeutlichen Achtelsekundenschnipsel -
+  # und das ist jedes Fenster, in dem der eigene Lautsprecher laeuft -
+  # schreibt es dann bereitwillig "Stopp." hin. Der Anker hat die
+  # Erkennung nicht geschaerft, sondern ihr das Wort soufflieren.
+  #
+  # Hier gehoert nur das Weckwort hinein: Danach wird gesucht, ohne
+  # dass ein falscher Fund etwas kaputt macht - schlimmstenfalls
+  # wacht der Orb einmal umsonst auf. Ein falsches "Stopp" dagegen
+  # zerreisst jeden Satz.
+  stop_initial_prompt: "Hallo Orb. Hey Orb."
 
   # Welches Whisper-Modell nur fuer das Stop-Wort zustaendig ist.
   #
@@ -1329,7 +1363,16 @@ voice:
     # Wer ihn zurueckwill, traegt hier wieder "audio/denken.wav" ein; die
     # Datei liegt weiterhin bei. Der Pfad wird zuerst im Datenordner
     # gesucht und dann im Programmordner.
-    thinking_sound: ""
+    # Am 19.08.2026 stand hier nichts - und deshalb blieb es still,
+    # solange der Orb nachdachte. Gemessen sind das im Median 6,4
+    # Sekunden zwischen der Frage und dem ersten Wort. Ohne ein
+    # Zeichen weiss der Benutzer in dieser Zeit nicht, ob der Orb
+    # ihn gehoert hat, ob er arbeitet oder ob er haengt - und das
+    # ist der Unterschied zwischen Warten und Ratlosigkeit.
+    #
+    # Zwei kurze steigende Toene, 265 ms. Steigend, weil das offen
+    # klingt: Eine fallende Folge hiesse "fertig" oder "geht nicht".
+    thinking_sound: "audio/denken.wav"
 
     # Der Klang, der ertoent, sobald der Orb zuzuhoeren beginnt - also nach
     # dem Weckwort. Er ist die hoerbare Antwort darauf: Ohne ihn beginnt man

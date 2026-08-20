@@ -52,6 +52,7 @@ from backend.system.performance_trace import TurnTrace, mark_stage, reset_turn_t
 from backend.diktat.diktat import KALIBRIERSATZ, Diktierer
 from backend.tts.tts_manager import TtsManager
 from backend.voice.speaker_id import Stimmerkennung, Urteil
+from backend.voice.stopwort import stopwort_finden
 from backend.voice.human_speech import HumanSpeechPolicy
 from backend.whisper.transcriber import Transcriber, Transcript
 from backend.whisper.wake_word import WakeWordDetector
@@ -328,6 +329,19 @@ class VoicePipeline:
         #: enthält die kurzen Stop-Wörter praktisch nie.
         self._listening_for_stop = False
 
+        #: Was der Stop-Späher während eines Satzes gehört hat.
+        #:
+        #: Das ist reine Nachvollziehbarkeit, und sie fehlte schmerzlich:
+        #: Als am 19.08.2026 zu klären war, warum das Stop-Wort nicht mehr
+        #: greift, stand im ganzen Protokoll keine einzige Zeile darüber,
+        #: WAS der Späher in seinen Hörfenstern verstanden hatte. Ob das
+        #: Wort nie ankam oder ankam und verworfen wurde, war nicht zu
+        #: unterscheiden - und ohne diese Unterscheidung ist jede
+        #: Verbesserung geraten. Am Ende jedes Satzes steht die Bilanz
+        #: jetzt im Protokoll.
+        self._spaeher_fenster = 0
+        self._spaeher_gehoert: list[str] = []
+
         # --- Bestandteile ----------------------------------------------------------
         self._wake_word = WakeWordDetector(
             config.get("voice.wake_word.phrases", ["Hallo Orb"]) or ["Hallo Orb"],
@@ -371,11 +385,33 @@ class VoicePipeline:
             # fuer ein Drei-Sekunden-Fenster schnell genug.
             cpu_threads=2,
             beam_size=1,
-            # Derselbe Anker wie beim grossen Modell: Er verankert Weckwort
-            # und Stop-Woerter. Seit dieses Modell im Schlaf auch das
-            # Weckwort sichtet, ist das keine Feinheit mehr - ohne Anker
-            # wird aus "Hallo Orb" bei 'base' zu oft "Hallo Robert".
-            anfangshinweis=str(config.get("voice.input.initial_prompt", "")),
+            # Ein EIGENER Anker, nicht der des grossen Modells.
+            #
+            # Hier stand bisher derselbe lange Hinweis: ein Absatz ueber
+            # Historiografie, Quellenkritik, Voelkerrecht, Leitzins. Fuer
+            # das grosse Modell ist das richtig - es transkribiert ganze
+            # Saetze ueber diese Gebiete. Dieses Modell aber sieht nur
+            # Fenster von unter einer Sekunde und hat genau zwei Fragen zu
+            # beantworten: Fiel das Weckwort? Fiel ein Abbruchwort?
+            #
+            # Ein Anker lenkt die Erkennung auf das, was er nennt. Wer ihr
+            # bei einem Achtelsekundenschnipsel "Historiografie" und
+            # "Bruttoinlandsprodukt" vorlegt, lenkt sie von "Stopp" WEG -
+            # und genau das war der Zustand, in dem das Stop-Wort seit dem
+            # 15.08.2026 nur noch ein einziges Mal griff.
+            #
+            # UND OHNE die Abbruchwoerter. Sie hier zu nennen war ein
+            # Eigentor: Der Anker ist fuer Whisper der Text unmittelbar
+            # VOR dem Fenster, und es setzt fort, was dort steht. Auf
+            # einem undeutlichen Schnipsel - und das ist jedes Fenster,
+            # in dem der eigene Lautsprecher laeuft - schrieb es daraufhin
+            # bereitwillig "Stopp." hin. Der Orb zerriss seine eigenen
+            # Saetze. Ein falsch erkanntes Weckwort kostet ein unnoetiges
+            # Aufwachen; ein falsches "Stopp" kostet jeden zweiten Satz.
+            anfangshinweis=str(
+                config.get("voice.stop_initial_prompt", "")
+                or "Hallo Orb. Hey Orb."
+            ),
         )
 
         # --- Auf wen gehoert wird ------------------------------------------
@@ -849,10 +885,32 @@ class VoicePipeline:
                         else self._stop_transcriber
                     )
                     transcript = await erkennung.transcribe(aktuell)
-                    if self._listening_for_stop and self._contains_stop_word(
-                        transcript.text
-                    ):
-                        logger.info("Stop-Wort erkannt – Sprachausgabe wird beendet.")
+                    self._spaeher_merken(transcript.text)
+                    # Schlecht erkannte Fenster zaehlen nicht.
+                    #
+                    # Dieselbe Regel gilt eine Handvoll Zeilen weiter unten
+                    # schon fuer den Zwischenruf, und sie gilt hier aus
+                    # demselben Grund: In einem unsicheren Fenster ERFINDET
+                    # die Erkennung, und Erfundenes sah bisher aus wie ein
+                    # Abbruchwort.
+                    # getattr: Ein Ergebnis ohne Sicherheitsangabe laesst
+                    # sich nicht als unsicher verwerfen - dann gilt es als
+                    # verlaesslich, sonst risse die Notbremse an einem
+                    # fehlenden Feld.
+                    sicherheit = float(getattr(transcript, "confidence", 1.0) or 1.0)
+                    schwelle = getattr(self, "_fremd_mindestsicherheit", 0.0)
+                    treffer = (
+                        self._stopwort_treffer(transcript.text)
+                        if sicherheit >= schwelle
+                        else None
+                    )
+                    if self._listening_for_stop and treffer:
+                        logger.info(
+                            "Stop-Wort %r erkannt (Fenster: %r) – "
+                            "Sprachausgabe wird beendet.",
+                            treffer,
+                            transcript.text[:60],
+                        )
                         self.interrupt()
                         return
 
@@ -1455,6 +1513,32 @@ class VoicePipeline:
         if not match.detected:
             return
 
+        # Auch der Weckruf wird geprueft, nicht nur das Nachfragefenster.
+        #
+        # Am 18.08.2026 um 11:22:08 stand am Ende von fuenfzig Woertern
+        # fremder Rede ein "Hallo Orb!". Whisper haengt vertraute
+        # Wendungen an, wenn der Ton zerfaellt - und keine Wendung ist
+        # diesem Mikrofon vertrauter als diese. Ohne die Pruefung hier
+        # weckt so etwas den Orb, und danach steht das Nachfragefenster
+        # der fremden Stimme 45 Sekunden lang offen.
+        if self._hintergrund_erkennen:
+            from backend.voice.gespraechsrichtung import einschaetzen
+
+            richtung = einschaetzen(
+                transcript.text, sicherheit=transcript.confidence
+            )
+            if not richtung.antworten:
+                logger.info(
+                    "Weckwort im Hintergrundgespraech ueberhoert (%s): %r - %s",
+                    richtung.art, transcript.text[:70], richtung.grund,
+                )
+                await self._event_bus.publish(
+                    "voice.background.detected",
+                    {"text": transcript.text[:200], "weckwort": True,
+                     **richtung.to_dict()},
+                )
+                return
+
         turn.woke = True
         logger.info("Weckwort erkannt (%.0f %%): '%s'", match.score * 100, match.phrase)
 
@@ -1653,6 +1737,21 @@ class VoicePipeline:
 
         # Ein erneutes Weckwort wird abgeschnitten, damit „Hallo Orb, und
         # jetzt …" nicht als Teil der Frage bei der KI landet.
+        #
+        # ABER: dass es dastand, muss gemerkt werden. Wer den Orb beim
+        # Namen ruft, meint den Orb - und nach dem Abschneiden steht der
+        # Name nicht mehr im Text. Am 19.08.2026 um 12:11 hat genau das
+        # fuenf Auftraege hintereinander verschluckt::
+        #
+        #     12:11:23  "Hallo Orb, genau dieses Dokument sollst du
+        #                einlesen, bitte."   -> "unklar", geschwiegen
+        #     12:12:30  "Hallo Orb, die Aufgabe ist klar an dich
+        #                gerichtet ..."      -> "unklar", geschwiegen
+        #
+        # Die Richtungspruefung sah nur noch den Rest ohne Anrede und
+        # entschied im Zweifel auf Schweigen - richtig gedacht, am
+        # falschen Text angewandt.
+        weckwort_gefallen = self._wake_word.detect(transcript.text).detected
         text = self._wake_word.strip_wake_word(transcript.text).strip()
 
         # Das Ringmenue ist lokale Oberflaechensteuerung. Es funktioniert
@@ -1688,7 +1787,7 @@ class VoicePipeline:
         # MICH gerichtet?". Im Zweifel wird zugehoert und geschwiegen: Ein
         # uebersehener Auftrag kostet eine Wiederholung, eine Antwort auf
         # ein fremdes Gespraech kostet Vertrauen.
-        if self._hintergrund_erkennen:
+        if self._hintergrund_erkennen and not weckwort_gefallen:
             from backend.voice.gespraechsrichtung import einschaetzen
 
             richtung = einschaetzen(
@@ -1709,7 +1808,24 @@ class VoicePipeline:
                 # oft gleich darauf doch etwas vom Orb.
                 self._wake()
                 return
-            self._wartet_auf_antwort = False
+        # Ab hier gilt die Aeusserung als an den Orb gerichtet - auch dann,
+        # wenn sie den Namen trug und die Pruefung uebersprungen wurde.
+        self._wartet_auf_antwort = False
+
+        # Und ab hier darf man es auch hoeren.
+        #
+        # Gemessen am 19.08.2026 ueber 112 beantwortete Runden: 5,8 s bis
+        # der Satz erkannt ist, weitere 6,4 s bis das Modell das erste Wort
+        # liefert. Zwoelf Sekunden Stille - in denen der Benutzer nicht
+        # weiss, ob der Orb ihn gehoert hat, ob er arbeitet oder ob er
+        # haengt. Genau das war "keine fluessige Konversation".
+        #
+        # Der Denk-Klang haengt am Zustandswechsel und kam deshalb erst,
+        # wenn die Antwortschleife anlief. Hier steht der frueheste
+        # Zeitpunkt, zu dem die Auskunft ehrlich ist: Der Satz ist erkannt
+        # UND er war an den Orb gerichtet. Alles davor waere geraten -
+        # und ein Ton auf jedes Zimmergeraeusch waere schlimmer als Stille.
+        await self._set_state(VoiceState.THINKING)
 
         # Nachfragen statt raten.
         #
@@ -2110,6 +2226,7 @@ class VoicePipeline:
             self._listening_for_stop = False
             self._capture.set_stop_spotting(False)
             self._capture.mute(False)
+            self._spaeher_bilanz()
             await self._event_bus.publish(
                 event_types.TTS_FINISHED,
                 {
@@ -2288,22 +2405,93 @@ class VoicePipeline:
                     break
         return beste
 
+    def _spaeher_merken(self, text: str) -> None:
+        """Hält fest, was ein Hörfenster ergeben hat."""
+
+        self._spaeher_fenster = getattr(self, "_spaeher_fenster", 0) + 1
+        gehoert = getattr(self, "_spaeher_gehoert", None)
+        if gehoert is None:
+            gehoert = self._spaeher_gehoert = []
+        knapp = " ".join(str(text or "").split())[:40]
+        if knapp and len(gehoert) < 12:
+            gehoert.append(knapp)
+
+    def _spaeher_bilanz(self) -> None:
+        """Schreibt am Satzende auf, was der Späher gehört hat.
+
+        Eine Zeile je gesprochenem Satz, nicht eine je Hörfenster: Fenster
+        kommen mehrmals in der Sekunde, und ein Protokoll, das man nicht
+        lesen kann, ist so gut wie keines. Die Zeile beantwortet die eine
+        Frage, die bei einem nicht greifenden Stop-Wort zu klären ist -
+        kam da ueberhaupt etwas an?
+        """
+
+        if not getattr(self, "_spaeher_fenster", 0):
+            return
+        logger.info(
+            "Stop-Späher: %d Hörfenster, davon %d mit Text%s",
+            self._spaeher_fenster,
+            len(self._spaeher_gehoert),
+            (" – " + " | ".join(self._spaeher_gehoert))
+            if self._spaeher_gehoert
+            else " (nichts verstanden).",
+        )
+        self._spaeher_fenster = 0
+        self._spaeher_gehoert = []
+
     def _contains_stop_word(self, text: str) -> bool:
         """Ob eine Äußerung ein Stop-Wort enthält.
 
-        Geprüft wird auf ganze Wörter, nicht auf Teilzeichenketten: „halt“
-        soll nicht in „Gehalt“ oder „Haltung“ anschlagen, sonst bräche der
+        Geprüft wird auf ganze Wörter, nicht auf Teilzeichenketten: „halt"
+        soll nicht in „Gehalt" oder „Haltung" anschlagen, sonst bräche der
         Orb mitten im eigenen Satz ab.
         """
 
-        if not self._stop_words or not text:
-            return False
+        return self._stopwort_treffer(text) is not None
 
-        words = {
-            word.strip(".,!?;:").lower()
-            for word in text.split()
-        }
-        return bool(words & self._stop_words)
+    def _stopwort_treffer(self, text: str) -> str | None:
+        """Das gefundene Abbruchwort - oder ``None``.
+
+        Zwei Prüfungen hintereinander, und erst zusammen ergeben sie die
+        richtige Strenge:
+
+        1. ``stopwort_finden`` fasst weit. Es kennt Beugungen und die
+           typischen Verhoerer des kleinen Modells ("stobb", "stopt"),
+           denn genau die liefert es auf einem Fenster, in dem der eigene
+           Lautsprecher mitlaeuft.
+        2. Danach die Gegenprobe: Kommt das gefundene Wort dem nahe, was
+           der Orb GERADE SELBST sagt, ist es sein Echo und kein
+           Zwischenruf. Diese zweite Pruefung ist der Grund, warum die
+           erste weit fassen darf.
+        """
+
+        # Eine leere Liste in der Konfiguration heisst: abgeschaltet. Das
+        # muss sie auch heissen, sonst waere die Einstellung eine Luege.
+        if not text or not self._stop_words:
+            return None
+        treffer = stopwort_finden(text, frozenset(self._stop_words))
+        if treffer is None:
+            return None
+        # Die Gegenprobe entfaellt, solange der Orb nichts sagt: Dann gibt
+        # es kein Echo, gegen das zu pruefen waere.
+        #
+        # getattr statt Zugriff: Die Notbremse darf an einem fehlenden
+        # Feld nicht scheitern. Im Betrieb ist es immer gesetzt; nur
+        # Pruefgeruest ohne vollstaendige Pipeline kommt ohne es aus, und
+        # dort ist "kein Echo bekannt" genau die richtige Annahme.
+        if not getattr(self, "_gesprochene_woerter", None):
+            return treffer
+        # Bei einer Wendung ("hoer auf") zaehlt sie nur dann als Echo,
+        # wenn ALLE ihre Woerter im eigenen Satz stehen. Ein einzelnes
+        # "auf" reicht nicht - sonst waere jede Wendung entwertet.
+        teile = treffer.split()
+        if all(self._naehe_zum_eigenen(teil) >= AEHNLICH_GENUG for teil in teile):
+            logger.debug(
+                "Stop-Verdacht %r verworfen - er steht im eigenen Satz.",
+                treffer,
+            )
+            return None
+        return treffer
 
     def interrupt(self) -> None:
         """Bricht die laufende Sprachausgabe ab.

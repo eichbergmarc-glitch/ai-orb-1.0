@@ -116,6 +116,14 @@ _EIGENE_WIRTE: tuple[str, ...] = (
 
 
 #: Frage-Geruest und Hoeflichkeit, die vor einer Suche weg koennen.
+#:
+#: Der Suchauftrag selbst gehoert dazu, und das ist der Punkt: Am
+#: 19.08.2026 verlangte der Benutzer viermal "Hallo Orb, fuehre erneut
+#: eine Suche durch zu Markus Gabriel". Daraus wurde der Suchbegriff
+#: "fuehre erneut durch markus gabriel" - und Wikipedia antwortete mit
+#: SIGMAR Gabriel. Erst als der Benutzer "Neurealismus" ergaenzte, kam
+#: der richtige Philosoph. Nicht die Suche war kaputt, sondern die
+#: Anfrage: Der Auftrag stand mit im Suchtext und verduennte den Namen.
 _FRAGE_GERUEST: tuple[str, ...] = (
     "kannst du mir sagen", "kannst du mir", "kannst du", "koenntest du",
     "könntest du", "weißt du", "weisst du", "sag mir mal", "sag mir",
@@ -123,6 +131,20 @@ _FRAGE_GERUEST: tuple[str, ...] = (
     "ich möchte wissen", "ich will wissen", "ich moechte", "ich möchte",
     "such mir", "suche mir", "such nach", "suche nach", "finde mir",
     "recherchiere", "recherchier", "bitte", "mal eben", "mal kurz",
+    # Die Anrede. Sie steht im gesprochenen Satz und gehoert nie in die
+    # Anfrage: "hallo orb fuehre erneut durch markus gabriel".
+    "hallo orb", "hey orb", "hallo, orb", "orb bitte",
+    # Der Suchauftrag als Rahmen um das eigentliche Thema.
+    "fuehre erneut eine suche durch", "führe erneut eine suche durch",
+    "fuehre eine neue suche durch", "führe eine neue suche durch",
+    "fuehre eine suche durch", "führe eine suche durch",
+    "fuehre erneut eine suche", "führe erneut eine suche",
+    "fuehre eine neue suche", "führe eine neue suche",
+    "starte eine suche", "mach eine suche", "mache eine suche",
+    "eine neue suche zu", "eine erneute suche zu", "eine suche zu",
+    "was du findest", "was du dazu findest", "was du dazu findest",
+    "was findest du", "schau was du findest",
+    "noch einmal", "nochmal", "nochmals", "erneut", "erneute", "erneuten",
 )
 
 #: Haeufige deutsche Fuell- und Funktionswoerter, die als Suchbegriff nichts
@@ -150,6 +172,15 @@ _SUCH_AKTIONSWOERTER: frozenset[str] = frozenset(
         "erstell", "daraus", "pdf", "pdf-datei", "datei", "grafik",
         "grafiken", "bilder", "bildung", "speichere", "speichern",
         "generiere", "generieren", "solchen", "solche", "solches",
+        # Der Suchauftrag in Einzelteilen - was von "fuehre eine erneute
+        # Suche durch zu X" uebrig bleibt, wenn die Wendung nicht genau
+        # so dasteht. "durch" ist hier Verbzusatz, kein Inhalt.
+        "fuehre", "führe", "fuehr", "führ", "durchfuehren", "durchführen",
+        "durch", "erneut", "erneute", "erneuten", "erneuter", "neue",
+        "neuen", "neuer", "neues", "nochmal", "nochmals", "wieder",
+        "findest", "finden", "findet", "finde", "sucht", "suchst",
+        "recherche", "internetsuche", "websuche", "suchauftrag",
+        "hallo", "orb", "jo", "hey",
     }
 )
 
@@ -1420,8 +1451,43 @@ async def mehrquellensuche(
     return gesammelt
 
 
+#: So viel Beschreibung je Treffer geht an das Modell.
+#:
+#: Gemessen am 19.08.2026: Eine Nachrichtenfrage schickte 27'000 Zeichen
+#: allein an Suchergebnissen in die Anfrage - achtzehn Treffer mit den
+#: vollen Zusammenfassungen aus den Feeds. Das Modell brauchte danach 6,4
+#: Sekunden bis zum ersten Wort, und diese Sekunden hoert der Benutzer als
+#: Stille.
+#:
+#: Wozu die Treffer da sind, entscheidet die Grenze: Sie sollen zeigen,
+#: WORUEBER und WIE die Haeuser berichten. Dafuer genuegen Schlagzeile
+#: und ein paar Saetze. Wer den ganzen Artikel braucht, laesst ihn mit
+#: 'webseite_lesen' holen - dann aber gezielt einen und nicht achtzehn.
+_BESCHREIBUNG_HOECHSTENS = 320
+
+#: Und eine Obergrenze fuer das Ganze, als Netz unter dem Netz.
+_GEGENUEBERSTELLUNG_HOECHSTENS = 9000
+
+
+def _knapp(text: str, hoechstens: int) -> str:
+    """Kuerzt an einer Satzgrenze, nicht mitten im Wort."""
+
+    sauber = " ".join(str(text or "").split())
+    if len(sauber) <= hoechstens:
+        return sauber
+    gekuerzt = sauber[:hoechstens]
+    schnitt = max(gekuerzt.rfind(". "), gekuerzt.rfind("! "), gekuerzt.rfind("? "))
+    if schnitt > hoechstens // 2:
+        return gekuerzt[: schnitt + 1]
+    return gekuerzt.rsplit(" ", 1)[0] + " …"
+
+
 def quellen_gegenueberstellen(gesammelt: dict[str, list[dict[str, str]]]) -> str:
-    """Formt die Treffer so, dass die Herkunft unübersehbar ist."""
+    """Formt die Treffer so, dass die Herkunft unübersehbar ist.
+
+    Und so, dass sie in eine Anfrage passen: Jede Beschreibung wird auf
+    ``_BESCHREIBUNG_HOECHSTENS`` gekuerzt. Der Grund steht dort.
+    """
 
     if not gesammelt:
         return ""
@@ -1430,9 +1496,26 @@ def quellen_gegenueberstellen(gesammelt: dict[str, list[dict[str, str]]]) -> str
     for name, treffer in gesammelt.items():
         zeilen = [f"[{name}]"]
         for t in treffer:
-            zeilen.append(f"  - {t['titel']}")
+            zeilen.append(f"  - {_knapp(t['titel'], 160)}")
             zeilen.append(f"    {t['url']}")
             if t.get("beschreibung"):
-                zeilen.append(f"    {t['beschreibung']}")
+                zeilen.append(f"    {_knapp(t['beschreibung'], _BESCHREIBUNG_HOECHSTENS)}")
         teile.append("\n".join(zeilen))
-    return "\n\n".join(teile)
+
+    ganzes = "\n\n".join(teile)
+    if len(ganzes) > _GEGENUEBERSTELLUNG_HOECHSTENS:
+        # Lieber ganze Quellen weglassen als alle halbieren: Eine
+        # Gegenueberstellung aus Bruchstuecken vergleicht nichts mehr.
+        gekuerzt: list[str] = []
+        laenge = 0
+        for teil in teile:
+            if laenge + len(teil) > _GEGENUEBERSTELLUNG_HOECHSTENS:
+                break
+            gekuerzt.append(teil)
+            laenge += len(teil) + 2
+        ganzes = "\n\n".join(gekuerzt)
+        logger.info(
+            "Gegenueberstellung auf %d von %d Quellen gekuerzt (Platzgrenze).",
+            len(gekuerzt), len(teile),
+        )
+    return ganzes

@@ -24,10 +24,12 @@ Angaben kommt – dann wird abgebrochen und das offen gesagt.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any
 
 from backend.config import get_config
@@ -459,6 +461,15 @@ def _klang_zur_tat() -> None:
         logger.debug("Der Tat-Klang ließ sich nicht abspielen.", exc_info=True)
 
 
+#: Werkzeuge, deren Ergebnis ein GELESENER Text ist und nicht eine
+#: Handlung. Nur deren Ausgabe wandert ins Gedaechtnis - ein "Datei
+#: geloescht" oder "Fenster geoeffnet" waere dort nur Ballast.
+_LESENDE_WERKZEUGE: frozenset[str] = frozenset({
+    "datei_lesen", "dokument_lesen", "pdf_lesen", "webseite_lesen",
+    "bildschirm_ansehen", "datei_zusammenfassen", "ordner_lesen",
+})
+
+
 class ToolEngine:
     """Führt die Werkzeugschleife aus."""
 
@@ -490,6 +501,15 @@ class ToolEngine:
 
         self._total_calls = 0
         self._failed_calls = 0
+
+        #: Wohin gelesene Inhalte zum Behalten gehen.
+        #:
+        #: Gesetzt wird das von der Laufzeit (siehe runtime). Ohne diesen
+        #: Anschluss war die Klage des Benutzers woertlich zutreffend: "Er
+        #: speichert eingelesene Dokumente nicht in seinem Gedaechtnis ab."
+        #: Was 'datei_lesen' oder 'webseite_lesen' holte, ging in den
+        #: Kontext DIESER einen Antwort und war danach weg.
+        self.gelesenes_behalten: Callable[[str, str], None] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -968,6 +988,13 @@ class ToolEngine:
         # war nicht zu sehen. Drei sehr verschiedene Fehler, ein einziges
         # Bild.
         dauer = time.perf_counter() - started
+        if result.ok and tool.name in _LESENDE_WERKZEUGE and self.gelesenes_behalten:
+            # Was gelesen wurde, soll der Orb morgen noch wissen.
+            with contextlib.suppress(Exception):
+                self.gelesenes_behalten(
+                    str(result.output or ""),
+                    self._quelle_nennen(tool.name, cleaned),
+                )
         if result.ok:
             logger.info(
                 "Werkzeug '%s' ausgefuehrt (%.1f s): %s",
@@ -992,6 +1019,21 @@ class ToolEngine:
         )
 
         return ToolRun(tool.name, cleaned, result, time.perf_counter() - started)
+
+    @staticmethod
+    def _quelle_nennen(werkzeug: str, argumente: dict[str, Any]) -> str:
+        """Woher der gelesene Text stammt - fuer den Nachweis im Gedaechtnis.
+
+        Ohne Quelle ist ein Auszug im Gedaechtnis wertlos: Man weiss dann,
+        DASS etwas dastand, aber nicht, wo man es nachlesen kann. Und
+        Seiten aendern sich - der Verweis ist oft mehr wert als der Text.
+        """
+
+        for schluessel in ("url", "pfad", "datei", "adresse", "dateiname"):
+            wert = argumente.get(schluessel)
+            if wert:
+                return str(wert)
+        return werkzeug
 
     @staticmethod
     def _describe_intent(tool: Tool, arguments: dict[str, Any]) -> str:

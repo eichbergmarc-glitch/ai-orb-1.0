@@ -8,6 +8,7 @@ zwischen Hermes und Ollama geht dadurch kein Kontext verloren.
 
 from __future__ import annotations
 
+import contextlib
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -81,9 +82,34 @@ class ConversationManager:
         """Beginnt eine neue Unterhaltung und macht sie zur aktiven."""
 
         conversation = Conversation(project_id=project_id)
+
+        # Der Faden von gestern.
+        #
+        # Eine neue Unterhaltung begann bisher bei null - auch dann, wenn
+        # zehn Minuten vorher noch zwei Stunden lang geredet worden war.
+        # Fuer den Benutzer sah das aus wie Vergesslichkeit, und es war
+        # auch welche: Der Orb HATTE die Zusammenfassungen im Gedaechtnis,
+        # sah sie nur nicht an.
+        #
+        # Zwei genuegen. Mehr fuellt den Kontext mit Alterem, als das
+        # laufende Gespraech an Platz braucht, und Aelteres findet der Orb
+        # ueber das Gedaechtnis, wenn danach gefragt wird.
+        with contextlib.suppress(Exception):
+            frueher = self._memory.conversations.recent(limit=2, project_id=project_id)
+            if frueher:
+                conversation.summary = "\n".join(
+                    f"Frueher besprochen (vor {round((time.time() - r.updated_at) / 3600.0)} h): "
+                    f"{r.content}"
+                    for r in reversed(frueher)
+                )
+
         self._conversations[conversation.id] = conversation
         self._active_id = conversation.id
-        logger.info("Neue Unterhaltung gestartet (%s).", conversation.id)
+        logger.info(
+            "Neue Unterhaltung gestartet (%s)%s.",
+            conversation.id,
+            " – mit dem Faden der letzten" if conversation.summary else "",
+        )
         return conversation
 
     @property
@@ -137,6 +163,44 @@ class ConversationManager:
         conversation.updated_at = time.time()
         return True
 
+    def letzte_wechsel_verwerfen(self, anzahl: int = 2) -> int:
+        """Nimmt die letzten Wortwechsel wieder aus dem Verlauf heraus.
+
+        Ein Wortwechsel ist eine Benutzernachricht samt der Antwort
+        darauf. Entfernt wird von hinten, und zwar so, dass der Verlauf
+        danach wieder mit einer Antwort endet - sonst stünde eine Frage
+        ohne Antwort da und das Modell würde beim nächsten Mal versuchen,
+        sie nachzuholen.
+
+        Der Anlass steht in ``verlaufsreparatur``: Was eine fremde Stimme
+        gesagt hat, steht sonst für immer im Verlauf und färbt jede
+        weitere Antwort ein.
+
+        Args:
+            anzahl: Wie viele Wortwechsel entfernt werden sollen.
+
+        Returns:
+            Die Zahl der tatsächlich entfernten Wortwechsel.
+        """
+
+        conversation = self.active
+        entfernt = 0
+        for _ in range(max(0, anzahl)):
+            if not conversation.messages:
+                break
+            # Erst alles hinten weg, was Antwort ist - dann die Frage.
+            while conversation.messages and conversation.messages[-1].get("role") != "user":
+                conversation.messages.pop()
+            if conversation.messages and conversation.messages[-1].get("role") == "user":
+                conversation.messages.pop()
+                entfernt += 1
+            else:
+                break
+        if entfernt:
+            conversation.updated_at = time.time()
+            logger.info("%d Wortwechsel aus dem Verlauf entfernt.", entfernt)
+        return entfernt
+
     async def maybe_compress(self) -> bool:
         """Komprimiert den Verlauf, wenn er zu lang geworden ist.
 
@@ -166,8 +230,27 @@ class ConversationManager:
         conversation.summary = combined
         conversation.messages = recent
 
+        # Und dasselbe gleich ins LANGE Gedaechtnis.
+        #
+        # Bisher blieb die Verdichtung hier stehen - im Arbeitsspeicher
+        # dieser einen Unterhaltung. Ins Gedaechtnis kam sie erst bei
+        # ``finish()``, und das laeuft nur beim sauberen Herunterfahren.
+        # Ein Sprachassistent auf einem Arbeitsrechner wird aber nicht
+        # sauber heruntergefahren, sondern geschlossen. Ergebnis im
+        # Gedaechtnis des Benutzers am 19.08.2026: 222 Eintraege, davon
+        # NULL Gespraechszusammenfassungen. Nichts ueberlebte einen
+        # Neustart, und der Orb begann jedes Mal bei null.
+        with contextlib.suppress(Exception):
+            self._memory.conversations.sitzung_festhalten(
+                combined,
+                session_id=conversation.id,
+                project_id=conversation.project_id,
+                message_count=len(older),
+            )
+
         logger.info(
-            "Unterhaltung %s komprimiert (%d Nachrichten verdichtet).",
+            "Unterhaltung %s komprimiert (%d Nachrichten verdichtet) "
+            "und im Gedächtnis festgehalten.",
             conversation.id,
             len(older),
         )

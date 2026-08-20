@@ -212,6 +212,15 @@ class Runtime:
         # Dateien, Programme). Ohne diesen Anschluss kennt das Modell im
         # Gespräch kein einziges Werkzeug.
         self.orchestrator.attach_tool_engine(self.tool_engine)
+        # Und der Anschluss ans Gedaechtnis: Was gelesen wird, soll der Orb
+        # morgen noch wissen. Ohne diese Zeile ging jedes eingelesene
+        # Dokument nach der einen Antwort verloren - genau die Klage des
+        # Benutzers vom 19.08.2026.
+        self.tool_engine.gelesenes_behalten = (
+            lambda inhalt, quelle: self.orchestrator._gelesenes_merken(
+                inhalt, quelle=quelle
+            )
+        )
         self.plugins = PluginManager(
             security=self.security,
             tool_registry=self.tools,

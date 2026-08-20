@@ -32,8 +32,10 @@ entsteht ohne Bild - mit einem Hinweis, warum.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -56,6 +58,23 @@ _KENNUNG = "AI-Orb/0.26 (lokaler Sprachassistent; Kontakt ueber den Betreiber)"
 _MAX_BYTES = 12 * 1024 * 1024
 
 _ZEITLIMIT = 25
+
+#: Wie oft ein zu schnelles "Nein" wiederholt wird.
+#:
+#: Am 18.08.2026 um 11:08 scheiterten drei Bilder in 1.4 Sekunden am
+#: selben Grund: ``upload.wikimedia.org`` antwortete dreimal mit 429.
+#: Das ist keine Ablehnung, sondern eine Bitte um Geduld - Wikimedia
+#: drosselt Stossbetrieb pro Adresse. Der Orb gab trotzdem auf und sagte
+#: dem Benutzer, es gebe keine Bilder. Es gab welche.
+_WIEDERHOLUNGEN = 2
+
+#: Wartezeiten zwischen den Versuchen, wenn der Dienst keine eigene
+#: Angabe macht. Kurz genug, dass niemand denkt, es haenge.
+_WARTEN = (1.2, 2.5)
+
+#: Antwortcodes, bei denen sich ein zweiter Versuch lohnt. Alles andere
+#: (404, 403) bleibt beim ersten Nein - da hilft Warten nicht.
+_GEDULD_CODES = frozenset((429, 500, 502, 503, 504))
 
 
 class BildquelleFehler(RuntimeError):
@@ -100,18 +119,57 @@ class Bildtreffer:
 # ---------------------------------------------------------------------------
 
 
+def _wartezeit(fehler: urllib.error.HTTPError, versuch: int) -> float:
+    """Wie lange vor dem naechsten Versuch gewartet wird.
+
+    Sagt der Dienst selbst, wann er wieder mag (``Retry-After``), gilt
+    seine Angabe - aber hoechstens fuenf Sekunden, denn laenger wartet
+    niemand vor einem Bild.
+    """
+
+    angabe = ""
+    with contextlib.suppress(Exception):
+        angabe = str(fehler.headers.get("Retry-After") or "")
+    with contextlib.suppress(ValueError):
+        if angabe.strip():
+            return max(0.5, min(5.0, float(angabe.strip())))
+    return _WARTEN[min(versuch, len(_WARTEN) - 1)]
+
+
 def _abrufen(url: str, *, zeitlimit: int = _ZEITLIMIT) -> bytes:
+    """Holt eine Datei - und laesst sich von einem 429 nicht abschrecken.
+
+    Wikimedia drosselt Stossbetrieb pro Adresse. Wer vier Vorschaubilder
+    in einer Sekunde anfordert, bekommt drei Absagen, obwohl alle vier
+    Bilder existieren und frei sind. Genau das stand am 18.08.2026 im
+    Protokoll. Ein kurzes Warten loest es.
+    """
+
     anfrage = urllib.request.Request(url, headers={"User-Agent": _KENNUNG})
-    try:
-        with urllib.request.urlopen(anfrage, timeout=zeitlimit) as antwort:
-            daten = antwort.read(_MAX_BYTES + 1)
-    except urllib.error.HTTPError as fehler:
-        raise BildquelleFehler(f"Der Dienst antwortete mit {fehler.code}.") from fehler
-    except (urllib.error.URLError, TimeoutError, OSError) as fehler:
-        raise BildquelleFehler(f"Der Dienst war nicht erreichbar: {fehler}") from fehler
-    if len(daten) > _MAX_BYTES:
-        raise BildquelleFehler("Die Datei ist zu gross.")
-    return daten
+    letzter: BildquelleFehler | None = None
+    for versuch in range(_WIEDERHOLUNGEN + 1):
+        try:
+            with urllib.request.urlopen(anfrage, timeout=zeitlimit) as antwort:
+                daten = antwort.read(_MAX_BYTES + 1)
+        except urllib.error.HTTPError as fehler:
+            letzter = BildquelleFehler(f"Der Dienst antwortete mit {fehler.code}.")
+            if fehler.code not in _GEDULD_CODES or versuch >= _WIEDERHOLUNGEN:
+                raise letzter from fehler
+            pause = _wartezeit(fehler, versuch)
+            logger.info(
+                "%s antwortete mit %d - noch einmal in %.1f s.",
+                urllib.parse.urlsplit(url).netloc, fehler.code, pause,
+            )
+            time.sleep(pause)
+            continue
+        except (urllib.error.URLError, TimeoutError, OSError) as fehler:
+            raise BildquelleFehler(
+                f"Der Dienst war nicht erreichbar: {fehler}"
+            ) from fehler
+        if len(daten) > _MAX_BYTES:
+            raise BildquelleFehler("Die Datei ist zu gross.")
+        return daten
+    raise letzter or BildquelleFehler("Der Dienst antwortete nicht.")
 
 
 def _json_abrufen(url: str, *, zeitlimit: int = _ZEITLIMIT) -> dict:

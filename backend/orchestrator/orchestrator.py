@@ -16,6 +16,7 @@ bleibt dabei unverändert.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -26,6 +27,11 @@ from backend.events.event_bus import EventBus
 from backend.evolution.live_development import parse_development_request
 from backend.memory.memory_engine import MemoryEngine
 from backend.orchestrator.conversation_manager import ConversationManager
+from backend.orchestrator.verlaufsreparatur import (
+    STANDARD_WECHSEL,
+    antwort as reparatur_antwort,
+    ist_reparaturbefehl,
+)
 from backend.orchestrator.intent_classifier import (
     CHAT,
     DOCUMENT,
@@ -74,6 +80,46 @@ _PERSOENLICHE_JETZT_FRAGEN: tuple[str, ...] = (
     "was machst du", "was tust du", "woran arbeitest du",
     "bist du gerade", "bist du heute",
 )
+
+#: "Finde heraus, warum die Suche nicht funktioniert" ist KEIN Suchauftrag.
+#:
+#: Am 19.08.2026 verlangte der Benutzer dreimal eine Fehlersuche im
+#: eigenen Verhalten des Orb. Weil in jedem dieser Saetze das Wort
+#: "Suche" oder "finde" stand, sprang die Vorabsuche an und legte dem
+#: Modell Netzfunde vor::
+#:
+#:   10:10:42  "Führe eine Fehleranalyse durch und finde heraus, warum
+#:              die Suche nicht funktioniert."
+#:             -> gesucht, gefunden: "Numerische lineare Algebra"
+#:
+#: Das Modell bekam damit fremde Treffer zu einer Frage ueber sich selbst
+#: - und antwortete entsprechend daneben. Wer nach dem eigenen Fehler
+#: fragt, will kein Suchergebnis, sondern eine Pruefung.
+_SELBSTDIAGNOSE: tuple[str, ...] = (
+    "fehleranalyse", "selbstanalyse", "funktionstest", "selbsttest",
+    "finde den fehler", "find den fehler", "such den fehler",
+    "suche den fehler", "wo liegt der fehler", "was ist der fehler",
+    "in deinem code", "deinen code", "dein code", "deinem quelltext",
+    "warum du nicht", "warum du keine", "warum du kein",
+    "warum die suche nicht", "warum deine", "warum dein ",
+    "warum das nicht funktioniert", "warum es nicht funktioniert",
+    "was bei dir nicht", "was bei dir schief",
+    "prüfe deine", "pruefe deine", "prüf deine", "pruef deine",
+    "analysiere deine", "analysier deine", "überprüfe deine",
+    "ueberpruefe deine",
+)
+
+
+def ist_selbstdiagnose(text: str) -> bool:
+    """Ob der Benutzer nach einem Fehler im Orb selbst fragt.
+
+    Dann ist eine Internetsuche nicht bloss nutzlos, sondern schaedlich:
+    Ihre Treffer verdraengen im Kontext genau das, was zur Antwort noetig
+    waere - naemlich der eigene Zustand.
+    """
+
+    knapp = " " + " ".join((text or "").lower().split()) + " "
+    return any(wendung in knapp for wendung in _SELBSTDIAGNOSE)
 
 
 def provider_mode_command(text: str) -> str:
@@ -244,6 +290,13 @@ def braucht_werkzeuge(text: str) -> bool:
     knapp = " " + " ".join(text.lower().split()) + " "
     if any(wort in knapp for wort in _WERKZEUG_TAETIGKEITEN):
         return True
+    # Wer nach dem eigenen Fehler fragt, braucht Werkzeuge erst recht:
+    # Dateien lesen, Protokolle durchsehen, den Selbsttest laufen lassen.
+    # Ohne sie bleibt dem Modell nur die Behauptung - im Protokoll vom
+    # 19.08.2026 stand woertlich "Ich hab den Code durchsucht und ...",
+    # ohne dass eine einzige Datei geoeffnet worden waere.
+    if ist_selbstdiagnose(text):
+        return True
     # Ist von Bildschirm, Datei oder Dokument die Rede, geht es fast immer
     # um etwas, das auf diesem Rechner zu tun ist.
     return betrifft_eigenes_umfeld(text)
@@ -298,6 +351,11 @@ def braucht_aktuelles(text: str) -> bool:
     """
 
     knapp = " " + " ".join(text.lower().split()) + " "
+    # Zuerst das Veto, dann der Auftrag: "Finde heraus, warum die Suche
+    # nicht funktioniert" enthaelt das Wort "Suche" und ist trotzdem
+    # keine Bitte, im Netz zu suchen (siehe ist_selbstdiagnose).
+    if ist_selbstdiagnose(text):
+        return False
     if any(f" {wort}" in knapp for wort in _SUCHAUFTRAEGE):
         return True
     # "Wie geht es dir heute?" und "Was machst du gerade?" fragen nach
@@ -633,6 +691,16 @@ class Orchestrator:
         #: soll DEN wiederholen - nicht den Satz "wiederhole die Suche"
         #: wörtlich ins Netz schicken (belegt im Protokoll des Benutzers).
         self._letzter_suchbegriff: str = ""
+
+        #: Wie viel Beigelegtes hoechstens in eine Anfrage darf.
+        #:
+        #: Nicht die Antwort wird hier begrenzt, sondern die FRAGE. Das ist
+        #: der Unterschied, auf den es ankommt: Kuerzere Antworten waeren
+        #: ein Verlust, ein kuerzerer Anlauf ist keiner - was hier
+        #: wegfaellt, kann das Modell mit einem Werkzeug nachholen.
+        self._kontext_hoechstens = max(
+            2000, int(self._config.get("conversation.max_extra_context_chars", 12000))
+        )
         #: Die Werkzeugschleife. Wird nach dem Aufbau angeschlossen (siehe
         #: attach_tool_engine) – zur Bauzeit des Orchestrators gibt es sie
         #: noch nicht.
@@ -727,6 +795,33 @@ class Orchestrator:
         # erst recht vor jeder Modellanfrage geschehen. So verlaesst selbst
         # der Umschaltbefehl den Rechner nicht und funktioniert auch dann,
         # wenn gerade kein Cloud-Provider erreichbar ist.
+        # "Du hast eine falsche Stimme gehoert" muss wirken, und zwar
+        # sofort und ohne Modell.
+        #
+        # Was eine fremde Stimme gesagt hat, steht sonst fuer immer im
+        # Verlauf - und weil jede weitere Antwort den ganzen Verlauf
+        # mitliest, faerbt der Unsinn auf alles Folgende ab. Genau so
+        # entstand am 18.08.2026 der Eindruck, der Orb halluziniere und
+        # hoere nicht mehr damit auf. Diese Pruefung steht deshalb ganz
+        # vorn: Der Satz, mit dem man das zurueckholt, darf an keiner
+        # Modellwahl und keiner Werkzeugwahl scheitern.
+        if ist_reparaturbefehl(text):
+            entfernt = self.conversations.letzte_wechsel_verwerfen(STANDARD_WECHSEL)
+            response = reparatur_antwort(entfernt)
+            logger.info(
+                "Verlauf auf Zuruf bereinigt: %d Wortwechsel entfernt.", entfernt
+            )
+            result = OrchestrationResult(
+                response=response,
+                intent="verlauf_reparatur",
+                used_llm=False,
+                module="conversation_manager",
+                data={"success": True, "entfernt": entfernt},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
         mode_command = provider_mode_command(text)
         if mode_command:
             if mode_command == "status":
@@ -1068,12 +1163,7 @@ class Orchestrator:
                 if spoken:
                     answer_text = vorab_ergebnisse["bildschirm_ansehen"]
                     self.conversations.add_assistant_message(answer_text)
-                    self._memory.remember(
-                        text,
-                        kind="knowledge",
-                        project_id=project_id,
-                        source="gespraech",
-                    )
+                    self._wortwechsel_merken(text, answer_text, project_id)
                     return OrchestrationResult(
                         response=answer_text,
                         intent=intent.intent,
@@ -1145,6 +1235,31 @@ class Orchestrator:
             instructions = self._tool_engine.system_instructions()
             context_block = "\n\n".join(
                 part for part in (context_block, instructions) if part
+            )
+
+        # Das Netz unter dem Netz: eine Obergrenze fuer alles Beigelegte.
+        #
+        # Gemessen am 19.08.2026 ueber 81 Anfragen: Median 21'000 Zeichen
+        # je Anfrage, Spitze 39'661 - und bei einer Nachrichtenfrage
+        # steckten davon 27'000 allein in den Suchergebnissen, bei DREI
+        # Nachrichten im Verlauf. Das Modell brauchte danach 6,4 Sekunden
+        # bis zum ersten Wort. Diese Sekunden hoert der Benutzer als
+        # Stille, und sie waren der halbe Grund fuer "keine fluessige
+        # Konversation".
+        #
+        # Gekuerzt wird von hinten: Vorn stehen Gedaechtnis und
+        # Benutzerangaben, hinten die Werkzeuganleitung und die Fundstuecke.
+        # Was wegfaellt, kann das Modell mit einem Werkzeug nachholen -
+        # was vorn steht, nicht.
+        if context_block and len(context_block) > self._kontext_hoechstens:
+            gekuerzt = context_block[: self._kontext_hoechstens].rsplit("\n", 1)[0]
+            logger.info(
+                "Kontext von %d auf %d Zeichen gekuerzt (Grenze %d).",
+                len(context_block), len(gekuerzt), self._kontext_hoechstens,
+            )
+            context_block = (
+                gekuerzt
+                + "\n\n[Gekürzt. Brauchst du mehr, hol es dir mit einem Werkzeug.]"
             )
 
         messages = self.conversations.build_messages(
@@ -1281,14 +1396,7 @@ class Orchestrator:
                     wirklich_gesprochen = True
 
         self.conversations.add_assistant_message(answer_text)
-
-        # Relevante Informationen aus der Benutzereingabe merken.
-        self._memory.remember(
-            text,
-            kind="knowledge",
-            project_id=project_id,
-            source="gespräch",
-        )
+        self._wortwechsel_merken(text, answer_text, project_id)
 
         return OrchestrationResult(
             response=answer_text,
@@ -1766,6 +1874,7 @@ class Orchestrator:
 
         if lauf.result.ok and lauf.result.output:
             logger.info("Seite vorab gelesen: %s (%.1f s).", url, lauf.seconds)
+            self._gelesenes_merken(str(lauf.result.output), quelle=url)
             return (
                 "SO STEHT ES AUF DER SEITE, DIE DER BENUTZER GENANNT HAT "
                 f"({url}, soeben geholt) - stütze deine Antwort darauf und sag "
@@ -1992,6 +2101,94 @@ class Orchestrator:
             "sprachmodell_genutzt": not route["handled_locally"] or route["requires_llm"],
             "aktiver_provider": self._providers.active_name,
         }
+
+    #: So viel von einer Antwort wandert ins Gedaechtnis.
+    #:
+    #: Genug, damit die Aussage darin steht; kurz genug, dass hundert
+    #: Wortwechsel das Gedaechtnis nicht zumauern. Wer mehr braucht,
+    #: fragt noch einmal - dann sucht der Orb neu.
+    _ANTWORT_IM_GEDAECHTNIS = 700
+
+    def _wortwechsel_merken(
+        self, frage: str, antwort: str, project_id: str | None
+    ) -> None:
+        """Legt Frage UND Antwort ins Gedächtnis - nicht nur die Frage.
+
+        Hier stand bisher ``remember(text)``: gespeichert wurde allein,
+        was der Benutzer GEFRAGT hat. Im Gedächtnis des Benutzers sah das
+        am 19.08.2026 so aus::
+
+            "du hast zuletzt ein dokument über fossilien und gestein
+             eingelesen dabei gab es offene fragen was sind diese offenen
+             fragen"
+
+        Das ist die Frage. Die Antwort darauf - das, worum es ging - stand
+        nirgends. Deshalb konnte der Orb sich an behandelte Themen nicht
+        erinnern: Er hatte hundertdreissig alte Fragen gespeichert und
+        keine einzige Auskunft.
+
+        Gespeichert wird beides zusammen, denn getrennt taugt keines von
+        beiden: Eine Antwort ohne ihre Frage ist beim Wiederfinden nicht
+        einzuordnen, eine Frage ohne Antwort ist leer.
+        """
+
+        frage_knapp = " ".join(str(frage or "").split())
+        antwort_knapp = " ".join(str(antwort or "").split())
+        if not frage_knapp or not antwort_knapp:
+            return
+
+        if len(antwort_knapp) > self._ANTWORT_IM_GEDAECHTNIS:
+            gekuerzt = antwort_knapp[: self._ANTWORT_IM_GEDAECHTNIS]
+            # An der letzten Satzgrenze abschneiden, nicht mitten im Wort.
+            schnitt = max(gekuerzt.rfind(". "), gekuerzt.rfind("! "), gekuerzt.rfind("? "))
+            antwort_knapp = (
+                gekuerzt[: schnitt + 1] if schnitt > 200 else gekuerzt.rstrip() + " …"
+            )
+
+        with contextlib.suppress(Exception):
+            self._memory.remember(
+                f"Gefragt: {frage_knapp}\nGeantwortet: {antwort_knapp}",
+                kind="knowledge",
+                project_id=project_id,
+                source="gespräch",
+            )
+
+    #: So viel eines gelesenen Textes wandert ins Gedächtnis.
+    _GELESENES_IM_GEDAECHTNIS = 1500
+
+    def _gelesenes_merken(self, inhalt: str, *, quelle: str) -> None:
+        """Behält, was gelesen wurde - mit Angabe, woher.
+
+        „Er speichert eingelesene Dokumente nicht in seinem Gedächtnis ab":
+        Das stimmte. Was ``webseite_lesen`` oder ``datei_lesen`` holte,
+        ging in den Kontext DIESER einen Antwort und war danach weg. Beim
+        nächsten Start wusste der Orb nichts mehr davon - und auf die
+        Frage „was stand in dem Dokument" musste er raten.
+
+        Gespeichert wird ein Auszug, nicht das ganze Dokument: Das
+        Gedächtnis ist zum Wiederfinden da, nicht zum Archivieren. Steht
+        die Quelle dabei, kann der Orb bei Bedarf noch einmal nachlesen -
+        und das ist mehr wert als der vollständige Text von damals, denn
+        Seiten ändern sich.
+        """
+
+        knapp = " ".join(str(inhalt or "").split())
+        if len(knapp) < 200:
+            return
+        if len(knapp) > self._GELESENES_IM_GEDAECHTNIS:
+            knapp = knapp[: self._GELESENES_IM_GEDAECHTNIS].rsplit(" ", 1)[0] + " …"
+
+        with contextlib.suppress(Exception):
+            self._memory.remember(
+                f"Gelesen aus {quelle}:\n{knapp}",
+                kind="knowledge",
+                source=quelle,
+                # force: Die Relevanzpruefung ist fuer Gespraechsfetzen
+                # gedacht. Was der Benutzer ausdruecklich lesen liess, ist
+                # per se relevant - er hat darum gebeten.
+                force=True,
+            )
+            logger.info("Gelesenes im Gedächtnis abgelegt (Quelle: %s).", quelle)
 
     async def end_conversation(self) -> str | None:
         """Beendet die laufende Unterhaltung und sichert deren Zusammenfassung."""

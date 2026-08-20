@@ -401,6 +401,27 @@ class Transcriber:
 
         confidence = sum(probabilities) / len(probabilities) if probabilities else 0.0
 
+        # Die Aufteilung ins Protokoll - Warten und Rechnen getrennt.
+        #
+        # Gemessen am 19.08.2026: 5,8 Sekunden vom Ende des Satzes bis zum
+        # Text, der groesste einzelne Posten auf dem Weg zur Antwort. Nur
+        # war nicht zu sehen, WOVON: Stand die Aufnahme in der Schlange vor
+        # dem Modell, oder rechnete das Modell so lange? Das sind zwei
+        # verschiedene Fehler mit zwei verschiedenen Abhilfen - ein
+        # zweites Modell gegen das eine, ein kleineres gegen das andere.
+        # Ohne diese Zeile waere jede Abhilfe geraten.
+        rechenzeit = time.perf_counter() - started
+        wartezeit = (time.monotonic() - abgegeben) - rechenzeit if abgegeben else 0.0
+        logger.info(
+            "Erkannt in %.1f s (%.1f s gewartet, %.1f s gerechnet, "
+            "%.1f s Aufnahme, Modell '%s').",
+            wartezeit + rechenzeit,
+            max(0.0, wartezeit),
+            rechenzeit,
+            float(getattr(info, "duration", 0.0)),
+            self._model_size,
+        )
+
         return Transcript(
             text=" ".join(texts).strip(),
             language=str(getattr(info, "language", self._language)),

@@ -28,6 +28,7 @@ from typing import Any
 from backend.security.security_engine import SecurityEngine
 from backend.system.logging_setup import get_logger
 from backend.tools.base_tool import Tool, ToolParameter, ToolResult
+from backend.tools.schutzliste import sichern, sperrgrund
 
 logger = get_logger(__name__)
 
@@ -91,6 +92,19 @@ class WriteFileTool(Tool):
             return ToolResult.failure(entscheidung.reason)
 
         pfad: Path = entscheidung.path
+
+        # Die kurze Sperrliste. Sie steht VOR allem anderen, weil das, was
+        # sie schuetzt, sich nicht wiederherstellen laesst.
+        #
+        # Am 19.08.2026 hat der Orb seine eigene config.yaml - 83 Kilobyte -
+        # durch einen einzigen Satz ersetzt und lief danach ohne
+        # Konfiguration weiter. Die Pfadpruefung darueber hat das erlaubt und
+        # zu Recht: Sie fragt, WO geschrieben wird, nicht WAS dort steht.
+        gesperrt = sperrgrund(pfad)
+        if gesperrt:
+            logger.warning("Schreibversuch auf geschuetzte Datei %s abgelehnt.", pfad)
+            return ToolResult.failure(f"'{pfad.name}' wird nicht überschrieben. {gesperrt}")
+
         anhaengen = bool(arguments.get("anhaengen", False))
         ueberschreiben = bool(arguments.get("ueberschreiben", False))
 
@@ -121,8 +135,15 @@ class WriteFileTool(Tool):
                 pfad.write_text(bisher + trenner + inhalt, encoding="utf-8")
                 tat = "ergänzt"
             else:
+                # Alles Uebrige darf ersetzt werden - aber nie spurlos.
+                # Die Sicherung kostet Millisekunden und ist der
+                # Unterschied zwischen einem Aergernis und einem
+                # verlorenen Abend.
+                gesichert = sichern(pfad) if vorhanden else None
                 pfad.write_text(inhalt, encoding="utf-8")
                 tat = "ersetzt" if vorhanden else "angelegt"
+                if gesichert is not None:
+                    tat = f"ersetzt (alte Fassung gesichert unter {gesichert.name})"
         except OSError as fehler:
             return ToolResult.failure(f"Die Datei ließ sich nicht schreiben: {fehler}")
 
