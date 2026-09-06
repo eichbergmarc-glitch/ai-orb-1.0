@@ -27,7 +27,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
-from backend.integrations.gmail.oauth import GmailAuth, kalender_bereich_enthalten
+from backend.integrations.gmail.oauth import GmailAuth, GmailAuthError, kalender_bereich_enthalten
+from backend.integrations.kalender.zeit import kalender_zeitzone, ortszeit
 from backend.system.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -100,6 +101,7 @@ class Termin:
     teilnehmer: list[str] = field(default_factory=list)
     link: str = ""
     kalender: str = "primary"
+    zeitzone: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +114,7 @@ class Termin:
             "beschreibung": self.beschreibung,
             "teilnehmer": list(self.teilnehmer),
             "link": self.link,
+            "zeitzone": self.zeitzone,
         }
 
     def zum_vorlesen(self, *, jetzt: datetime | None = None) -> str:
@@ -125,8 +128,9 @@ class Termin:
         if self.beginn is None:
             return self.titel or "Ein Termin ohne Zeit"
 
-        jetzt = (jetzt or datetime.now()).astimezone(self.beginn.tzinfo)
-        tage = (self.beginn.date() - jetzt.date()).days
+        beginn = ortszeit(self.beginn, zeitzone=self.zeitzone)
+        jetzt = ortszeit(jetzt, zeitzone=self.zeitzone)
+        tage = (beginn.date() - jetzt.date()).days
         if tage == 0:
             wann = "heute"
         elif tage == 1:
@@ -134,15 +138,15 @@ class Termin:
         elif tage == -1:
             wann = "gestern"
         elif 0 < tage <= 6:
-            wann = f"am {_WOCHENTAG[self.beginn.weekday()]}"
+            wann = f"am {_WOCHENTAG[beginn.weekday()]}"
         else:
-            wann = f"am {self.beginn.day}. {_MONAT[self.beginn.month - 1]}"
+            wann = f"am {beginn.day}. {_MONAT[beginn.month - 1]}"
 
         if self.ganztags:
             zeit = "den ganzen Tag"
         else:
-            minute = self.beginn.minute
-            zeit = f"um {self.beginn.hour} Uhr" + (f" {minute}" if minute else "")
+            minute = beginn.minute
+            zeit = f"um {beginn.hour} Uhr" + (f" {minute}" if minute else "")
 
         satz = f"{self.titel or 'Termin'} {wann} {zeit}"
         if self.ort:
@@ -157,28 +161,54 @@ _MONAT = (
 )
 
 
-def _zeit_lesen(eintrag: dict[str, Any]) -> tuple[datetime | None, bool]:
+def _zeit_lesen(
+    eintrag: dict[str, Any], *, ausgabezone: str = ""
+) -> tuple[datetime | None, bool]:
     """Liest ``start``/``end`` aus der API-Antwort."""
 
     if not isinstance(eintrag, dict):
         return None, False
     if eintrag.get("dateTime"):
         try:
-            return datetime.fromisoformat(str(eintrag["dateTime"]).replace("Z", "+00:00")), False
+            gelesen = datetime.fromisoformat(
+                str(eintrag["dateTime"]).replace("Z", "+00:00")
+            )
+            if gelesen.tzinfo is None:
+                gelesen = gelesen.replace(
+                    tzinfo=kalender_zeitzone(str(eintrag.get("timeZone", "") or ""))
+                )
+            return ortszeit(gelesen, zeitzone=ausgabezone), False
         except ValueError:
             return None, False
     if eintrag.get("date"):
         try:
             tag = datetime.fromisoformat(str(eintrag["date"]))
-            return tag.astimezone() if tag.tzinfo else tag, True
+            return ortszeit(tag, zeitzone=ausgabezone), True
         except ValueError:
             return None, True
     return None, False
 
 
-def _termin_lesen(daten: dict[str, Any], kalender: str = "primary") -> Termin:
-    beginn, ganztags = _zeit_lesen(daten.get("start", {}))
-    ende, _ = _zeit_lesen(daten.get("end", {}))
+def _termin_lesen(
+    daten: dict[str, Any], kalender: str = "primary", *, zeitzone: str = ""
+) -> Termin:
+    start_daten = daten.get("start", {})
+    ende_daten = daten.get("end", {})
+    # Ein einzelner Termin darf eine eigene Zone besitzen. Sie ist dann
+    # absichtlich staerker als die Standardzone des Kalenders: Google nutzt
+    # das etwa fuer Reisen oder internationale Videotermine.
+    termin_zone = str(
+        kalender_zeitzone(
+            str(start_daten.get("timeZone", "") or zeitzone)
+        )
+    )
+    ende_zone = str(
+        kalender_zeitzone(
+            str(ende_daten.get("timeZone", "") or termin_zone)
+        )
+    )
+    beginn, ganztags = _zeit_lesen(start_daten, ausgabezone=termin_zone)
+    ende, _ = _zeit_lesen(ende_daten, ausgabezone=ende_zone)
     return Termin(
         id=str(daten.get("id", "")),
         titel=str(daten.get("summary", "") or "Ohne Titel"),
@@ -194,15 +224,21 @@ def _termin_lesen(daten: dict[str, Any], kalender: str = "primary") -> Termin:
         ],
         link=str(daten.get("htmlLink", "") or ""),
         kalender=kalender,
+        zeitzone=termin_zone,
     )
 
 
-def _zeitfeld(wann: datetime, ganztags: bool) -> dict[str, str]:
+def _zeitfeld(
+    wann: datetime, ganztags: bool, *, zeitzone: str = ""
+) -> dict[str, str]:
     if ganztags:
         return {"date": wann.date().isoformat()}
-    if wann.tzinfo is None:
-        wann = wann.astimezone()
-    return {"dateTime": wann.isoformat()}
+    zone = str(kalender_zeitzone(zeitzone))
+    wann = ortszeit(wann, zeitzone=zone)
+    return {
+        "dateTime": wann.isoformat(),
+        "timeZone": zone,
+    }
 
 
 class KalenderClient:
@@ -218,6 +254,9 @@ class KalenderClient:
         self._auth = auth
         self._transport = transport or UrllibTransport()
         self._kalender = kalender or "primary"
+        # Fallback bis zur ersten Listenabfrage. Deren Antwort enthaelt die
+        # echte Standardzone des Google-Kalenders und ersetzt diesen Wert.
+        self._zeitzone = str(kalender_zeitzone())
 
     # --- Zustand --------------------------------------------------------------
 
@@ -236,6 +275,7 @@ class KalenderClient:
             "angemeldet": angemeldet,
             "kalender_freigegeben": kalender_bereich_enthalten(self._auth.granted_scopes()),
             "kalender": self._kalender,
+            "zeitzone": self._zeitzone,
         }
 
     def _pruefen(self) -> None:
@@ -256,7 +296,16 @@ class KalenderClient:
         self, methode: str, pfad: str, koerper: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         self._pruefen()
-        token = self._auth.access_token()
+        try:
+            token = self._auth.access_token()
+        except GmailAuthError as fehler:
+            # Der Vertrag dieser Klasse lautet: Was schiefgeht, kommt als
+            # KalenderFehler. Die Token-Erneuerung hielt sich nicht daran -
+            # ohne Netz schlug sie mit einem Gmail-Fehler durch, und der
+            # Terminblick schrieb alle drei Minuten eine volle
+            # Rückverfolgung ins Protokoll, wo ein stilles "gerade kein
+            # Netz" gemeint war.
+            raise KalenderFehler(f"Der Kalender ist nicht erreichbar: {fehler}") from fehler
         adresse = pfad if pfad.startswith("http") else f"{_API_BASE}{pfad}"
         return self._transport.request(methode, adresse, token=token, body=koerper)
 
@@ -275,11 +324,12 @@ class KalenderClient:
     ) -> list[Termin]:
         """Listet Termine in einem Zeitraum, nach Beginn geordnet."""
 
-        von = von or datetime.now().astimezone()
+        von = ortszeit(von)
         bis = bis or (von + timedelta(days=7))
+        bis = ortszeit(bis)
         parameter = {
-            "timeMin": von.astimezone().isoformat(),
-            "timeMax": bis.astimezone().isoformat(),
+            "timeMin": von.isoformat(),
+            "timeMax": bis.isoformat(),
             # Wiederkehrende Termine als einzelne Vorkommen: Sonst kommt die
             # Serie als ein Eintrag zurueck, und "was steht morgen an" waere
             # bei jedem woechentlichen Termin falsch.
@@ -291,19 +341,27 @@ class KalenderClient:
             parameter["q"] = suche.strip()
 
         antwort = self._rufen("GET", self._weg(f"?{urllib.parse.urlencode(parameter)}"))
+        # Ohne ``timeZone``-Parameter nennt Google hier die tatsächliche
+        # Standardzone des Kalenders. Genau die ist fuer die Anzeige bindend.
+        # Das gleicht auch einen falsch eingestellten Windows-DST-Schalter aus.
+        google_zone = str(antwort.get("timeZone", "") or "").strip()
+        if google_zone:
+            self._zeitzone = str(kalender_zeitzone(google_zone))
         return [
-            _termin_lesen(eintrag, self._kalender)
+            _termin_lesen(eintrag, self._kalender, zeitzone=self._zeitzone)
             for eintrag in (antwort.get("items") or [])
             if str(eintrag.get("status", "")) != "cancelled"
         ][:limit]
 
     def naechste(self, *, anzahl: int = 5, tage: int = 14) -> list[Termin]:
-        jetzt = datetime.now().astimezone()
+        jetzt = ortszeit()
         return self.termine(von=jetzt, bis=jetzt + timedelta(days=tage), limit=anzahl)
 
     def holen(self, termin_id: str) -> Termin:
         pfad = self._weg(f"/{urllib.parse.quote(termin_id, safe='')}")
-        return _termin_lesen(self._rufen("GET", pfad), self._kalender)
+        return _termin_lesen(
+            self._rufen("GET", pfad), self._kalender, zeitzone=self._zeitzone
+        )
 
     # --- Ändern ---------------------------------------------------------------
 
@@ -330,8 +388,8 @@ class KalenderClient:
 
         koerper: dict[str, Any] = {
             "summary": titel.strip(),
-            "start": _zeitfeld(beginn, ganztags),
-            "end": _zeitfeld(ende, ganztags),
+            "start": _zeitfeld(beginn, ganztags, zeitzone=self._zeitzone),
+            "end": _zeitfeld(ende, ganztags, zeitzone=self._zeitzone),
         }
         if ort.strip():
             koerper["location"] = ort.strip()
@@ -345,7 +403,11 @@ class KalenderClient:
                 "overrides": [{"method": "popup", "minutes": max(0, int(erinnerung_minuten))}],
             }
 
-        angelegt = _termin_lesen(self._rufen("POST", self._weg(), koerper), self._kalender)
+        angelegt = _termin_lesen(
+            self._rufen("POST", self._weg(), koerper),
+            self._kalender,
+            zeitzone=self._zeitzone,
+        )
         logger.info("Termin angelegt: %s (%s).", angelegt.titel, angelegt.id)
         return angelegt
 
@@ -383,22 +445,32 @@ class KalenderClient:
             koerper["description"] = beschreibung.strip()
 
         if beginn is not None:
-            koerper["start"] = _zeitfeld(beginn, ganztags_neu)
+            koerper["start"] = _zeitfeld(
+                beginn, ganztags_neu, zeitzone=self._zeitzone
+            )
             if ende is None:
                 # Die Dauer beibehalten: Wer "verschieb das auf 15 Uhr" sagt,
                 # meint nicht "und mach eine Stunde daraus".
                 dauer = timedelta(hours=1)
                 if vorher.beginn and vorher.ende:
                     dauer = vorher.ende - vorher.beginn
-                koerper["end"] = _zeitfeld(beginn + dauer, ganztags_neu)
+                koerper["end"] = _zeitfeld(
+                    beginn + dauer, ganztags_neu, zeitzone=self._zeitzone
+                )
         if ende is not None:
-            koerper["end"] = _zeitfeld(ende, ganztags_neu)
+            koerper["end"] = _zeitfeld(
+                ende, ganztags_neu, zeitzone=self._zeitzone
+            )
 
         if not koerper:
             raise KalenderFehler("Es wurde nicht gesagt, was geändert werden soll.")
 
         pfad = self._weg(f"/{urllib.parse.quote(termin_id, safe='')}")
-        geaendert = _termin_lesen(self._rufen("PATCH", pfad, koerper), self._kalender)
+        geaendert = _termin_lesen(
+            self._rufen("PATCH", pfad, koerper),
+            self._kalender,
+            zeitzone=self._zeitzone,
+        )
         logger.info("Termin geändert: %s (%s).", geaendert.titel, geaendert.id)
         return geaendert
 

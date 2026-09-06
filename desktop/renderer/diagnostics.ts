@@ -45,15 +45,31 @@ export class DiagnosticsPanel {
     }
     const providers = status.providers ?? {};
     const voice = status.voice ?? {};
+    const tts = voice.tts ?? {};
     const tools = status.tools ?? {};
     const tasks = Array.isArray(status.background_tasks) ? status.background_tasks : [];
     this.content.innerHTML = [
       this.row(
         "Betriebsmodus",
-        providers.offline ? "Offline · Modell und Stimme lokal" : "Automatische Modellauswahl",
+        providers.offline
+          ? "Offline · ausdrücklich gewählt"
+          : providers.temporary_local_fallback
+            ? "Automatik · vorübergehend lokaler Ersatz"
+            : "Automatik · Cloud bevorzugt",
         Boolean(providers.active),
       ),
       this.row("Provider", `${providers.active ?? "–"}${providers.active_model ? ` · ${providers.active_model}` : ""}`, Boolean(providers.active)),
+      this.row(
+        "Stimme",
+        tts.active_engine === "chatterbox"
+          ? `lokaler ElevenLabs-Klon${tts.clone_model ? ` · ${tts.clone_model}` : ""}`
+          : tts.active_engine === "elevenlabs"
+            ? "ElevenLabs · Original"
+            : tts.active_engine
+              ? `${tts.active_engine} · Ersatzstimme`
+              : "noch nicht verwendet",
+        !providers.offline || tts.active_engine === "chatterbox" || !tts.active_engine,
+      ),
       this.row("Mikrofon", voice.running ? `aktiv · ${voice.state}` : (voice.enabled ? "bereit" : "deaktiviert"), !voice.last_error),
       this.row("Hintergrundaufgaben", String(tasks.length), true),
       this.row("Werkzeuge", `${tools.total_calls ?? 0} Aufrufe · ${tools.failed_calls ?? 0} Fehler`, (tools.failed_calls ?? 0) === 0),

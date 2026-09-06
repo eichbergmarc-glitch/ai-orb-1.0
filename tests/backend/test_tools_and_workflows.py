@@ -21,7 +21,7 @@ from backend.tools.standard_tools import (
     build_standard_tools,
     evaluate_expression,
 )
-from backend.tools.tool_engine import parse_tool_calls, strip_tool_calls
+from backend.tools.tool_engine import ToolEngine, parse_tool_calls, strip_tool_calls
 from backend.workflows.workflow import (
     OnError,
     Workflow,
@@ -97,6 +97,35 @@ def test_current_time_tool_names_weekday() -> None:
         day in result.output
         for day in ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
     )
+
+
+def test_mail_and_calendar_requests_expose_the_real_tool_names() -> None:
+    class NamedTool(Tool):
+        description = "Testwerkzeug"
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def execute(self, arguments: dict[str, object]) -> ToolResult:
+            return ToolResult.success("ok")
+
+    registry = ToolRegistry()
+    names = (
+        "mails_suchen", "mails_lesen", "mail_entwerfen", "mail_senden",
+        "entwurf_verwerfen", "gmail_anmelden", "termine_ansehen",
+        "termin_erstellen", "termin_aendern", "termin_loeschen",
+    )
+    registry.register_many([NamedTool(name) for name in names])
+    engine = ToolEngine(
+        registry=registry,
+        security=object(),  # type: ignore[arg-type]
+        provider_manager=object(),
+    )
+
+    mail = set(engine._relevante_werkzeuge("Lies meine Gmail") or [])
+    kalender = set(engine._relevante_werkzeuge("Was steht im Kalender?") or [])
+    assert {"mails_lesen", "mail_entwerfen", "mail_senden", "gmail_anmelden"} <= mail
+    assert {"termine_ansehen", "termin_erstellen", "gmail_anmelden"} <= kalender
 
 
 def test_tool_validation_rejects_unknown_fields() -> None:
@@ -238,6 +267,37 @@ def test_strip_tool_calls_leaves_prose() -> None:
     assert "werkzeug" not in cleaned
     assert "Einen Moment." in cleaned
     assert "So, fertig." in cleaned
+
+
+def test_erfolgreiches_werkzeugergebnis_bleibt_bei_modellausfall_erhalten() -> None:
+    """Die Abschlussformulierung darf ein schon fertiges Ergebnis nicht vernichten."""
+
+    class Provider:
+        calls = 0
+
+        async def complete(self, prompt: str, *, system_prompt: str = "") -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return (
+                    '```werkzeug\n{"werkzeug":"rechnen",'
+                    '"argumente":{"ausdruck":"17 * 23 + 4"}}\n```'
+                )
+            raise RuntimeError("lokales Antwortbudget erschoepft")
+
+    async def scenario() -> None:
+        registry = ToolRegistry()
+        registry.register(CalculateTool())
+        engine = ToolEngine(
+            registry=registry,
+            security=SecurityEngine(EventBus()),
+            provider_manager=Provider(),
+        )
+        outcome = await engine.run("Berechne 17 * 23 + 4")
+        assert outcome.answer == "17 * 23 + 4 = 395"
+        assert outcome.runs and outcome.runs[0].result.ok
+        assert "direkt ausgegeben" in outcome.stopped_because
+
+    asyncio.run(scenario())
 
 
 # --- Arbeitsabläufe --------------------------------------------------------------------

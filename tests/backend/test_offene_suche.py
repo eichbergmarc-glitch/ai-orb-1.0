@@ -378,7 +378,20 @@ def test_eine_sachfrage_geht_zuerst_an_wikipedia(dienst):
     assert treffer and benutzt[0] == "Wikipedia"
 
 
-def test_eine_nachrichtenfrage_geht_zuerst_an_gdelt(dienst):
+def test_schweigen_die_schlagzeilen_uebernimmt_gdelt(dienst, monkeypatch):
+    """Die Nachrichtenkette haelt auch ohne Feeds.
+
+    Dieser Test hiess frueher "eine Nachrichtenfrage geht zuerst an GDELT"
+    und prueft damit einen Stand von vor dem 16.08. - seither stehen die
+    Schlagzeilen-Feeds ZUERST. Aufgefallen ist das erst auf dem Pruefstand
+    des Benutzers: In der Bauumgebung ohne Netz schwiegen die echten Feeds
+    zufaellig, und GDELT (hier eine Attrappe) stand vorn; auf dem Rechner
+    antwortete tagesschau.de wirklich, und der Test fiel um. Ein Test, der
+    vom FEHLEN des Netzes lebt, prueft nichts - jetzt werden die Feeds
+    ausdruecklich stillgelegt, und geprueft ist die Rueckfallkette.
+    """
+
+    monkeypatch.setattr(oq, "schlagzeilen_suchen", lambda *a, **k: [])
     treffer, benutzt = oq.offene_suche("Was gibt es Neues aus Genf?", limit=3)
     assert treffer and benutzt[0] == "GDELT"
 
@@ -439,8 +452,8 @@ def test_die_suche_fragt_die_offenen_quellen_ZUERST(monkeypatch):
 
     def _offene(query, *, limit=6):
         gerufen.append("offen")
-        return ([{"titel": "Treffer", "url": "https://example.org/x",
-                  "beschreibung": "aus einer offenen Quelle"}], ["Wikipedia"])
+        return ([{"titel": "Otto von Bismarck", "url": "https://example.org/x",
+                  "beschreibung": "Bismarck aus einer offenen Quelle"}], ["Wikipedia"])
 
     def _maschine(*args, **kwargs):
         gerufen.append("suchmaschine")
@@ -454,11 +467,12 @@ def test_die_suche_fragt_die_offenen_quellen_ZUERST(monkeypatch):
     assert gerufen == ["offen"]
 
 
-def test_finden_die_offenen_quellen_nichts_kommt_der_fehler_SCHNELL(monkeypatch):
-    # Stufe 3 der Bestandsaufnahme: Die fuenf Trefferseiten-Maschinen haben
-    # seit dem 15.08. keinen einzigen Treffer geliefert, aber jede leere
-    # Suche um zehn und mehr Sekunden verlaengert. Sie sind abgeschaltet -
-    # eine leere Suche scheitert jetzt ehrlich und sofort.
+def test_leere_offene_quellen_nutzen_den_schnellen_web_fallback(monkeypatch):
+    # Der fruehere Test verbot hier JEDE Websuche. Das machte Wikipedia,
+    # OpenAlex und Feeds versehentlich zum gesamten Internet. Bing-RSS und
+    # Yahoo sind nun der schnelle Normalfallback; die nachweislich
+    # blockierten Maschinen bleiben aus - seit dem 26.08.2026 auch
+    # DuckDuckGo Lite, das eine Sperrseite mit Bilderraetsel zurueckgibt.
     import time as _t
 
     from backend.tools import web_tools
@@ -468,15 +482,46 @@ def test_finden_die_offenen_quellen_nichts_kommt_der_fehler_SCHNELL(monkeypatch)
         lambda query, *, limit=6: ([], []),
     )
 
-    def _verboten(maschine, query, limit):
-        raise AssertionError("die abgeschalteten Maschinen duerfen nicht laufen")
+    gerufen: list[str] = []
 
-    monkeypatch.setattr(web_tools, "_einmal_suchen", _verboten)
+    def _nicht_erreichbar(maschine, query, limit):
+        gerufen.append(maschine.name)
+        raise web_tools._Suchfehler("kein_netz", f"{maschine.name} nicht erreichbar")
+
+    monkeypatch.setattr(web_tools, "_einmal_suchen", _nicht_erreichbar)
 
     begonnen = _t.monotonic()
-    with pytest.raises(web_tools._Suchfehler, match="SUCHE-PRUEFEN"):
+    with pytest.raises(web_tools._Suchfehler, match="Bing|Yahoo"):
         web_tools.search_web("Otto von Bismarck", limit=3)
     assert _t.monotonic() - begonnen < 3.0, "der Fehlschlag muss schnell sein"
+    assert gerufen == ["Bing", "Yahoo"]
+
+
+def test_alltagssuche_geht_vor_einer_enzyklopaedie_ins_web(monkeypatch):
+    from backend.tools import web_tools
+
+    gerufen: list[str] = []
+
+    def _web(maschine, query, limit):
+        gerufen.append(maschine.name)
+        return [{
+            "titel": "Haftpflichtversicherung Schweiz im Vergleich",
+            "url": "https://example.ch/vergleich",
+            "beschreibung": "Angebote und Preise fuer die Schweiz vergleichen",
+        }]
+
+    def _offen(*args, **kwargs):
+        raise AssertionError("Eine Vergleichssuche darf nicht zuerst zu Wikipedia")
+
+    monkeypatch.setattr(web_tools, "ALTMASCHINEN_AKTIV", False)
+    monkeypatch.setattr(web_tools, "_einmal_suchen", _web)
+    monkeypatch.setattr("backend.research.offene_quellen.offene_suche", _offen)
+
+    treffer = web_tools.search_web(
+        "guenstige Haftpflichtversicherung Schweiz Vergleich", limit=3
+    )
+    assert treffer[0]["url"] == "https://example.ch/vergleich"
+    assert gerufen == ["Bing"]
 
 
 def test_der_diagnoseschalter_holt_die_altmaschinen_zurueck(monkeypatch):
@@ -819,16 +864,15 @@ def test_neuigkeiten_zu_etwas_ist_eine_nachrichtenfrage():
     assert oq._art_der_frage("Neuigkeiten zu neuen AI-Modellen") == "nachricht"
 
 
-def test_filtert_das_thema_alles_weg_kommen_die_echten_schlagzeilen(dienst):
-    # Deutsch gefragt, englisch getitelt: "Nahen Osten" findet "Middle
-    # East" nie. Dann lieber die echten obersten Schlagzeilen als gar
-    # nichts - aus nichts erfindet ein Modell etwas.
+def test_filtert_das_thema_alles_weg_kommen_keine_fremden_schlagzeilen(dienst):
+    # Eine echte, aber themenfremde Meldung ist keine Recherchegrundlage.
+    # Genau dieser Rueckfall liess den Orb Gasspeicher- und Bravo-Meldungen
+    # als Neuigkeiten zu KI-Modellen vorlesen.
     feeds = (("BBC (UK)", f"{dienst.adresse}/rss"),)
     treffer = oq.schlagzeilen_suchen(
         "Was gibt es Neues aus dem Nahen Osten?", limit=4, feeds=feeds
     )
-    assert treffer, "die Titelseite muss als Rueckhalt kommen"
-    assert all(t["beschreibung"].startswith("BBC (UK):") for t in treffer)
+    assert treffer == []
 
 
 def test_auch_die_nachrichtenrunde_faellt_auf_die_titelseite_zurueck(dienst, monkeypatch):

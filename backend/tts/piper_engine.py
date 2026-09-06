@@ -15,7 +15,10 @@ Windows-Sprachausgabe aus, statt zu verstummen.
 from __future__ import annotations
 
 import json
+import shutil
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 import wave
 from pathlib import Path
@@ -88,6 +91,26 @@ class PiperEngine(TtsEngine):
     def _voice_name(self) -> str:
         return str(self.option("voice", "de_DE-thorsten-medium"))
 
+    def _netz_erreichbar(self) -> bool:
+        """Ein kurzer Griff zur Klinke, bevor der Orb stumm dasteht.
+
+        Ohne diese Frage begann der Download auch bei totem Netz und lief
+        in sein Zeitlimit - zweimal hintereinander, Modell und
+        Beschreibung. Das geschah im Sprech-Thread: Beim ersten
+        Sprechversuch schwieg der Orb dafuer bis zu vier Minuten, statt
+        sofort auf die Windows-Sprachausgabe auszuweichen.
+        """
+
+        host = urllib.parse.urlparse(MODEL_BASE_URL).hostname or ""
+        if not host:
+            return True
+        frist = float(self.option("connect_timeout", 2.0))
+        try:
+            with socket.create_connection((host, 443), timeout=frist):
+                return True
+        except OSError:
+            return False
+
     def _download(self, voice_name: str) -> Path | None:
         """Lädt Modell und Beschreibung herunter, falls sie fehlen.
 
@@ -110,10 +133,26 @@ class PiperEngine(TtsEngine):
         if model_path.exists() and config_path.exists():
             return model_path
 
+        if not self._netz_erreichbar():
+            logger.error(
+                "Das Sprachmodell '%s' fehlt und das Netz ist nicht "
+                "erreichbar. AI-Orb spricht ueber die Windows-"
+                "Sprachausgabe, bis das Modell einmal geladen werden "
+                "konnte.",
+                voice_name,
+            )
+            return None
+
         logger.info(
             "Das Sprachmodell '%s' wird heruntergeladen (etwa 60 MB, einmalig).",
             voice_name,
         )
+
+        # Das Zeitlimit gilt je Leseschritt, nicht fuer den ganzen
+        # Download: Eine langsame, aber lebende Leitung laeuft weiter, eine
+        # tote bricht nach wenigen Sekunden ab. Frueher standen hier 120
+        # Sekunden, und zwar zweimal.
+        frist = float(self.option("download_timeout", 20.0))
 
         for url_suffix, destination in (
             (".onnx", model_path),
@@ -124,8 +163,11 @@ class PiperEngine(TtsEngine):
             url = f"{MODEL_BASE_URL}/{relative}{url_suffix}?download=true"
             temporary = destination.with_suffix(destination.suffix + ".part")
             try:
-                with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310
-                    temporary.write_bytes(response.read())
+                # Stueckweise auf die Platte statt 60 MB in den
+                # Arbeitsspeicher.
+                with urllib.request.urlopen(url, timeout=frist) as response:  # noqa: S310
+                    with temporary.open("wb") as ziel:
+                        shutil.copyfileobj(response, ziel)
                 temporary.replace(destination)
             except (urllib.error.URLError, OSError, TimeoutError) as error:
                 logger.error(

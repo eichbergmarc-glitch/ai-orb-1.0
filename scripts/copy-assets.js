@@ -55,8 +55,14 @@ function copyDirectory(source, destination) {
 fs.mkdirSync(outputDir, { recursive: true });
 
 copyFile("desktop/renderer/index.html", "index.html");
+copyFile("desktop/renderer/flipper-center.html", "flipper-center.html");
 copyFile("desktop/renderer/preview-bridge.js", "preview-bridge.js");
+copyFile("desktop/renderer/web-bridge.js", "web-bridge.js");
+copyFile("desktop/renderer/manifest.webmanifest", "manifest.webmanifest");
+copyFile("desktop/renderer/stimme.js", "stimme.js");
+copyFile("desktop/renderer/zustimmung.js", "zustimmung.js");
 copyFile("desktop/styles/orb.css", "styles/orb.css");
+copyFile("desktop/styles/flipper-center.css", "styles/flipper-center.css");
 copyFile("desktop/styles/themes.css", "styles/themes.css");
 copyDirectory("desktop/assets/icons", "assets/icons");
 copyDirectory("desktop/assets/orb", "assets/orb");

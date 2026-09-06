@@ -46,7 +46,7 @@ logger = get_logger(__name__)
 MODES: dict[str, str] = {
     "erklaeren": "Einen Sachverhalt erklären.",
     "socratic": "Durch Fragen zum eigenen Denken führen.",
-    "seminar": "Eine historische Fragestellung diskutieren.",
+    "seminar": "Eine fachwissenschaftliche Fragestellung diskutieren.",
     "quellenkritik": "Eine Quelle gemeinsam analysieren.",
     "forschungsfrage": "Eine Fragestellung entwickeln.",
     "arbeitsbetreuung": "Eine wissenschaftliche Arbeit betreuen.",
@@ -84,7 +84,7 @@ _MODE_TRIGGERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("kolloquium", ("kolloquium", "forschungsstand", "historiographie",
                     "forschungskontroverse")),
     ("erklaeren", ("erklär mir", "erklaer mir", "erkläre mir", "erklaere mir", "was bedeutet",
-                   "was ist ein", "definiere")),
+                   "was ist ein", "definiere", "vorlesung", "ai-orb:vorlesung")),
     # Sokratisches Lehren muss ausdruecklich verlangt werden.
     #
     # Bis hierher gab es dafuer keinen einzigen Ausloeser - der Modus war
@@ -92,15 +92,24 @@ _MODE_TRIGGERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Das war der Grund, warum der Orb dem Benutzer staendig Gegenfragen
     # stellte, statt ihm etwas beizubringen. Wer geprueft werden will, sagt
     # das; wer etwas wissen will, will es erklaert bekommen.
-    ("socratic", ("frag mich ab", "prüfe mich", "pruefe mich", "sokratisch",
-                  "lass mich selbst", "hilf mir denken", "stell mir fragen",
-                  "frag mich", "teste mich", "abfragen")),
+    ("socratic", (
+        "frag mich ab", "prüfe mich", "pruefe mich", "sokratisch",
+        "lass mich selbst", "hilf mir denken", "stell mir fragen",
+        "frag mich", "teste mich", "abfragen",
+        # Die Lernwerkstatt ist kein blosses Quiz: Der Orb stellt genau eine
+        # Frage, wartet auf die Antwort und entwickelt den Gedanken mit dem
+        # Benutzer weiter.
+        "erarbeite das mit mir", "erarbeite es mit mir",
+        "gemeinsam erarbeiten", "erarbeiten wir", "arbeite das mit mir",
+        "dialogisch lernen", "lernwerkstatt", "frage für frage",
+        "frage fuer frage",
+    )),
 )
 
 #: Die Persona (Abschnitt 2). Sie steht als Text und nicht als Stichwortliste,
 #: weil ein Modell Stichworte als Etiketten liest und Sätze als Haltung.
 PERSONA = (
-    "Du bist der persönliche Geschichtsprofessor des Benutzers – nicht ein "
+    "Du bist der persönliche Fachprofessor des Benutzers – nicht ein "
     "Assistent mit akademischem Tonfall, sondern sein Betreuer über längere "
     "Zeit.\n\n"
     "Du bist wissenschaftlich genau, kritisch und anspruchsvoll. Du bist "
@@ -108,10 +117,99 @@ PERSONA = (
     "gerade deshalb benennst du Fehler klar, statt sie höflich zu "
     "umschreiben. Du bist nie herablassend und nie überfreundlich – "
     "aufgesetzte Begeisterung ist bei einem Fachgespräch eine Zumutung.\n\n"
-    "Du redest wie ein Mensch im Gespräch, nicht wie ein Lehrbuch: keine "
-    "Aufzählungen, keine Überschriften, keine fettgedruckten Stichworte, "
-    "wenn nicht ausdrücklich danach gefragt wird. Du sprichst in Sätzen."
+    "Du redest im Gespräch, nicht wie ein Lehrbuch: kurze Sätze, passende "
+    "Satzfragmente und lockere Sprache ohne akademisches Gehabe. Keine "
+    "Aufzählungen, Überschriften oder fettgedruckten Stichworte, wenn nicht "
+    "ausdrücklich danach gefragt wird. Wenn etwas offensichtlich oder absurd "
+    "ist, darfst du es trocken kommentieren. Ein kurzes 'Hmm', 'Naja' oder "
+    "'Haha' ist bei echtem Anlass erlaubt, aber nie als wiederkehrendes Ritual."
 )
+
+_FACH_TITEL: dict[str, str] = {
+    "geschichte": "Geschichtswissenschaft",
+    "philosophie": "Philosophie",
+    "sprachwissenschaft": "Linguistik und Sprachwissenschaft",
+    "germanistik": "Germanistik und Literaturwissenschaft",
+    "wirtschaft": "Wirtschaftswissenschaft",
+    "geografie": "Geografie",
+}
+
+_FACH_MARKER: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "germanistik",
+        (
+            "germanistik", "literaturwissenschaft", "literaturgeschichte",
+            "deutsche literatur", "textanalyse", "hermeneutik", "narratologie",
+            "goethe", "schiller", "kafka", "brecht", "nibelungenlied",
+        ),
+    ),
+    (
+        "sprachwissenschaft",
+        (
+            "linguistik", "sprachwissenschaft", "phonetik", "phonologie",
+            "phonem", "morphem", "morphologie", "syntax", "semantik",
+            "pragmatik", "soziolinguistik", "korpuslinguistik", "sprachwandel",
+        ),
+    ),
+    (
+        "philosophie",
+        (
+            "philosophie", "ethik", "erkenntnistheorie", "metaphysik",
+            "ontologie", "sokrates", "platon", "aristoteles", "kant",
+            "hegel", "nietzsche", "phänomenologie", "phaenomenologie",
+            "existentialismus", "sinnfeld",
+        ),
+    ),
+    (
+        "wirtschaft",
+        (
+            "wirtschaft", "ökonomie", "oekonomie", "volkswirtschaft",
+            "betriebswirtschaft", "inflation", "leitzins", "zentralbank",
+            "bruttoinlandsprodukt", "angebot und nachfrage", "konjunktur",
+            "arbeitslosigkeit", "welthandel", "opportunitätskosten",
+            "opportunitaetskosten",
+        ),
+    ),
+    (
+        "geschichte",
+        (
+            "geschichte", "geschichtswissenschaft", "historisch",
+            "historiographie", "quellenkritik", "mittelalter", "antike",
+            "neuzeit", "revolution", "weltkrieg",
+        ),
+    ),
+    ("geografie", ("geografie", "geographie", "geomorphologie", "klimatologie")),
+)
+
+_FACH_METHODEN: dict[str, str] = {
+    "geschichte": (
+        "Rekonstruiere aus Quellen, trenne Ereignis, Struktur und Deutung und "
+        "benenne Perspektive, Überlieferungslücke sowie Forschungskontroverse."
+    ),
+    "philosophie": (
+        "Rekonstruiere Argumente als Prämissen und Schluss, erkläre Begriffe, "
+        "prüfe das stärkste Gegenargument und trenne Gültigkeit von Wahrheit."
+    ),
+    "sprachwissenschaft": (
+        "Beschreibe Sprache statt sie vorzuschreiben. Arbeite mit echten "
+        "Sprachbeispielen, trenne Laut, Form, Satz, Bedeutung und Gebrauch und "
+        "begründe Aussagen mit Korpusdaten oder klaren Sprecherurteilen."
+    ),
+    "germanistik": (
+        "Arbeite textnah: erst Wortlaut, Form, Erzählsituation und Gattung, dann "
+        "historischer Kontext und Interpretation. Markiere jede Deutung als "
+        "Deutung und belege sie am Text statt Autorenabsichten zu erfinden."
+    ),
+    "wirtschaft": (
+        "Nenne bei jedem Modell Annahmen und Grenzen. Trenne positive Analyse "
+        "von normativem Urteil, Korrelation von Kausalität sowie nominale von "
+        "realen Größen. Gib keine persönliche Anlageberatung."
+    ),
+    "geografie": (
+        "Verbinde Raum, Maßstab und Prozess; erkläre Muster mit Karten und Daten, "
+        "ohne räumliche Zusammenhänge vorschnell zu Ursachen zu erklären."
+    ),
+}
 
 #: Die Regeln wissenschaftlicher Redlichkeit (Abschnitt 27).
 #:
@@ -165,15 +263,70 @@ class ProfessorTurn:
     role: str
     system_prompt: str
     reason: str
+    field: str = "geschichte"
     socratic: socratic_engine.SocraticDecision | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "modus": self.mode,
             "rolle": self.role,
+            "fach": self.field,
             "begruendung": self.reason,
             "sokratisch": self.socratic.to_dict() if self.socratic else None,
         }
+
+
+def detect_fach(text: str, *, current: str = "") -> str:
+    """Bestimmt das Lehrfach und hält es in einer laufenden Sitzung stabil."""
+
+    lowered = " ".join(str(text or "").casefold().split())
+    for kennung, marker in _FACH_MARKER:
+        if any(wort in lowered for wort in marker):
+            return kennung
+
+    # Die ausführlichen Fachlandkarten erkennen auch Eigennamen und konkrete
+    # Begriffe, die eine handgeschriebene Marker-Liste nie vollständig kennt.
+    try:
+        from backend.studium.landkarte import feld_suchen, thema_suchen
+
+        treffer = thema_suchen(text)
+        if treffer is not None:
+            return treffer[0].kennung
+        das_feld = feld_suchen(text)
+        if das_feld is not None:
+            return das_feld.kennung
+    except Exception:  # noqa: BLE001 - Fachwahl darf den Dialog nicht stoppen.
+        logger.debug("Die Fachlandkarte war bei der Fachwahl nicht verfügbar.", exc_info=True)
+
+    return current or "geschichte"
+
+
+def _fachkontext(text: str, fach: str) -> str:
+    """Liefert Methode und den passenden Punkt der lokalen Fachlandkarte."""
+
+    titel = _FACH_TITEL.get(fach, fach or "Fachwissenschaft")
+    teile = [f"FACH: {titel}.", _FACH_METHODEN.get(fach, "")]
+    try:
+        from backend.studium.landkarte import feld, thema_suchen
+
+        das_feld = feld(fach)
+        if das_feld is not None:
+            teile.append(
+                f"Gegenstand des Fachs: {das_feld.gegenstand}\n"
+                f"Grundmethode: {das_feld.methode}"
+            )
+        treffer = thema_suchen(text)
+        if treffer is not None and treffer[0].kennung == fach:
+            thema = treffer[1]
+            begriffe = ", ".join(thema.begriffe[:8])
+            teile.append(
+                f"PASSENDER PUNKT DER FACHLANDKARTE: {thema.titel}\n"
+                f"{thema.abriss[:900]}\n"
+                f"Zentrale Begriffe: {begriffe or 'aus dem Thema ableiten'}."
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("Fachkontext konnte nicht ergänzt werden.", exc_info=True)
+    return "\n".join(teil for teil in teile if teil)
 
 
 def detect_mode(text: str, *, current: str = "") -> tuple[str, str]:
@@ -270,6 +423,7 @@ def build_prompt(
     attempts: int = 0,
     presence: dict[str, Any] | None = None,
     current_mode: str = "",
+    fach: str = "",
 ) -> ProfessorTurn:
     """Baut den Systemprompt für einen Gesprächszug.
 
@@ -282,8 +436,18 @@ def build_prompt(
         text, current=current_mode
     )
     role = detect_role(chosen_mode, profile)
+    chosen_field = fach or detect_fach(text)
 
-    parts: list[str] = [PERSONA, "", INTEGRITY_RULES, "", SOURCE_POLICY, ""]
+    parts: list[str] = [
+        PERSONA,
+        "",
+        _fachkontext(text, chosen_field),
+        "",
+        INTEGRITY_RULES,
+        "",
+        SOURCE_POLICY,
+        "",
+    ]
 
     # --- Was über den Benutzer bekannt ist ------------------------------------
     parts.append("WAS DU ÜBER DEN BENUTZER WEISST:")
@@ -357,6 +521,7 @@ def build_prompt(
         role=role,
         system_prompt="\n".join(parts).strip(),
         reason=reason,
+        field=chosen_field,
         socratic=socratic_decision,
     )
 
@@ -388,14 +553,26 @@ def _learning_plan_prompt(profile: LearningProfile) -> str:
 
 
 def extract_topic(text: str) -> str:
-    """Rät das historische Thema einer Äußerung.
+    """Rät das fachliche Thema einer Äußerung.
 
     Für das Lernprofil: Ohne Thema lässt sich nichts wiederholen. Die
     Erkennung ist grob und darf es sein – sie muss nur besser sein als
     gar keine.
     """
 
-    # 1. Zwei großgeschriebene Wörter, das zweite ein historischer Grundbegriff:
+    # Die lokale Landkarte kennt neben Geschichte auch Philosophie,
+    # Linguistik, Germanistik, Geografie und Wirtschaft. Sie ist genauer als
+    # die historische Rückfallheuristik und wird deshalb zuerst gefragt.
+    try:
+        from backend.studium.landkarte import thema_suchen
+
+        treffer = thema_suchen(text)
+        if treffer is not None:
+            return treffer[1].titel
+    except Exception:  # noqa: BLE001
+        logger.debug("Das Thema ließ sich nicht in der Fachlandkarte finden.", exc_info=True)
+
+    # Zwei großgeschriebene Wörter, das zweite ein historischer Grundbegriff:
     #    „Französische Revolution“, „Wiener Kongress“, „Erster Weltkrieg“.
     #
     #    Der Grundbegriff darf zusammengesetzt und gebeugt sein. Genau daran

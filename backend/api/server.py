@@ -10,6 +10,8 @@ Der Server lauscht ausschließlich auf ``127.0.0.1``.
 
 from __future__ import annotations
 
+import contextlib
+from pathlib import Path
 from typing import Any
 
 from backend import __version__
@@ -140,7 +142,12 @@ def build_router(runtime: Runtime) -> ApiRouter:
     def ask(body: dict[str, Any]) -> dict[str, Any]:
         """Verarbeitet eine Benutzereingabe."""
 
-        text = str(body.get("text", "")).strip()
+        text = body.get("text", "")
+        if isinstance(text, str):
+            text = text.strip()
+        else:
+            text = str(text).strip() if text else ""
+        
         if not text:
             return {"error": "leere_eingabe", "response": "Ich habe keine Eingabe erhalten."}
         response = runtime.run(runtime.ask(text))
@@ -503,6 +510,87 @@ def build_router(runtime: Runtime) -> ApiRouter:
     def voice_history(_: dict[str, Any]) -> dict[str, Any]:
         return {"turns": runtime.voice.history()}
 
+    # --- Sprache von einem anderen Gerät ------------------------------------
+    #
+    # Am Rechner hört der Orb selbst zu und spricht selbst. Ein iPad hat
+    # sein eigenes Mikrofon und seine eigenen Lautsprecher, und beide
+    # sitzen dort, wo der Mensch ist. Diese zwei Endpunkte drehen den Weg
+    # deshalb um: Der Ton kommt herein statt aus dem Mikrofon, und die
+    # Antwort geht als Datei hinaus statt in die Lautsprecher.
+
+    def stimme_aufnahme(daten: bytes, _kopfzeilen: dict[str, str]) -> dict[str, Any]:
+        """Nimmt eine Aufnahme entgegen und beantwortet sie."""
+
+        import tempfile
+
+        # Die Aufnahme kommt fertig als WAV in 16 kHz, einkanalig - genau
+        # so, wie die Erkennung sie braucht. Der Browser rechnet das
+        # bereits um. Der Umweg über ein Umwandlungsprogramm entfällt
+        # damit vollständig, und mit ihm eine Abhängigkeit, die auf einem
+        # frisch aufgesetzten Windows selten vorhanden ist.
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as ablage:
+            ablage.write(daten)
+            pfad = Path(ablage.name)
+
+        try:
+            return runtime.run(runtime.stimme_vom_geraet(pfad), timeout=300.0)
+        finally:
+            # Die Aufnahme ist beantwortet; sie aufzuheben hätte keinen
+            # Zweck und wäre eine Mitschrift, um die niemand gebeten hat.
+            with contextlib.suppress(OSError):
+                pfad.unlink()
+
+    def stimme_ton(params: dict[str, Any]) -> dict[str, Any]:
+        """Gibt ein Sprechstück zur Wiedergabe heraus.
+
+        Die Antwort kommt in Stücken. Das Gerät holt sie der Reihe nach
+        ab und spielt jedes ab, während das nächste noch entsteht.
+        """
+
+        auftrag = str(params.get("auftrag", "")).strip()
+        if auftrag:
+            try:
+                nummer = int(params.get("teil", 0))
+            except (TypeError, ValueError):
+                return {"_status": 400, "_bytes": b"", "_type": "", "error": "ungueltig"}
+
+            zustand, angabe = runtime.sprechstueck(auftrag, nummer)
+            if zustand == "kommt":
+                # 202: "Angenommen, aber noch nicht fertig." Genau das
+                # trifft es - und der Browser weiß, dass er es gleich
+                # noch einmal versuchen soll, statt aufzugeben.
+                return {"_status": 202, "_bytes": b"", "_type": "", "error": "kommt"}
+            if zustand != "da":
+                return {"_status": 404, "_bytes": b"", "_type": "", "error": zustand}
+            name = angabe
+        else:
+            name = str(params.get("datei", "")).strip()
+
+        # Nur ein Dateiname, niemals ein Pfad. Ohne diese Zeile wäre der
+        # Endpunkt eine Leseluke in das gesamte Dateisystem.
+        if not name or "/" in name or "\\" in name or ".." in name:
+            return {"_status": 400, "_bytes": b"", "_type": "", "error": "ungueltig"}
+        if not name.endswith(".wav"):
+            return {"_status": 400, "_bytes": b"", "_type": "", "error": "ungueltig"}
+
+        # Beide Seiten aufgelöst vergleichen: Unter Windows sind der Pfad
+        # aus der Konfiguration und der aufgelöste Pfad regelmäßig zwei
+        # verschiedene Zeichenketten für denselben Ordner.
+        ordner = Path(runtime.voice.tts.output_directory).resolve()
+        ziel = (ordner / name).resolve()
+        if ordner not in ziel.parents or not ziel.is_file():
+            logger.warning("Tondatei nicht gefunden: %s (gesucht in %s)", name, ordner)
+            return {"_status": 404, "_bytes": b"", "_type": "", "error": "unbekannt"}
+
+        return {
+            "_bytes": ziel.read_bytes(),
+            "_type": "audio/wav",
+            "_status": 200,
+        }
+
+    router.post_raw("/stimme/aufnahme", stimme_aufnahme)
+    router.get("/stimme/ton", stimme_ton)
+
     router.get("/voice", voice_status)
     router.post("/voice/start", voice_start)
     router.post("/voice/stop", voice_stop)
@@ -846,6 +934,42 @@ def build_router(runtime: Runtime) -> ApiRouter:
     return router
 
 
+def _oberflaeche_finden() -> Path | None:
+    """Sucht die gebaute Oberflaeche, die der Server ausliefern soll.
+
+    Damit reicht auf iPad, Handy oder fremdem Rechner eine einzige
+    Adresse: Dieselbe Stelle, die die Fragen beantwortet, liefert auch
+    die Seite, die sie stellt. Getrennte Herkuenfte braeuchten sonst
+    CORS-Ausnahmen - und jede Ausnahme ist eine Tuer.
+
+    Gesucht wird zuerst das Ergebnis von ``npm run build``. Fehlt es,
+    liefert die Funktion ``None``; der Server arbeitet dann wie bisher
+    als reine API hinter Electron.
+    """
+
+    from backend.utils.paths import get_project_root
+
+    config = get_config()
+    eingestellt = str(config.section("backend").get("static_dir", "") or "").strip()
+
+    kandidaten = []
+    if eingestellt:
+        kandidaten.append(Path(eingestellt).expanduser())
+    wurzel = get_project_root()
+    kandidaten.append(wurzel / "desktop" / "electron" / "dist" / "renderer")
+    # In der installierten Fassung liegt der Programmcode unter app/.
+    kandidaten.append(wurzel / "app" / "desktop" / "electron" / "dist" / "renderer")
+
+    for kandidat in kandidaten:
+        try:
+            aufgeloest = kandidat.resolve()
+        except OSError:
+            continue
+        if (aufgeloest / "index.html").is_file():
+            return aufgeloest
+    return None
+
+
 def create_server(runtime: Runtime) -> LocalApiServer:
     """Erstellt den lokalen API-Server und verbindet ihn mit dem Event Bus.
 
@@ -870,5 +994,6 @@ def create_server(runtime: Runtime) -> LocalApiServer:
         router=router,
         broker=broker,
         sse_path=str(backend_config.get("events_path", "/events")),
+        static_root=_oberflaeche_finden(),
     )
     return server

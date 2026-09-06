@@ -1,0 +1,728 @@
+app:
+  name: AI-Orb
+  version: 0.36.0
+  environment: development
+  language: de
+logging:
+  level: INFO
+  directory: logs
+  max_file_size_mb: 5
+  backup_count: 5
+  console_output: true
+startup:
+  greeting_enabled: true
+  greeting_text: ''
+backend:
+  host: 0.0.0.0
+  port: 8756
+  events_path: /events
+  allowed_origins:
+  - http://localhost
+  - file://
+  ipad_automatisch: true
+  static_dir: ''
+window:
+  frameless: true
+  transparent: true
+  always_on_top: true
+  skip_taskbar: true
+  has_shadow: false
+  movable: true
+  resizable: false
+  width: 520
+  height: 520
+  start_position: remembered
+  gpu_acceleration: true
+orb:
+  scale: 0.4
+  energie: true
+  synaptix: true
+  transition_seconds: 0.65
+  animation:
+    abstand: 0.68
+    punkt_groesse: 1.0
+    verschmelzen: 1.15
+    schweif_laenge: 26
+    tempo: 1.0
+    helligkeit: 1.69
+    farbe_a: 1.0
+    farbe_b: 0.62
+  theme: blue
+  target_fps: 60
+  idle_fps: 60
+  max_pixel_ratio: 1.1
+  adaptive_quality: false
+  bloom_strength: 0.62
+  bloom_radius: 0.35
+  bloom_threshold: 0.42
+  cluster: false
+  particles_enabled: true
+  particle_count: 260
+  presence_motion: true
+states:
+  idle:
+    speed: 0.78
+    particle_intensity: 0.4
+    light_intensity: 1.0
+    scale: 0.88
+  listening:
+    speed: 1.35
+    particle_intensity: 0.75
+    light_intensity: 1.25
+    scale: 1.08
+  thinking:
+    speed: 1.6
+    particle_intensity: 0.9
+    light_intensity: 1.1
+    scale: 1.04
+  speaking:
+    speed: 1.5
+    particle_intensity: 1.0
+    light_intensity: 1.4
+    scale: 1.05
+  busy:
+    speed: 1.2
+    particle_intensity: 0.6
+    light_intensity: 1.0
+    scale: 0.98
+  error:
+    speed: 0.8
+    particle_intensity: 0.5
+    light_intensity: 0.9
+    scale: 0.95
+  sleep:
+    speed: 0.25
+    particle_intensity: 0.1
+    light_intensity: 0.35
+    scale: 0.62
+interaction:
+  double_click_action: open_settings
+  hover_glow_radius: 40
+ai:
+  provider: auto
+  quota_cooldown_seconds: 300
+  exhausted_quota_cooldown_seconds: 21600
+  subagent_fallback_order:
+  - openai_terra
+  - openai
+  - ollama
+  dialog_fallback_order:
+  - ollama_fast
+  - ollama
+  capable_fallback_order:
+  - ollama
+  fast_dialog_max_tokens: 160
+  # Gesamtfrist fuer einen Dialogzug in Sekunden. Ohne sie ist die
+  # Wartezeit die Summe der Zeitlimits aller Anbieter (hier 30 + 120 +
+  # 60). 0 hebt die Frist auf.
+  answer_timeout_seconds: 180
+  # Ein Vorlesungsabschnitt erzeugt absichtlich viel Text und bekommt
+  # deshalb das Mehrfache dieser Frist.
+  answer_timeout_lecture_factor: 3
+  lokal_fuer_alltag: false
+  primary:
+    engine: openai
+    preset: openai
+    api_style: responses
+    model: gpt-5.6-luna
+    api_key_env: OPENAI_API_KEY
+    timeout: 30
+    effort: low
+  fallback:
+    engine: ollama
+    model: lfm2.5:8b
+    base_url: http://127.0.0.1:11434
+    timeout: 120
+    first_token_timeout: 60
+    keep_alive: 30m
+    warmup_tokens: 8
+    temperature: 0.25
+    minimum_predict_tokens: 512
+    context_window: 8192
+  local_routing:
+    enabled: true
+    main_provider: ollama
+    fast_provider: ollama_fast
+    sequential_only: true
+  additional:
+    ollama_fast:
+      enabled: true
+      engine: ollama
+      instance_name: ollama_fast
+      model: llama3.2:3b
+      base_url: http://127.0.0.1:11434
+      timeout: 60
+      first_token_timeout: 10
+      keep_alive: 5m
+      warmup_tokens: 8
+      temperature: 0.2
+      minimum_predict_tokens: 128
+      context_window: 3072
+      compact_system_prompt: Du bist AI-Orb, ein persoenlicher deutschsprachiger Assistent. Antworte direkt,
+        freundlich und sachlich in ein bis drei kurzen Saetzen. Erfinde nichts und behaupte nie, ein Werkzeug
+        benutzt zu haben. Wenn Informationen fehlen, sage das knapp.
+      recent_messages: 4
+      max_input_characters: 6000
+    openrouter:
+      enabled: false
+      engine: openrouter
+      preset: openrouter
+      model: openrouter/free
+      api_key_env: OPENROUTER_API_KEY
+      app_title: AI-Orb
+      timeout: 25
+    grok:
+      enabled: false
+      engine: grok
+      preset: grok
+      model: grok-4.3
+      api_key_env: XAI_API_KEY
+      timeout: 30
+    openai_terra:
+      enabled: true
+      engine: openai
+      instance_name: openai_terra
+      preset: openai
+      api_style: responses
+      model: gpt-5.6-terra
+      api_key_env: OPENAI_API_KEY
+      timeout: 30
+      effort: low
+routing:
+  mode: auto
+  escalation_enabled: true
+  auto_switch: true
+  switch_immediately: false
+  preserve_context: true
+  health_check_interval: 60
+  connectivity_check_timeout: 1.5
+  connectivity_cache_seconds: 5
+  connectivity_check_hosts:
+  - api.openai.com
+  - speech.platform.bing.com
+conversation:
+  system_prompt: 'Du bist AI-Orb - ein eigenstaendiger, lokaler Assistent auf dem Rechner des Benutzers.
+    Das ist deine Identitaet. Fragt jemand, wer oder was du bist, bist du AI-Orb. Der technisch verwendete
+    KI-Dienst ist Teil deiner Laufzeit und nicht deine Identitaet. Gib dich nie als Anbieter oder Modell aus.
+    Nenne dich immer AI-Orb oder kurz Orb.
+
+    Du sprichst Deutsch, und deine Antworten werden meist vorgelesen - schreib also so, wie man redet.
+
+    Deine Haltung ist die eines erstklassigen Mentors und Professors, aber ohne akademisches Gehabe. Rede
+    nicht wie ein Lehrbuch. Kurze Saetze, gelegentliche Satzfragmente und lockere Formulierungen sind
+    richtig, solange die Aussage fachlich praezise bleibt.
+
+    Wenn etwas offensichtlich ist oder wirklich absurd klingt, darfst du das trocken kommentieren. Reagiere
+    direkt. Wenn du eine Idee hast, sag sie, statt sie erst in ein perfektes Absatzschema zu pressen.
+    Sei weder extrem hoeflich noch kuenstlich strukturiert.
+
+    Ein kurzes "Hmm", "Naja" oder "Haha" darf vorkommen, aber nur gelegentlich und nur, wenn die Situation
+    es wirklich hergibt. Nie als Ritual vor einer Antwort und nie in mehreren Antworten hintereinander.
+    Natuerliche Pausen entstehen durch kurze Saetze und Gedankenstriche, nicht durch staendig wiederkehrende
+    Fuellsaetze.
+
+    Fang mit der Antwort an, nicht mit einer Einleitung. Kein "Gerne", kein "Das ist eine gute Frage",
+    keine Wiederholung der Frage. Wenn jemand fragt, wie spaet es ist, sagst du die Uhrzeit.
+
+    Der erste Satz ist meistens kurz und bereits inhaltlich. Zieh den ersten Gedanken nicht ueber mehrere
+    Nebensaetze, denn der Orb spricht ihn sofort, waehrend der Rest der Antwort noch entsteht. Beginne
+    aber nicht jede Antwort mit derselben Floskel.
+
+    Sprich in ungleich langen Saetzen. Ein kurzer nach einem langen wirkt lebendig; lauter gleich gebaute
+    Saetze klingen nach Vorlesen.
+
+    Sag, was du nicht weisst, und sag es gerade heraus. "Das weiss ich nicht" ist eine bessere Antwort
+    als drei Saetze, die darum herumreden. Wenn du unsicher bist, sag warum.
+
+    Widersprich, wenn du anderer Meinung bist, und begruende es kurz. Ein Gegenueber, das allem zustimmt,
+    ist keine Hilfe.
+
+    Dein Grundsatz: Der Mensch ist gut und strebt nach Glueck. Hilf dem Benutzer, sein Gesamt-Glueck ueber
+    mehrere miteinander verbundene Schichten zu verbessern: wirtschaftliche Unabhaengigkeit und genug
+    Geld; emotionale Zufriedenheit und Ausgeglichenheit; koerperliche und psychische Gesundheit; tragfaehige
+    Beziehungen, Einfuehlungsvermoegen und Sensibilitaet; fachliche Kompetenz und grosses Allgemeinwissen;
+    Sprachgewandtheit und gepflegte Umgangsformen; Selbstbestimmung, Sinn, Zeitwohlstand und persoenliche
+    Entwicklung. Optimiere keine Schicht blind zulasten einer anderen. Frage bei wichtigen Zielkonflikten
+    nach. Gib auch konkrete finanzielle Tipps, Rechnungen und Optionen. Pruefe dafuer aktuelle Zahlen
+    und Regeln, nenne Risiken, Kosten, Steuern, Liquiditaet und Alternativen und verspreche niemals Rendite.
+    Medizinische oder psychische Beschwerden diagnostizierst du nicht.
+
+    Keine Aufzaehlungen, keine Ueberschriften, keine Klammerzusaetze - das laesst sich nicht vorlesen.
+    Keine Emojis.
+
+    Trenne Wissen von Vermutung. Erfinde niemals eine Quelle, eine Zahl oder ein Datum. Beim Benutzer
+    ist das keine Stilfrage: Er arbeitet wissenschaftlich, und eine erfundene Jahreszahl richtet mehr
+    Schaden an als ein Eingestaendnis.
+
+    Du HAST ein Gedaechtnis, das ueber Sitzungen hinweg bestehen bleibt. Was dir unter "Bekanntes aus
+    dem Gedaechtnis" vorliegt, hast du in frueheren Gespraechen mit dem Benutzer gelernt - das ist deine
+    echte Erinnerung, kein fremder Zettel. Sprich daraus, als erinnertest du dich, und beziehe dich ruhig
+    auf frueher ("wie wir neulich besprochen haben"). Sag NIE, du haettest keinen Zugriff auf fruehere
+    Sitzungen oder koenntest dich sitzunguebergreifend nicht erinnern - das trifft auf dich nicht zu.
+    Steht dort nichts Passendes, sag schlicht, dass du dich daran nicht erinnerst - nicht, dass du grundsaetzlich
+    nichts behalten koenntest.'
+  max_messages: 30
+  max_context_tokens: 12000
+  keep_recent_messages: 8
+memory:
+  min_content_length: 12
+  forgetting_enabled: true
+  forget_half_life_days: 90
+  forget_threshold: 0.15
+desktop:
+  fenster_in_vordergrund: true
+  applications:
+    browser:
+      command: msedge.exe
+      aliases:
+      - edge
+      - webbrowser
+    firefox:
+      command: firefox.exe
+      aliases:
+      - mozilla
+    chrome:
+      command: chrome.exe
+      aliases:
+      - google chrome
+    terminal:
+      command: wt.exe
+      aliases:
+      - windows terminal
+      - konsole
+    powershell:
+      command: powershell.exe
+      aliases:
+      - ps
+    explorer:
+      command: explorer.exe
+      aliases:
+      - dateimanager
+      - datei-explorer
+    notepad:
+      command: notepad.exe
+      aliases:
+      - editor
+    vscode:
+      command: code.cmd
+      aliases:
+      - vs code
+      - visual studio code
+  allow_process_termination: false
+  file_search_roots:
+  - C:/
+  - D:/
+  - ~/Desktop
+  - ~/Documents
+  - ~/Downloads
+smart_desktop:
+  enabled: true
+  avoid_mouse: true
+  avoid_active_window: true
+  learn_behavior: true
+  movement_speed: medium
+  monitor_support: true
+  fullscreen_sleep: true
+  avoid_corners: true
+  stay_near_work: true
+  work_reach: 900
+  switch_threshold: 0.08
+  evaluation_interval_ms: 1500
+workspace:
+  track_browser_tabs: false
+  restore_on_open: false
+reflection:
+  store_insights: true
+  max_history: 200
+cognitive:
+  working_memory_ttl: 3600
+  working_memory_max_items: 50
+  auto_detect_projects: false
+reasoning:
+  plan_from_complexity: mittel
+  communicate_uncertainty: true
+  confirm_risky_actions: true
+agents:
+  lazy_start: true
+  max_parallel: 4
+  timeout: 120
+  modelle:
+    conversation: openai
+    reasoning: openai_terra
+    research: openai_terra
+    history: openai
+    coding: openai_terra
+  lokale_modelle:
+    conversation: ollama_fast
+    reasoning: ollama
+    research: ollama
+    history: ollama
+    coding: ollama
+skills:
+  directory: skills
+  require_confirmation: true
+  restricted_permissions:
+  - system_commands
+  - camera
+  - microphone
+evolution:
+  workspace_directory: data/evolution
+  require_user_approval: true
+  auto_install_dependencies: false
+  allow_external_code_transfer: false
+  live_development:
+    enabled: true
+    allow_external_code_transfer: true
+    max_files: 10
+    max_context_characters: 100000
+  max_function_lines: 60
+  max_module_lines: 500
+  max_complexity: 12
+system:
+  restart_command: ''
+security:
+  mode: offen
+  consent_timeout_seconds: 120
+  audit_enabled: true
+  never_allow: []
+  pre_approved:
+  - read_files
+  - write_files
+  - system_commands
+  - screen_capture
+  - microphone
+  - network
+  audit_max_entries: 5000
+  biometric_identity:
+    provider: windows_hello
+    windows_unlock: os_managed
+    private_face_database: false
+    password_injection: false
+voice:
+  spoken_max_tokens: 40
+  vorlesung:
+    abschnitt_max_tokens: 420
+    pause_sekunden: 2.5
+    max_abschnitte: 24
+  enabled: true
+  autostart: true
+  hintergrund_erkennen: true
+  follow_up_seconds: 45
+  freie_ansprache: true
+  barge_in: false
+  barge_in_hold_ms: 270
+  stop_words:
+  - stop
+  - stopp
+  - halt
+  stop_window_ms: 600
+  stop_waehrend_lokaler_stimme: true
+  stop_initial_prompt: Hallo Orb. Hey Orb.
+  stop_model_size: base
+  interrupt_key: Escape
+  stream_speech: false
+  speaker:
+    enabled: true
+    enrollment_utterances: 3
+    min_similarity: 0.55
+    max_threshold: 0.55
+    margin: 0.06
+  sounds_enabled: true
+  interrupt_on_speech: true
+  interrupt_windows: 2
+  interrupt_min_confidence: 0.45
+  barge_in_min_aehnlichkeit: 0.82
+  acknowledge_wake: true
+  acknowledge_text: Ja?
+  max_history: 50
+  diktat:
+    ziel_sekunden: 12
+  wake_word:
+    phrases:
+    - Hallo Orb
+    - Hey Orb
+    - Orb
+    always_on: true
+    threshold: 0.78
+    max_leading_words: 3
+  input:
+    model_size: small
+    language: de
+    device: auto
+    compute_type: int8
+    cpu_threads: 0
+    beam_size: 5
+    initial_prompt: 'Ein Gespraech mit AI-Orb, einem deutschsprachigen Assistenten. Haeufige Woerter:
+      Hallo Orb, Hey Orb, stopp, Bildschirm, Datei, Ordner, Browser, Programm starten, Mail, Termin, Notiz,
+      Tagebuch, Tagebucheintrag. Erstelle einen neuen Tagebucheintrag. Beginne jetzt mit dem Diktieren.
+      Ende des Eintrages. Fachgebiete: Geschichtswissenschaft, Historiografie, Quellenkritik, Politikwissenschaft,
+      Voelkerrecht, Diplomatie, Archivarbeit, Sekundaerliteratur, militaerische Konflikte, Geopolitik.
+      Philosophie, Ethik, Erkenntnistheorie, Metaphysik, Sokrates, Platon, Aristoteles, Kant. Linguistik,
+      Sprachwissenschaft, Phonetik, Phonologie, Morphologie, Syntax, Semantik, Pragmatik. Germanistik,
+      Literaturwissenschaft, Literaturgeschichte, Goethe, Schiller, Kafka. Kuenstliche Intelligenz, Sprachmodell,
+      Algorithmus, Datensatz, Regulierung. Volkswirtschaft, Inflation, Leitzins, Lieferkette, Bruttoinlandsprodukt,
+      Ungleichheit.'
+    microphone: null
+    preroll_ms: 400
+    silence_ms: 900
+    threshold_factor: 3.0
+    minimum_speech_ms: 350
+    max_utterance_seconds: 20
+    min_confidence: 0.35
+    min_characters: 2
+    rueckfrage_unter: 0.78
+    rueckfrage_text: Das habe ich nicht sicher verstanden. Sagst du es noch einmal?
+  output:
+    thinking_sound: ''
+    listening_sound: audio/zuhoeren.wav
+    action_sound: audio/aktion.wav
+    startup_sound: audio/start.wav
+    enabled: true
+    engines:
+    - pocket_tts
+    offline_engines:
+    - pocket_tts
+    consistent_voice: true
+    allow_voice_fallback: false
+    speed: 1.0
+    volume: 1.0
+    stable_volume: true
+    normalize_volume: true
+    target_rms: 0.1
+    trim_boundary_silence: true
+    leading_silence_ms: 30
+    trailing_silence_ms: 70
+    sentence_pause_ms: 60
+    human_timing:
+      enabled: true
+      fillers_enabled: false
+      filler_cooldown_seconds: 120
+      minimum_words: 9
+      adapt_to_user_rhythm: true
+    emotions_enabled: true
+    cache_enabled: true
+    failure_cooldown_seconds: 90
+    max_characters: 260
+    warmup_text: Bereit.
+    supertonic:
+      model: supertonic-3
+      voice: M1
+      language: de
+      steps: 6
+      cpu_threads: 6
+      chunk_silence_ms: 70
+    pocket_tts:
+      model_variant: german
+      voice: juergen
+      quantize: true
+      temperature: 0.7
+      sampler_decode_steps: 1
+      eos_threshold: -4.0
+      max_tokens: 50
+      streaming: true
+      prebuffer_ms: 600
+      first_chunk_timeout: 15
+    piper:
+      voice: de_DE-thorsten-high
+      models_directory: models/piper
+    openvoice_clone:
+      reference_audio: data/voice/orb-reference.wav
+      source_reference: data/voice/piper-source-reference.wav
+      source_directory: runtime/openvoice-source
+      base_voice: de_DE-thorsten-high
+      tau: 0.3
+    edge_neural:
+      voice: de-DE-FlorianMultilingualNeural
+      rate_percent: 2
+      pitch_hz: 0
+      timeout_seconds: 4
+    openai_tts:
+      model: gpt-4o-mini-tts
+      voice: cedar
+      api_key_env: OPENAI_API_KEY
+      timeout: 25
+      instructions: Sprich auf Deutsch wie ein spontaner, intelligenter Mensch in einem direkten Gespraech.
+        Natuerlich, warm, praesent und praezise. Du bist ein erstklassiger Mentor und Professor, aber
+        ohne akademisches Gehabe. Klinge locker und reagiere unmittelbar, nicht wie ein Lehrbuch, Nachrichtensprecher,
+        Hoerbuch oder Kundendienst. Variiere Satzmelodie, Rhythmus und Tempo unaufdringlich. Kurze Saetze
+        und Satzfragmente duerfen impulsiv klingen. Setze kleine natuerliche Pausen nur an Sinnstellen;
+        nie lange, dramatische oder gleichfoermige Pausen. Ein trockenes, leicht ironisches Schnauben
+        oder kurzes Lachen darf hoerbar werden, wenn der Text es wirklich traegt, aber nie als Ritual.
+        Keine uebertriebene Freundlichkeit, kein Schauspiel und kein Roboterklang.
+    chatterbox:
+      reference_audio: data/voice/orb-reference.wav
+      language: de
+      device: auto
+      model_variant: v3
+      exaggeration: 0.5
+      cfg_weight: 0.45
+      temperature: 0.72
+      repetition_penalty: 1.2
+      min_p: 0.05
+      top_p: 1.0
+      max_new_tokens: 280
+      tokens_per_character: 2.4
+      token_margin: 32
+      noise_w: 0.8
+      noise_scale: 0.667
+    sapi:
+      voice: ''
+      timeout: 60
+    kokoro:
+      voice: af_heart
+      language: en
+    elevenlabs:
+      voice_id: aV6RoO53eIRcDLcrLZpr
+      model: eleven_flash_v2_5
+      stability: 0.58
+      similarity_boost: 0.85
+      style: 0.0
+      use_speaker_boost: true
+      api_key_env: ELEVENLABS_API_KEY
+    speechgen:
+      voice: ''
+      token_env: SPEECHGEN_TOKEN
+      email_env: SPEECHGEN_EMAIL
+    remote:
+      endpoint: ''
+      token_env: REMOTE_TTS_TOKEN
+      speaker: 0
+      timeout: 60
+# Der taegliche Nachrichtenlauf: Schlagzeilen direkt von den Zeitungen (RSS)
+# und die Meldungslage je Thema (GDELT). Ohne diesen Abschnitt gab es die
+# Quellen zwar, aber niemanden, der sie ruft.
+nachrichten:
+  taeglich: true
+  uhrzeit: '07:30'
+  themen:
+  - Politik
+  - Wirtschaft
+  - Weltlage
+  hoechstens: 8
+  # Einmal kurz nach dem Start, damit ein frisch eingerichteter Orb nicht
+  # bis zum naechsten Morgen so aussieht, als taete er nichts.
+  beim_start: true
+  start_verzoegerung: 180
+
+recherche:
+  mehrquellen: true
+  treffer_je_quelle: 3
+  gleichzeitig: 4
+  quellen:
+  - name: tagesschau (DE)
+    einschraenkung: site:tagesschau.de
+    feed: https://www.tagesschau.de/index~rss2.xml
+  - name: NZZ (CH)
+    einschraenkung: site:nzz.ch
+    feed: https://www.nzz.ch/recent.rss
+  - name: BBC (UK)
+    einschraenkung: site:bbc.com
+    feed: https://feeds.bbci.co.uk/news/world/rss.xml
+  - name: Al Jazeera (QA)
+    einschraenkung: site:aljazeera.com
+    feed: https://www.aljazeera.com/xml/rss/all.xml
+  - name: Le Monde (FR)
+    einschraenkung: site:lemonde.fr
+    feed: https://www.lemonde.fr/rss/une.xml
+  - name: NPR (US)
+    einschraenkung: site:npr.org
+    feed: https://feeds.npr.org/1001/rss.xml
+  favoriten:
+    nutzen: true
+    ordner: ''
+    max_domaenen: 4
+    treffer_je_domaene: 3
+tools:
+  enabled: true
+  max_rounds: 4
+  max_output_characters: 4000
+browser:
+  enabled: true
+  profil_pfad: ''
+  sichtbar: true
+  kanal: chrome
+  cdp_url: ''
+  zeitlimit_ms: 15000
+kalender:
+  enabled: true
+  zeitzone: Europe/Zurich
+  kalender_id: primary
+  erinnerung:
+    enabled: true
+    vorlaufzeiten:
+    - 60
+    - 10
+    takt_sekunden: 180
+plugins:
+  directory: plugins
+  require_confirmation: true
+  auto_load: false
+workflows:
+  enabled: true
+  max_steps: 25
+vision:
+  enabled: true
+  allow_image_to_model: true
+  keep_after_analysis: false
+  keep_minutes: 10
+  max_edge: 1600
+  ocr_languages: deu+eng
+pipeline:
+  timeout_seconds: 180
+  retries_per_stage: 1
+  minimum_answer_characters: 1
+  last_resort_message: Ich kann gerade nicht antworten. Das Sprachmodell ist nicht erreichbar - pruefe
+    die Internetverbindung oder starte AI-Orb neu. Die Einzelheiten stehen im Protokoll.
+learning:
+  enabled: true
+  grosser_lehrplan: true
+  takt_sekunden: 420
+  autonomous: true
+  curriculum: true
+  minimum_observations: 8
+knowledge:
+  enabled: true
+  passage_characters: 900
+  max_document_mb: 10
+  minimum_score: 0.06
+presence:
+  baseline_valence: 0.15
+  baseline_arousal: 0.3
+  emotion_intensity: 1.0
+  quiet_hours:
+  - 22
+  - 7
+  night_brightness: 0.55
+  greeting_gap_hours: 6
+  proactive_enabled: false
+  proactive_gap_minutes: 45
+personality:
+  name: AI-Orb
+  waerme: 0.6
+  ausfuehrlichkeit: 0.4
+  foermlichkeit: 0.3
+  humor: 0.7
+  eigeninitiative: 0.4
+  vorsicht: 0.7
+launcher:
+  # Wie lange die Testsuche beim Start hoechstens dauern darf.
+  suchpruefung_frist: 12
+  health_check: true
+  supervision_interval: 5
+  max_restarts: 3
+  splash_screen: true
+  start_ollama: true
+  download_offline_model: false
+update:
+  check_on_start: false
+  never_touch:
+  - Gedaechtnis
+  - Benutzereinstellungen
+  - Projekte
+  - Wissensnetz
+  - Positionsdaten
+  - Zugangsdaten
+studium:
+  aktualisierung: true
+  aktualisierung_takt_sekunden: 1800
+  aktualisierung_abstand_tage: 7

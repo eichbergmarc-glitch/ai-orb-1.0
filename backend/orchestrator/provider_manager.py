@@ -15,11 +15,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from backend.config import get_config
 from backend.events.event_bus import EventBus
-from backend.orchestrator.provider_health import ProviderHealth
+from backend.orchestrator.provider_health import ProviderHealth, internet_reachable
 from backend.orchestrator.providers import PROVIDER_TYPES
 from backend.orchestrator.providers.base_provider import (
     BaseProvider,
@@ -56,6 +57,15 @@ class ProviderManager:
         self._switch_immediately = bool(self._ai_config.get("switch_immediately", False))
         self._pending_switch: str | None = None
         self._conversation_active = False
+        local_routing = self._ai_config.get("local_routing") or {}
+        self._local_routing_config = (
+            dict(local_routing) if isinstance(local_routing, dict) else {}
+        )
+        # Auf der CPU duerfen LFM und das kleine Nebenmodell nie gleichzeitig
+        # rechnen. Cloud-Anfragen bleiben parallel moeglich; nur lokale
+        # Inferenz wird serialisiert. Das verhindert, dass zwei Ollama-
+        # Runner einander Kerne und Speicherbandbreite wegnehmen.
+        self._local_inference_lock = asyncio.Lock()
         # Quotenfehler werden fuer eine kurze Zeit gemerkt. Andernfalls
         # wuerde jeder parallel gestartete Subagent erneut denselben bereits
         # limitierten Anbieter anfragen und erst danach ausweichen.
@@ -72,11 +82,55 @@ class ProviderManager:
         )
         stored_mode = str(self._mode_store.get("mode", configured_mode)).strip().lower()
         self._operating_mode = stored_mode if stored_mode in {"auto", "offline"} else configured_mode
-        self._ollama_service: Any | None = None
+        self._ollama_services: dict[str, Any] = {}
+
+        connectivity_hosts = (
+            self._ai_config.get("connectivity_check_hosts")
+            or config.get("routing.connectivity_check_hosts", ())
+            or ()
+        )
+        connectivity_timeout = float(
+            self._ai_config.get(
+                "connectivity_check_timeout",
+                config.get("routing.connectivity_check_timeout", 1.5),
+            )
+        )
+
+        async def _connectivity_check() -> bool:
+            kwargs: dict[str, Any] = {"timeout_seconds": connectivity_timeout}
+            if connectivity_hosts:
+                kwargs["hosts"] = tuple(str(host) for host in connectivity_hosts)
+            return await internet_reachable(**kwargs)
+
+        self._connectivity_check = _connectivity_check
+        self._connectivity_cache_seconds = max(
+            0.0,
+            float(
+                self._ai_config.get(
+                    "connectivity_cache_seconds",
+                    config.get("routing.connectivity_cache_seconds", 5.0),
+                )
+            ),
+        )
+        self._last_connectivity_check = 0.0
+        self._last_connectivity_result: bool | None = None
+        self._connectivity_lock = asyncio.Lock()
 
         self._health = ProviderHealth(
-            interval_seconds=float(self._ai_config.get("health_check_interval", 60))
+            interval_seconds=float(self._ai_config.get("health_check_interval", 60)),
+            connectivity_check=_connectivity_check,
         )
+        # Der Uebergabestand der Kategorien. Faellt er aus, bleibt alles
+        # bei Claude - das ist der sichere Ausgang.
+        try:
+            from backend.lernen.uebergabe import Uebergabe
+
+            self._uebergabe: Any | None = Uebergabe()
+        except Exception:  # noqa: BLE001
+            logger.debug("Der Uebergabestand ist nicht lesbar.", exc_info=True)
+            self._uebergabe = None
+        self._uebergabe_zaehler: dict[str, int] = {}
+
         self._health.set_change_callback(self._on_availability_changed)
         self._health.set_busy_check(lambda: self._conversation_active)
 
@@ -99,7 +153,9 @@ class ProviderManager:
                 logger.error("Unbekannter Provider-Typ in config.yaml: '%s'", engine)
                 continue
 
-            provider = provider_type(dict(section))
+            provider_settings = dict(section)
+            provider_settings.setdefault("instance_name", engine)
+            provider = provider_type(provider_settings)
             self._providers[engine] = provider
             self._health.register(provider)
 
@@ -127,7 +183,9 @@ class ProviderManager:
             if provider_type is None:
                 logger.error("Unbekannter zusätzlicher Provider: '%s'", engine)
                 continue
-            provider = provider_type(dict(section))
+            provider_settings = dict(section)
+            provider_settings.setdefault("instance_name", engine)
+            provider = provider_type(provider_settings)
             self._providers[engine] = provider
             self._health.register(provider)
             logger.info("Zusätzlicher Provider '%s' registriert.", engine)
@@ -157,7 +215,19 @@ class ProviderManager:
             elif self._fallback_name and results.get(self._fallback_name):
                 self._active_name = self._fallback_name
             else:
-                self._active_name = self._primary_name or self._fallback_name
+                # Fehlt das Internet und Ollama war beim Start noch nicht
+                # aktiv, darf der blosse installierte Claude-Client nicht
+                # gewinnen. Ollama wird hier hochgefahren und als
+                # voruebergehender Ersatz gewaehlt. Der Benutzermodus bleibt
+                # dabei "auto"; bei wiederhergestelltem Netz kehrt der
+                # Gesundheitswaechter selbststaendig zu Claude zurueck.
+                local = await self._ready_local_provider(
+                    results=results,
+                    start_services=True,
+                )
+                self._active_name = (
+                    local or self._primary_name or self._fallback_name
+                )
 
         logger.info("Aktiver Provider: %s", self._active_name)
         await self._publish_provider_event("selected")
@@ -178,15 +248,103 @@ class ProviderManager:
 
         provider = self.active_provider
         aufwaermen = getattr(provider, "prewarm", None) or getattr(provider, "waermen", None)
-        if aufwaermen is None:
+        if aufwaermen is not None:
+            try:
+                await aufwaermen()
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Das Vorwaermen des Providers ist fehlgeschlagen.", exc_info=True
+                )
+
+        self._waerme_lokale_modelle()
+
+    def _waerme_lokale_modelle(self) -> None:
+        """Laedt die lokalen Rueckfallmodelle im Hintergrund in den Speicher.
+
+        Bisher waermte der Orb ausschliesslich den AKTIVEN Provider vor -
+        im Regelfall also Claude. Die lokalen Modelle, die einspringen
+        sollen, wenn Claude nicht kann, blieben kalt. Genau dann kostete
+        der Rueckfall am meisten:
+
+            12:44:13  claude_code faellt aus (Anmeldung abgelaufen)
+            12:45:13  ollama - keine Antwortverbindung in 60 s
+            12:47:05  ollama - dasselbe noch einmal
+            12:48:23  erst ollama_fast antwortet
+
+        Das Laden geschieht deshalb hier und im Hintergrund: Der Start
+        wartet nicht darauf, und der Benutzer bezahlt es nicht mitten in
+        seiner ersten Frage. Es ist eine Beschleunigung, keine Bedingung -
+        scheitert es, faellt nichts aus, es dauert nur wieder laenger.
+
+        Der Richter-Provider der Messlaeufe bleibt aussen vor: Er wird im
+        Dialog nie gefragt, wuerde aber als groesstes Modell den meisten
+        Speicher belegen.
+        """
+
+        if not bool(getattr(self, "_ai_config", {}).get("prewarm_local", True)):
             return
-        try:
-            await aufwaermen()
-        except Exception:  # noqa: BLE001
-            logger.debug("Das Vorwaermen des Providers ist fehlgeschlagen.", exc_info=True)
+
+        laufend = getattr(self, "_lokal_waerme_task", None)
+        if laufend is not None and not laufend.done():
+            return
+
+        aktiv = self._active_name
+        namen: list[str] = []
+        for kandidat in (
+            self._fallback_name,
+            str(self._local_routing_config.get("main_provider", "")).strip(),
+            str(self._local_routing_config.get("fast_provider", "")).strip(),
+        ):
+            if not kandidat or kandidat == aktiv or kandidat in namen:
+                continue
+            anbieter = self._providers.get(kandidat)
+            if anbieter is None or not anbieter.is_local:
+                continue
+            if getattr(anbieter, "waermen", None) is None:
+                continue
+            namen.append(kandidat)
+
+        if not namen:
+            return
+
+        async def _lauf() -> None:
+            # Nacheinander, nicht gleichzeitig: Zwei Modelle, die sich
+            # zeitgleich in denselben Arbeitsspeicher laden, brauchen
+            # zusammen laenger als nacheinander - und blockieren dabei
+            # eine echte Frage, falls eine dazwischenkommt.
+            for name in namen:
+                anbieter = self._providers.get(name)
+                if anbieter is None:
+                    continue
+                try:
+                    async with self._inference_slot(anbieter):
+                        await anbieter.waermen()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "Das lokale Modell '%s' liess sich nicht vorwaermen.",
+                        name,
+                        exc_info=True,
+                    )
+
+        logger.info(
+            "Die lokalen Rueckfallmodelle werden im Hintergrund vorgewaermt: %s",
+            ", ".join(namen),
+        )
+        self._lokal_waerme_task = asyncio.create_task(
+            _lauf(), name="provider-lokal-waermen"
+        )
 
     async def stop(self) -> None:
         """Beendet die Überwachung."""
+
+        waerme = getattr(self, "_lokal_waerme_task", None)
+        if waerme is not None and not waerme.done():
+            waerme.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await waerme
+        self._lokal_waerme_task = None
 
         await self._health.stop()
         for provider in self._providers.values():
@@ -197,8 +355,9 @@ class ProviderManager:
                 await aufraeumen()
             except Exception:  # noqa: BLE001
                 logger.debug("Provider-Aufraeumen fehlgeschlagen.", exc_info=True)
-        if self._ollama_service is not None:
-            await asyncio.to_thread(self._ollama_service.stop)
+        for service in self._ollama_services.values():
+            await asyncio.to_thread(service.stop)
+        self._ollama_services.clear()
 
     # --- Auswahl ---------------------------------------------------------------
 
@@ -231,6 +390,52 @@ class ProviderManager:
         """Alle konfigurierten Provider, die nachweislich lokal sind."""
 
         return [name for name, provider in self._providers.items() if provider.is_local]
+
+    @property
+    def local_routing_active(self) -> bool:
+        """Ob die rein lokale Mehrmodell-Verteilung gerade greifen darf.
+
+        Sie ist bei einem ausdruecklichen Offlinebefehl aktiv. Im
+        Automatikmodus wird sie ebenfalls aktiv, sobald der tatsaechlich
+        aktive Provider lokal ist oder alle bekannten Cloud-Provider als
+        nicht erreichbar gelten. Bei einer gesunden Onlineverbindung bleibt
+        sie aus; das Nebenmodell mischt sich dann nicht in Cloud-Dialoge ein.
+        """
+
+        if not bool(self._local_routing_config.get("enabled", False)):
+            return False
+        if self.offline_mode:
+            return True
+        if self.active_provider is not None and self.active_provider.is_local:
+            return True
+
+        cloud_names = [
+            name for name, provider in self._providers.items() if not provider.is_local
+        ]
+        local_names = self.local_provider_names
+        if not local_names:
+            return False
+        cloud_available = any(self._health.record(name).available for name in cloud_names)
+        local_available = any(self._health.record(name).available for name in local_names)
+        return local_available and not cloud_available
+
+    def local_provider_for(self, role: str = "main") -> str | None:
+        """Liefert den konfigurierten lokalen Haupt- oder Nebenprovider.
+
+        Ausserhalb des lokalen Betriebs gibt die Methode absichtlich
+        ``None`` zurueck. Aufrufer koennen sie daher gefahrlos fuer eine
+        bedingte Aufgabenverteilung verwenden, ohne Onlineanfragen
+        versehentlich lokal umzuleiten.
+        """
+
+        if not self.local_routing_active:
+            return None
+        key = "fast_provider" if str(role).lower() in {"fast", "side", "neben"} else "main_provider"
+        name = str(self._local_routing_config.get(key, "")).strip()
+        provider = self._providers.get(name)
+        if provider is None or not provider.is_local:
+            return None
+        return name
 
     async def set_operating_mode(
         self, mode: str, *, persist: bool = True
@@ -341,24 +546,26 @@ class ProviderManager:
                 self._health.note_success(name, 0.0)
                 return name
 
-            if start_services and name == "ollama":
-                if await self._prepare_ollama(provider):
+            if start_services and str(provider.settings.get("engine", "")) == "ollama":
+                if await self._prepare_ollama(name, provider):
                     self._health.note_success(name, 0.0)
                     return name
         return None
 
-    async def _prepare_ollama(self, provider: BaseProvider) -> bool:
+    async def _prepare_ollama(self, name: str, provider: BaseProvider) -> bool:
         """Startet Ollama bei Bedarf und prueft das konfigurierte Modell."""
 
         from backend.launcher.ollama_service import OllamaService
 
-        if self._ollama_service is None:
-            self._ollama_service = OllamaService(
+        service = self._ollama_services.get(name)
+        if service is None:
+            service = OllamaService(
                 base_url=str(provider.settings.get("base_url", "")),
                 model=provider.model,
             )
+            self._ollama_services[name] = service
         state = await asyncio.to_thread(
-            self._ollama_service.prepare,
+            service.prepare,
             download_model=False,
         )
         if not bool(state.get("ready")):
@@ -469,6 +676,9 @@ class ProviderManager:
         if self._event_bus is None:
             return
         provider = self.active_provider
+        temporary_local_fallback = bool(
+            not self.offline_mode and provider is not None and provider.is_local
+        )
         await self._event_bus.publish(
             "ai.provider.changed",
             {
@@ -477,13 +687,175 @@ class ProviderManager:
                 "model": provider.model if provider else None,
                 "mode": self._operating_mode,
                 "offline": self.offline_mode,
+                "temporary_local_fallback": temporary_local_fallback,
+                "selection": (
+                    "user_offline"
+                    if self.offline_mode
+                    else "automatic_local_fallback"
+                    if temporary_local_fallback
+                    else "automatic_cloud"
+                ),
                 **extra,
             },
         )
 
     # --- Anfragen ---------------------------------------------------------------
 
-    def _provider_order(self, preferred: str | None = None) -> list[str]:
+    async def _probe_connectivity(self, *, force: bool = False) -> bool:
+        """Liefert schnell den Netzzustand und buendelt parallele Pruefungen."""
+
+        checker = getattr(self, "_connectivity_check", None)
+        if checker is None:
+            # Kleine, per ``__new__`` gebaute Test-/Werkbank-Manager besitzen
+            # absichtlich keinen Netzwerkwaechter. Das ist kein Netzausfall.
+            return True
+
+        now = time.monotonic()
+        cached = getattr(self, "_last_connectivity_result", None)
+        last = float(getattr(self, "_last_connectivity_check", 0.0))
+        max_age = float(getattr(self, "_connectivity_cache_seconds", 5.0))
+        if not force and cached is not None and now - last <= max_age:
+            return bool(cached)
+
+        lock = getattr(self, "_connectivity_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._connectivity_lock = lock
+        async with lock:
+            now = time.monotonic()
+            cached = getattr(self, "_last_connectivity_result", None)
+            last = float(getattr(self, "_last_connectivity_check", 0.0))
+            if not force and cached is not None and now - last <= max_age:
+                return bool(cached)
+            try:
+                result = bool(await checker())
+            except Exception:  # noqa: BLE001 - im Zweifel Provider selbst pruefen.
+                logger.debug(
+                    "Internetpruefung vor der Anfrage fehlgeschlagen; "
+                    "Cloud-Provider wird normal versucht.",
+                    exc_info=True,
+                )
+                return True
+            self._last_connectivity_check = time.monotonic()
+            self._last_connectivity_result = result
+            return result
+
+    async def _activate_network_fallback(self) -> bool:
+        """Schaltet im Automatikmodus Modell und Stimme gemeinsam lokal."""
+
+        if self.offline_mode:
+            return True
+        self._health.note_network_unavailable()
+        local = await self._ready_local_provider(
+            results={
+                name: self._health.record(name).available
+                for name in self._providers
+            },
+            start_services=True,
+        )
+        if not local:
+            logger.warning(
+                "Internet ist nicht erreichbar und kein lokaler Provider "
+                "liess sich starten."
+            )
+            return False
+        await self._activate(local, reason="internet_nicht_erreichbar")
+        return True
+
+    async def _ensure_network_route(self) -> None:
+        """Faengt einen Netzausfall vor einem langen Cloud-Aufruf ab."""
+
+        provider = self.active_provider
+        if self.offline_mode or provider is None or provider.is_local:
+            return
+        if await self._probe_connectivity():
+            return
+        await self._activate_network_fallback()
+
+    @staticmethod
+    def _is_connectivity_error(error: BaseException) -> bool:
+        lowered = str(error).lower()
+        markers = (
+            "network is unreachable",
+            "network error",
+            "no route to host",
+            "name resolution",
+            "temporary failure in name resolution",
+            "getaddrinfo",
+            "failed to fetch",
+            "unable to connect",
+            "cannot connect",
+            "connection refused",
+            "connection reset",
+            "connection aborted",
+            "connect timeout",
+            "enotfound",
+            "econnrefused",
+            "econnreset",
+            "netzwerk ist nicht erreichbar",
+            "netzwerkfehler",
+            "verbindung fehlgeschlagen",
+            "verbindung abgebrochen",
+            "keine internetverbindung",
+        )
+        return any(marker in lowered for marker in markers)
+
+    async def _handle_possible_network_error(
+        self, provider: BaseProvider, error: BaseException
+    ) -> None:
+        """Bestaetigt Cloud-Verbindungsfehler und aktiviert Ollama sofort."""
+
+        if provider.is_local or self.offline_mode:
+            return
+        if getattr(self, "_connectivity_check", None) is None:
+            return
+        lowered = str(error).lower()
+        definite = self._is_connectivity_error(error)
+        timed_out = "timeout" in lowered or "zeitlimit" in lowered
+        if not definite and not timed_out:
+            return
+        if not definite and await self._probe_connectivity(force=True):
+            # Das Netz steht - dann liegt es am Anbieter selbst.
+            #
+            # Bisher endete der Fall hier: kein Wechsel, kein Vermerk, kein
+            # Unterschied zur naechsten Anfrage. Bei einer Hotspot-
+            # Anmeldeseite oder einem traegen Anbieter kostete deshalb JEDE
+            # Frage erneut das volle Zeitlimit, unbegrenzt oft. Der
+            # Gesundheitseintrag weiss nach zwei Fehlschlaegen Bescheid -
+            # nur erfuhr davon niemand, weil ``note_error`` selbst keinen
+            # Wechsel ausloest. Diese Meldung holt das nach.
+            if timed_out and not self._health.record(provider.name).available:
+                logger.warning(
+                    "Provider '%s' laeuft wiederholt ins Zeitlimit, obwohl das "
+                    "Netz erreichbar ist. Es wird auf eine Alternative "
+                    "gewechselt.",
+                    provider.name,
+                )
+                await self._on_availability_changed(provider.name, False)
+            return
+        self._last_connectivity_result = False
+        self._last_connectivity_check = time.monotonic()
+        await self._activate_network_fallback()
+
+    @asynccontextmanager
+    async def _inference_slot(self, provider: BaseProvider):
+        """Serialisiert lokale CPU-Inferenz, laesst Cloud aber parallel."""
+
+        if provider.is_local and bool(
+            self._local_routing_config.get("sequential_only", True)
+        ):
+            async with self._local_inference_lock:
+                yield
+            return
+        yield
+
+    def _provider_order(
+        self,
+        preferred: str | None = None,
+        *,
+        fast_dialog: bool = False,
+        kategorie: str = "",
+    ) -> list[str]:
         """Baut die Reihenfolge fuer eine Anfrage.
 
         Ein expliziter Wunsch stammt von einem Subagenten. In diesem Fall
@@ -502,6 +874,9 @@ class ProviderManager:
         now = time.monotonic()
         cooldowns = getattr(self, "_quota_cooldowns", {})
         order: list[str] = []
+        #: Bekannt gestoerte Anbieter. Sie fliegen nicht raus, sie ruecken
+        #: nach hinten - siehe ``_ist_bekannt_gestoert``.
+        nachrangig: list[str] = []
 
         if preferred:
             configured = getattr(self, "_ai_config", {}).get(
@@ -515,29 +890,200 @@ class ProviderManager:
                 self._primary_name,
             )
         else:
+            order_key = (
+                "dialog_fallback_order" if fast_dialog else "capable_fallback_order"
+            )
+            configured = getattr(self, "_ai_config", {}).get(order_key, [])
+            if not configured:
+                configured = getattr(self, "_ai_config", {}).get(
+                    "dialog_fallback_order", []
+                )
             candidates = (
                 self._active_name,
                 self._primary_name,
+                *configured,
                 self._fallback_name,
             )
 
+        # Die stufenweise Uebergabe an das lokale Modell.
+        #
+        # Hat eine Kategorie ihre Pruefungen bestanden, wird der
+        # entsprechende Anteil ihrer Anfragen lokal bearbeitet - und zwar
+        # deterministisch ausgelost, damit sich derselbe Fall im Test
+        # wiederholen laesst. Solange keine Kategorie geprueft ist, steht
+        # ueberall 0 %, und hier aendert sich nichts.
+        lokal_zuerst = self._lokal_uebernimmt(kategorie)
+        if lokal_zuerst:
+            candidates = (lokal_zuerst, *candidates)
+
         for candidate in (*candidates, *self._providers):
             name = str(candidate or "").strip()
-            if not name or name not in allowed or name in order:
+            if not name or name not in allowed or name in order or name in nachrangig:
                 continue
             if cooldowns.get(name, 0.0) > now:
                 logger.debug("Provider '%s' wegen Quoten-Sperrfrist uebersprungen.", name)
                 continue
+            if self._ist_bekannt_gestoert(name):
+                logger.debug(
+                    "Provider '%s' ist als nicht erreichbar vermerkt und wird "
+                    "nach hinten gestellt.",
+                    name,
+                )
+                nachrangig.append(name)
+                continue
             order.append(name)
-        return order
+        # Die gestoerten kommen ans Ende und nicht in den Papierkorb: Der
+        # Gesundheitsvermerk kann veraltet sein, und lieber ein spaeter
+        # Versuch als gar keine Antwort.
+        return order + nachrangig
+
+    def _lokal_uebernimmt(self, kategorie: str, *, wurf: int | None = None) -> str:
+        """Ob das lokale Modell diese Anfrage bearbeiten soll.
+
+        Gibt den Namen des lokalen Providers zurueck, wenn ja, sonst "".
+
+        Die Auslosung ist absichtlich nicht zufaellig, sondern haengt an
+        Kategorie und Zaehler: Derselbe Fall faellt im Test immer gleich
+        aus. Wer den Anteil auf 25 % stellt, bekommt jede vierte Anfrage
+        lokal - nachvollziehbar, nicht ungefaehr.
+        """
+
+        if not kategorie or self.offline_mode:
+            return ""
+        uebergabe = getattr(self, "_uebergabe", None)
+        if uebergabe is None:
+            return ""
+        try:
+            anteil = int(uebergabe.anteil_lokal(kategorie))
+        except Exception:  # noqa: BLE001 - die Uebergabe darf nie den Zug reissen.
+            return ""
+        if anteil <= 0:
+            return ""
+
+        name = self.local_provider_for("main") or self._fallback_name or ""
+        if not name or name not in self._providers:
+            return ""
+
+        if anteil >= 100:
+            return name
+
+        zaehler = getattr(self, "_uebergabe_zaehler", {})
+        naechster = int(zaehler.get(kategorie, 0)) + 1
+        zaehler[kategorie] = naechster
+        self._uebergabe_zaehler = zaehler
+        gezogen = wurf if wurf is not None else ((naechster * 37) % 100)
+        return name if gezogen < anteil else ""
+
+    def _ist_bekannt_gestoert(self, name: str) -> bool:
+        """Ob ein Anbieter nachweislich nicht erreichbar ist.
+
+        Vorher richtete sich die Reihenfolge allein nach den
+        Quoten-Sperrfristen. Der Gesundheitswaechter wusste laengst, dass
+        ein Anbieter tot ist - gefragt wurde er trotzdem als Erster, und
+        zwar bei jeder einzelnen Anfrage bis zum vollen Zeitlimit. Genau
+        diese Wartezeit faellt hier weg.
+
+        Nur ein BELEGTER Ausfall zaehlt: entweder eine echte Pruefung
+        (``last_check``) oder zwei Fehlschlaege in Folge. Ein Anbieter, der
+        noch nie geprueft wurde - etwa unmittelbar nach dem Start -, gilt
+        nicht als gestoert und behaelt seinen Platz.
+        """
+
+        entry = self._health.record(name)
+        if entry.available:
+            return False
+        return entry.last_check > 0 or entry.consecutive_failures >= 2
+
+    @staticmethod
+    def _messages_for_provider(
+        provider: BaseProvider, messages: list[ChatMessage]
+    ) -> list[ChatMessage]:
+        """Verdichtet nur den explizit dafuer konfigurierten Schnellprovider.
+
+        Der zentrale Verlauf bleibt unangetastet. Gekuerzt wird lediglich die
+        Kopie fuer diesen einen lokalen Aufruf, damit ein Claude-Ausfall nicht
+        ploetzlich tausende alte Prompt-Tokens auf der CPU vorrechnen muss.
+        """
+
+        settings = provider.settings
+        recent = max(0, int(settings.get("recent_messages", 0) or 0))
+        character_limit = max(
+            0, int(settings.get("max_input_characters", 0) or 0)
+        )
+        compact_system = str(settings.get("compact_system_prompt", "")).strip()
+        if not (recent or character_limit or compact_system):
+            return messages
+
+        history = [message for message in messages if message.role != "system"]
+        if recent:
+            history = history[-recent:]
+        compact: list[ChatMessage] = []
+        if compact_system:
+            compact.append(ChatMessage(role="system", content=compact_system))
+        elif messages and messages[0].role == "system":
+            compact.append(messages[0])
+        compact.extend(history)
+
+        if character_limit:
+            # Neueste Nachrichten sind wichtiger. Der Systemprompt bleibt
+            # vollstaendig; der Rest wird von hinten in das Budget gepackt.
+            system = compact[:1] if compact and compact[0].role == "system" else []
+            budget = max(256, character_limit - sum(len(m.content) for m in system))
+            selected: list[ChatMessage] = []
+            for message in reversed(compact[len(system):]):
+                if selected and len(message.content) > budget:
+                    break
+                content = message.content[-budget:] if len(message.content) > budget else message.content
+                selected.append(ChatMessage(role=message.role, content=content))
+                budget -= len(content)
+                if budget <= 0:
+                    break
+            compact = [*system, *reversed(selected)]
+        return compact
+
+    def _is_fast_dialog(self, max_tokens: int | None) -> bool:
+        limit = int(getattr(self, "_ai_config", {}).get("fast_dialog_max_tokens", 160))
+        return max_tokens is not None and 0 < max_tokens <= max(1, limit)
+
+    #: Fehler, die sich beim zweiten Versuch garantiert wiederholen.
+    #:
+    #: Am 06.09. stand claude_code mit abgelaufener Anmeldung den ganzen
+    #: Vormittag an erster Stelle: erster Fehlschlag 12:44:13, zweiter
+    #: 12:46:05 - und erst der zweite setzte den Anbieter auf "nicht
+    #: verfuegbar". Der Benutzer bezahlte den Ausgang eines Versuchs, der
+    #: schon feststand. Eine Anmeldung wird nicht dadurch gueltig, dass
+    #: man es sofort noch einmal probiert.
+    _ENDGUELTIGE_FEHLER: tuple[str, ...] = (
+        "nicht angemeldet",
+        "not logged in",
+        "please log in",
+        "authenticate",
+        "authentication",
+        "unauthorized",
+        "http 401",
+        "oauth session expired",
+        "session expired",
+        "invalid api key",
+        "ungueltiger schluessel",
+    )
 
     def _note_provider_error(self, name: str, error: ProviderError) -> None:
         """Erfasst Fehler und setzt bei Quotenproblemen eine Sperrfrist."""
 
         lowered = str(error).lower()
+        endgueltig = any(marker in lowered for marker in self._ENDGUELTIGE_FEHLER)
+        if endgueltig:
+            logger.warning(
+                "Provider '%s' ist nicht angemeldet oder nicht berechtigt (%s). "
+                "Er wird sofort nach hinten gestellt, statt bei der naechsten "
+                "Frage erneut zu kosten.",
+                name,
+                error,
+            )
         self._health.note_error(
             name,
             timeout="timeout" in lowered or "zeitlimit" in lowered,
+            fatal=endgueltig,
         )
         quota_markers = (
             "http 429",
@@ -550,9 +1096,18 @@ class ProviderManager:
             "zu viele anfragen",
         )
         if any(marker in lowered for marker in quota_markers):
-            seconds = float(
-                getattr(self, "_ai_config", {}).get("quota_cooldown_seconds", 300)
+            no_credit_markers = (
+                "insufficient_quota", "no credits remaining",
+                "credit_balance_exhausted", "credit balance exhausted",
             )
+            setting = (
+                "exhausted_quota_cooldown_seconds"
+                if any(marker in lowered for marker in no_credit_markers)
+                else "quota_cooldown_seconds"
+            )
+            seconds = float(getattr(self, "_ai_config", {}).get(
+                setting, 21600 if setting.startswith("exhausted") else 300
+            ))
             self._quota_cooldowns = getattr(self, "_quota_cooldowns", {})
             self._quota_cooldowns[name] = time.monotonic() + max(10.0, seconds)
             logger.warning(
@@ -569,6 +1124,7 @@ class ProviderManager:
         temperature: float | None = None,
         max_tokens: int | None = None,
         preferred: str | None = None,
+        kategorie: str = "",
     ) -> ProviderResponse:
         """Führt eine Chat-Anfrage über den aktiven (oder gewünschten) Provider aus.
 
@@ -587,7 +1143,12 @@ class ProviderManager:
             ProviderError: Wenn kein Provider die Anfrage bearbeiten konnte.
         """
 
-        order = self._provider_order(preferred)
+        await self._ensure_network_route()
+        order = self._provider_order(
+            preferred,
+            fast_dialog=self._is_fast_dialog(max_tokens),
+            kategorie=kategorie,
+        )
 
         if not order:
             raise ProviderError("Kein KI-Provider konfiguriert.")
@@ -595,12 +1156,16 @@ class ProviderManager:
         last_error: Exception | None = None
         for name in order:
             provider = self._providers[name]
+            provider_messages = self._messages_for_provider(provider, messages)
             started = time.perf_counter()
             try:
                 mark_stage("provider_requested")
-                response = await provider.chat(
-                    messages, temperature=temperature, max_tokens=max_tokens
-                )
+                async with self._inference_slot(provider):
+                    response = await provider.chat(
+                        provider_messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
                 self._health.note_success(name, time.perf_counter() - started)
                 mark_stage("provider_first_text")
                 if name != self._active_name:
@@ -629,7 +1194,23 @@ class ProviderManager:
             except ProviderError as error:
                 last_error = error
                 self._note_provider_error(name, error)
+                await self._handle_possible_network_error(provider, error)
                 logger.warning("Provider '%s' fehlgeschlagen: %s", name, error)
+            except Exception as error:  # noqa: BLE001 - Fallback muss weiterlaufen.
+                # Ein Adapter sollte technische Fehler als ProviderError
+                # vereinheitlichen. Tut er das einmal nicht (z. B. ein
+                # Windows-Prozessfehler), darf dadurch trotzdem nicht der
+                # komplette Dialogzug abbrechen. Der naechste Provider ist
+                # genau fuer diesen Fall konfiguriert.
+                wrapped = ProviderError(f"{name}: unerwarteter Fehler - {error}")
+                last_error = wrapped
+                self._note_provider_error(name, wrapped)
+                await self._handle_possible_network_error(provider, wrapped)
+                logger.exception(
+                    "Provider '%s' ist unerwartet fehlgeschlagen; "
+                    "der naechste Provider uebernimmt.",
+                    name,
+                )
 
         raise ProviderError(
             f"Alle Provider fehlgeschlagen. Letzter Fehler: {last_error}"
@@ -642,6 +1223,7 @@ class ProviderManager:
         temperature: float | None = None,
         max_tokens: int | None = None,
         preferred: str | None = None,
+        kategorie: str = "",
     ) -> AsyncIterator[str]:
         """Streamt die Antwort des aktiven Providers Stück für Stück.
 
@@ -654,29 +1236,39 @@ class ProviderManager:
         auf den gewöhnlichen :meth:`chat` zurückfallen.
         """
 
-        order = self._provider_order(preferred)
+        await self._ensure_network_route()
+        order = self._provider_order(
+            preferred,
+            fast_dialog=self._is_fast_dialog(max_tokens),
+            kategorie=kategorie,
+        )
         if not order:
             raise ProviderError("Kein KI-Provider konfiguriert.")
 
         last_error: ProviderError | None = None
         for candidate in order:
             provider = self._providers[candidate]
+            provider_messages = self._messages_for_provider(provider, messages)
             started = time.perf_counter()
             delivered = False
             try:
                 mark_stage("provider_requested")
-                async for piece in provider.chat_stream(
-                    messages, temperature=temperature, max_tokens=max_tokens
-                ):
-                    if piece:
-                        mark_stage("provider_first_text")
-                        delivered = True
-                        yield piece
+                async with self._inference_slot(provider):
+                    async for piece in provider.chat_stream(
+                        provider_messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    ):
+                        if piece:
+                            mark_stage("provider_first_text")
+                            delivered = True
+                            yield piece
                 self._health.note_success(candidate, time.perf_counter() - started)
                 return
             except ProviderError as error:
                 last_error = error
                 self._note_provider_error(candidate, error)
+                await self._handle_possible_network_error(provider, error)
                 if delivered:
                     raise
                 logger.warning(
@@ -684,6 +1276,20 @@ class ProviderManager:
                     "der naechste Provider uebernimmt.",
                     candidate,
                     error,
+                )
+            except Exception as error:  # noqa: BLE001 - vor Text sicher ausweichen.
+                wrapped = ProviderError(
+                    f"{candidate}: unerwarteter Streamingfehler - {error}"
+                )
+                last_error = wrapped
+                self._note_provider_error(candidate, wrapped)
+                await self._handle_possible_network_error(provider, wrapped)
+                if delivered:
+                    raise wrapped from error
+                logger.exception(
+                    "Provider '%s' scheiterte vor dem ersten Text unerwartet; "
+                    "der naechste Provider uebernimmt.",
+                    candidate,
                 )
 
         raise ProviderError(
@@ -712,23 +1318,42 @@ class ProviderManager:
         stand nur im Protokoll; nach aussen kam bloss "die Auswertung ist
         fehlgeschlagen".
 
-        ``images`` nimmt diese Stelle entgegen, gibt sie aber nicht weiter:
-        Kein Provider hier kann Bilddaten im Gesprächsverlauf entgegen-
-        nehmen. Sie stillschweigend fallen zu lassen wäre schlimmer als der
-        alte Fehler, deshalb sagt es die Ausnahme deutlich – und die
-        aufrufende Stelle kann auf einen Weg ausweichen, den es wirklich
-        gibt.
+        ``images`` wird nur an einen Provider weitergegeben, der diese
+        Faehigkeit ausdruecklich meldet. Dadurch kann OpenAI Bildschirmbilder
+        ueber die Responses API auswerten, waehrend lokale Textmodelle
+        weiterhin ehrlich auf OCR oder einen anderen Weg zurueckfallen.
 
         Raises:
-            ProviderError: Wenn Bilddaten mitgegeben werden.
+            ProviderError: Wenn kein aktiver Provider Bilddaten unterstuetzt.
         """
 
         if images:
-            raise ProviderError(
-                "Bilddaten lassen sich diesen Anbietern nicht im Verlauf "
-                "mitgeben. Nutze einen Anbieter, der Dateien selbst öffnet, "
-                "und nenne ihm den Pfad."
+            provider = self.active_provider
+            image_method = getattr(provider, "complete_with_images", None)
+            if provider is None or not bool(
+                getattr(provider, "supports_images", False)
+            ) or not callable(image_method):
+                raise ProviderError(
+                    "Der aktive Anbieter kann keine Bilddaten verarbeiten."
+                )
+            temperature = kwargs.pop("temperature", None)
+            max_tokens = kwargs.pop("max_tokens", None)
+            if kwargs:
+                unexpected = ", ".join(sorted(str(key) for key in kwargs))
+                raise TypeError(f"Unbekannte Bildparameter: {unexpected}")
+            started = time.perf_counter()
+            response = await image_method(
+                prompt,
+                system_prompt=system_prompt,
+                images=images,
+                temperature=temperature,
+                max_tokens=max_tokens,
             )
+            self._health.note_success(
+                self._active_name or provider.name,
+                time.perf_counter() - started,
+            )
+            return response.text
 
         messages: list[ChatMessage] = []
         if system_prompt:
@@ -754,12 +1379,35 @@ class ProviderManager:
         """
 
         provider = self.active_provider
+        temporary_local_fallback = bool(
+            not self.offline_mode and provider is not None and provider.is_local
+        )
         return {
             "active": self._active_name,
             "active_model": provider.model if provider else None,
             "mode": self._operating_mode,
             "offline": self.offline_mode,
+            # Ein lokaler Provider im Automatikmodus ist KEIN Wechsel des
+            # Betriebsmodus. Diese getrennte Angabe verhindert, dass UI und
+            # Sprache einen voruebergehenden Claude-Ausfall faelschlich als
+            # vom Benutzer aktivierten Offlinebetrieb darstellen.
+            "temporary_local_fallback": temporary_local_fallback,
+            "selection": (
+                "user_offline"
+                if self.offline_mode
+                else "automatic_local_fallback"
+                if temporary_local_fallback
+                else "automatic_cloud"
+            ),
             "local_providers": self.local_provider_names,
+            "local_routing": {
+                "active": self.local_routing_active,
+                "main": self.local_provider_for("main"),
+                "fast": self.local_provider_for("fast"),
+                "sequential_only": bool(
+                    self._local_routing_config.get("sequential_only", True)
+                ),
+            },
             "primary": self._primary_name,
             "fallback": self._fallback_name,
             "auto_switch": self._auto_switch,

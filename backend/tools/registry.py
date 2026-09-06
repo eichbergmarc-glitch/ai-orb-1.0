@@ -13,7 +13,7 @@ doppelter Name abgewiesen.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from backend.security.permissions import get_permission
 from backend.system.logging_setup import get_logger
@@ -28,6 +28,8 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._sources: dict[str, str] = {}
+        #: Werkzeuge, die abgewiesen wurden - Name, Quelle, Grund.
+        self._abgewiesen: list[dict[str, str]] = []
 
     # --- Anmeldung ---------------------------------------------------------------
 
@@ -46,42 +48,62 @@ class ToolRegistry:
         name = tool.name.strip().lower()
 
         if not name or name == "unbenannt":
-            logger.warning("Ein Werkzeug ohne Namen wurde abgewiesen (%s).", source)
-            return False
+            return self._abweisen(name or "?", source, "es hat keinen Namen")
 
         if name in self._tools:
-            logger.warning(
-                "Das Werkzeug '%s' aus '%s' wurde abgewiesen: Der Name ist "
-                "bereits von '%s' belegt.",
+            return self._abweisen(
                 name,
                 source,
-                self._sources.get(name, "unbekannt"),
+                f"der Name ist bereits von '{self._sources.get(name, 'unbekannt')}' belegt",
             )
-            return False
 
         if get_permission(tool.permission) is None:
-            logger.warning(
-                "Das Werkzeug '%s' aus '%s' wurde abgewiesen: Es verlangt die "
-                "unbekannte Berechtigung '%s'.",
+            # Der teuerste Fehler dieses Registers, und lange nur eine
+            # Warnung: 'internet_suchen' verlangte die Berechtigung
+            # "internet" - die es nicht gibt, sie heisst "network". Das
+            # Werkzeug wurde bei jedem Start abgewiesen, der Orb hatte
+            # achtzehn Tage lang keine Websuche, und im Protokoll stand
+            # eine Zeile, die niemand las. Solche Abweisungen werden jetzt
+            # gesammelt und lassen die Startpruefung scheitern.
+            return self._abweisen(
                 name,
                 source,
-                tool.permission,
+                f"es verlangt die unbekannte Berechtigung '{tool.permission}'",
             )
-            return False
 
         if not tool.description.strip():
-            logger.warning(
-                "Das Werkzeug '%s' aus '%s' wurde abgewiesen: Ohne Beschreibung "
-                "kann das Sprachmodell nicht wissen, wozu es gut ist.",
+            return self._abweisen(
                 name,
                 source,
+                "ohne Beschreibung kann das Sprachmodell nicht wissen, wozu es gut ist",
             )
-            return False
 
         self._tools[name] = tool
         self._sources[name] = source
         logger.debug("Werkzeug angemeldet: %s (%s)", name, source)
         return True
+
+    def _abweisen(self, name: str, source: str, grund: str) -> bool:
+        """Hält eine Abweisung fest und meldet sie.
+
+        Der Rückgabewert ist immer ``False`` - so liest sich die
+        aufrufende Stelle als ``return self._abweisen(...)``.
+        """
+
+        self._abgewiesen.append({"name": name, "quelle": source, "grund": grund})
+        logger.warning(
+            "Das Werkzeug '%s' aus '%s' wurde abgewiesen: %s.", name, source, grund
+        )
+        return False
+
+    def abgewiesene(self) -> list[dict[str, str]]:
+        """Alle Werkzeuge, die nicht ins Register durften - mit Grund.
+
+        Wer wissen will, ob der Orb vollständig ist, fragt hier. Eine leere
+        Liste ist die Bedingung dafür, dass die Startprüfung grün wird.
+        """
+
+        return list(self._abgewiesen)
 
     def register_many(self, tools: list[Tool], *, source: str = "eingebaut") -> int:
         """Meldet mehrere Werkzeuge an.
@@ -139,10 +161,15 @@ class ToolRegistry:
 
     # --- Beschreibung -------------------------------------------------------------
 
-    def describe_for_model(self) -> str:
-        """Beschreibt alle Werkzeuge so, wie sie dem Sprachmodell gezeigt werden."""
+    def describe_for_model(self, names: Iterable[str] | None = None) -> str:
+        """Beschreibt alle oder eine gezielte Auswahl von Werkzeugen."""
 
-        return "\n".join(tool.describe_for_model() for tool in self._tools.values())
+        if names is None:
+            tools = self._tools.values()
+        else:
+            gesucht = {str(name).strip().lower() for name in names}
+            tools = (tool for name, tool in self._tools.items() if name in gesucht)
+        return "\n".join(tool.describe_for_model() for tool in tools)
 
     def catalog(self) -> list[dict[str, Any]]:
         """Alle Werkzeuge als Datensätze, für die Transparenzansicht."""
@@ -162,7 +189,12 @@ class ToolRegistry:
         by_source: dict[str, int] = {}
         for source in self._sources.values():
             by_source[source] = by_source.get(source, 0) + 1
-        return {"count": len(self._tools), "by_source": by_source, "names": self.names()}
+        return {
+            "count": len(self._tools),
+            "by_source": by_source,
+            "names": self.names(),
+            "abgewiesen": self.abgewiesene(),
+        }
 
     def __len__(self) -> int:
         return len(self._tools)

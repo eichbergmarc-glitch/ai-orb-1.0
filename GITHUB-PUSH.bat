@@ -72,15 +72,28 @@ git rm --cached -r --ignore-unmatch .env "models" "runtime" "node_modules" "data
 
 echo   [1/3] Aenderungen sichern ...
 git add -A
+
+REM --------------------------------------------------------------------
+REM  Die Wache: .env und Riesen-Dateien duerfen NIE hinaus.
+REM
+REM  'git rm --cached' weiter oben nimmt die .env zwar aus dem Index -
+REM  aber das folgende 'git add -A' legte sie wieder hinein, sobald die
+REM  .gitignore fehlt oder verrutscht ist. Deshalb wird hier, NACH dem
+REM  add und VOR dem Senden, in den Karton geschaut statt auf die
+REM  Packliste vertraut: Liegt die .env im Paket oder eine Datei ueber
+REM  50MB (GitHub weist ab 100MB ohnehin ab), bricht alles ab.
+REM --------------------------------------------------------------------
+powershell -NoProfile -Command "$fehler=0; git diff --cached --name-only | ForEach-Object { if ($_ -eq '.env') { Write-Host '  [STOPP] Die .env liegt im Paket - sie enthaelt deine Schluessel.'; $fehler=1 }; if ((Test-Path -LiteralPath $_) -and ((Get-Item -LiteralPath $_).Length -gt 50MB)) { Write-Host ('  [STOPP] Zu gross fuer GitHub (ueber 50MB): ' + $_); $fehler=1 } }; exit $fehler"
+if errorlevel 1 (
+  echo.
+  echo   Es wurde NICHTS gesendet. Bitte die genannten Dateien aus dem
+  echo   Ordner nehmen oder in die .gitignore eintragen und neu starten.
+  pause
+  exit /b 1
+)
 git diff --cached --quiet
 if errorlevel 1 (
-  git commit -m "AI-Orb %VERSION% - aktueller Projektstand"
-  if errorlevel 1 (
-    echo.
-    echo   [FEHLER] Das Sichern ist fehlgeschlagen. Die Meldung steht oben.
-    pause
-    exit /b 1
-  )
+  git commit -m "AI-Orb %VERSION% - aktueller Projektstand" || goto :gitfehler
 ) else (
   echo         Es gab nichts Neues zu sichern.
 )
@@ -96,6 +109,15 @@ if errorlevel 1 (
 for /f "delims=" %%c in ('git log -1 --pretty^=format:"%%h %%s" 2^>nul') do set "LETZTER=%%c"
 echo         Zu senden: !LETZTER!
 echo.
+REM  Probelauf: 'set NUR_PRUEFEN=1' vor dem Start, und es wird nur
+REM  gezeigt, was gesendet WUERDE - gesendet wird nichts.
+if defined NUR_PRUEFEN (
+  echo   [PROBELAUF] Es wird nichts gesendet. Das wuerde hinausgehen:
+  git push --dry-run origin HEAD:main
+  pause
+  exit /b 0
+)
+
 
 REM --------------------------------------------------------------------
 REM  Senden - ausdruecklich der AKTUELLE Stand nach main.
@@ -163,3 +185,9 @@ if /I "%HIER%"=="%FERN%" (
 echo.
 pause
 exit /b 0
+
+:gitfehler
+echo.
+echo   [FEHLER] Das Sichern ist fehlgeschlagen. Die Meldung steht oben.
+pause
+exit /b 1

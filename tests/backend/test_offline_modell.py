@@ -55,11 +55,62 @@ def test_das_modell_wird_warm_gehalten():
     assert fb.get("keep_alive"), "Ohne keep_alive wird das Modell staendig neu geladen."
 
 
+def test_lfm_hat_konservative_temperatur_und_10k_kontext():
+    """Die lokalen Leistungsparameter muessen nicht nur empfohlen, sondern aktiv sein."""
+
+    fb = _config()["ai"]["fallback"]
+    assert fb["model"] == "lfm2.5:8b"
+    assert 0.2 <= float(fb["temperature"]) <= 0.3
+    assert 8192 <= int(fb["context_window"]) <= 12288
+    assert int(fb["minimum_predict_tokens"]) >= 512
+
+
+def test_lokales_nebenmodell_ist_getrennt_und_speicherschonend_konfiguriert():
+    """Llama darf LFM ergaenzen, aber weder ersetzen noch parallel belasten."""
+
+    ai = _config()["ai"]
+    routing = ai["local_routing"]
+    fast = ai["additional"][routing["fast_provider"]]
+
+    assert routing["enabled"] is True
+    assert routing["main_provider"] == "ollama"
+    assert routing["sequential_only"] is True
+    assert fast["engine"] == "ollama"
+    assert fast["instance_name"] == routing["fast_provider"]
+    assert fast["model"] == "llama3.2:3b"
+    assert int(fast["context_window"]) <= 4096
+    assert int(fast["minimum_predict_tokens"]) < int(
+        ai["fallback"]["minimum_predict_tokens"]
+    )
+
+
 def test_die_offline_stimme_ist_konfiguriert():
+    """Offline spricht nur, was auf diesem Rechner laeuft.
+
+    Geprueft wird die Eigenschaft, nicht der Name: Im Offlinebetrieb darf
+    keine Cloudstimme in der Liste stehen, und die letzte Instanz der
+    normalen Reihe muss lokal sein - sonst heisst ein Netzausfall Stille.
+
+    Warum Pocket-TTS und nicht Supertonic: Das Protokoll auf diesem Rechner
+    verzeichnet fuer Supertonic vier Faelle "konnte den Text nicht
+    sprechen" (zuletzt 31.08.2026, 08:54) und fuer Pocket-TTS keinen
+    einzigen, bei einem Echtzeitfaktor von 0,3 bis 0,6 statt 0,7 bis 2,4.
+    """
+
     d = _config()
     tts = d["voice"]["output"] if "voice" in d and "output" in d["voice"] else d.get("tts", {})
-    engines = tts.get("engines", [])
-    assert "piper" in engines, "Ohne Piper gibt es offline keine Stimme."
+    engines = list(tts.get("engines", []))
+    offline = list(tts.get("offline_engines", []))
+    lokal = {"pocket_tts", "supertonic", "piper", "openvoice_clone", "kokoro", "sapi"}
+
+    assert offline == ["pocket_tts"]
+    assert set(offline) <= lokal, "im Offlinebetrieb darf keine Cloudstimme stehen"
+    assert engines, "ohne Stimme bleibt der Orb stumm"
+    assert engines[-1] in lokal, (
+        "die letzte Instanz muss lokal sein, sonst ist ein Netzausfall Stille"
+    )
+    # Faellt die erste Stimme aus, muss die zweite ran duerfen.
+    assert tts.get("allow_voice_fallback") is True
 
 
 def test_ollama_schickt_keep_alive_mit(monkeypatch):
@@ -68,7 +119,12 @@ def test_ollama_schickt_keep_alive_mit(monkeypatch):
     from backend.orchestrator.providers.ollama_provider import OllamaProvider
     from backend.orchestrator.providers.base_provider import ChatMessage
 
-    provider = OllamaProvider({"model": "qwen2.5:7b-instruct", "keep_alive": "30m"})
+    provider = OllamaProvider({
+        "model": "lfm2.5:8b",
+        "keep_alive": "30m",
+        "temperature": 0.25,
+        "context_window": 10240,
+    })
 
     gesehen: dict = {}
 
@@ -83,12 +139,16 @@ def test_ollama_schickt_keep_alive_mit(monkeypatch):
         "Das Modell wird nicht warm gehalten - keep_alive fehlt in der Anfrage."
     )
     assert "options" in gesehen and "temperature" in gesehen["options"]
+    assert gesehen["options"]["temperature"] == 0.25
+    assert gesehen["options"]["num_ctx"] == 10240
 
 
 def test_ollama_waermt_mit_einem_echten_kurzen_dialog_vor(monkeypatch):
     from backend.orchestrator.providers.ollama_provider import OllamaProvider
 
-    provider = OllamaProvider({"model": "llama3.2:3b", "warmup_tokens": 8})
+    provider = OllamaProvider({
+        "model": "lfm2.5:8b", "warmup_tokens": 8, "context_window": 10240
+    })
     gesehen: dict = {}
 
     async def _fake(url, payload, *, versuche=3):
@@ -100,6 +160,7 @@ def test_ollama_waermt_mit_einem_echten_kurzen_dialog_vor(monkeypatch):
     assert asyncio.run(provider.waermen()) is True
     assert len(gesehen["messages"]) == 2
     assert gesehen["options"]["num_predict"] == 8
+    assert gesehen["options"]["num_ctx"] == 10240
 
 
 def test_ollama_stream_is_async_and_forwards_the_speech_limit(monkeypatch):
@@ -128,7 +189,13 @@ def test_ollama_stream_is_async_and_forwards_the_speech_limit(monkeypatch):
 
     monkeypatch.setattr(module.httpx, "AsyncClient", client_factory)
     provider = module.OllamaProvider(
-        {"model": "llama3.1:8b", "timeout": 5, "first_token_timeout": 2}
+        {
+            "model": "lfm2.5:8b",
+            "timeout": 5,
+            "first_token_timeout": 2,
+            "context_window": 10240,
+            "minimum_predict_tokens": 512,
+        }
     )
 
     async def collect() -> list[str]:
@@ -140,7 +207,8 @@ def test_ollama_stream_is_async_and_forwards_the_speech_limit(monkeypatch):
         ]
 
     assert asyncio.run(collect()) == ["Hallo ", "Welt."]
-    assert seen["options"]["num_predict"] == 72
+    assert seen["options"]["num_predict"] == 512
+    assert seen["options"]["num_ctx"] == 10240
     assert seen["keep_alive"]
 
 

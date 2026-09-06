@@ -230,8 +230,49 @@ class Browsersteuerung:
             self._seite.set_default_timeout(self.zeitlimit_ms)
             logger.info("Browser gestartet (%s).", "CDP" if self.cdp_url else "eigenes Profil")
         except Exception as fehler:  # noqa: BLE001
-            await self._aufraeumen()
             # channel="chrome" schlaegt fehl, wenn kein echtes Chrome da ist.
+            #
+            # Und genau dann half die Fehlermeldung nicht weiter:
+            # 'BROWSER-EINRICHTEN.bat' installiert Chromium ausdruecklich
+            # als Rueckfall - nur benutzte den nie jemand, weil in der
+            # Konfiguration "chrome" steht und der Start ohne zweiten
+            # Versuch aufgab. Der Rueckfall war da und unerreichbar.
+            if self.kanal and not self.cdp_url:
+                logger.info(
+                    "Chrome liess sich nicht starten (%s). Zweiter Versuch "
+                    "mit dem mitgelieferten Chromium.",
+                    type(fehler).__name__,
+                )
+                await self._aufraeumen()
+                try:
+                    self._playwright = await async_playwright().start()
+                    self.profil_pfad.mkdir(parents=True, exist_ok=True)
+                    self._kontext = (
+                        await self._playwright.chromium.launch_persistent_context(
+                            user_data_dir=str(self.profil_pfad),
+                            headless=not self.sichtbar,
+                            args=["--start-maximized"],
+                            no_viewport=True,
+                        )
+                    )
+                    self._seite = (
+                        self._kontext.pages[0]
+                        if self._kontext.pages
+                        else await self._kontext.new_page()
+                    )
+                    self._seite.set_default_timeout(self.zeitlimit_ms)
+                    logger.info("Browser gestartet (Chromium, ohne Kanal).")
+                    return
+                except Exception as zweiter:  # noqa: BLE001
+                    await self._aufraeumen()
+                    raise BrowserNichtBereit(
+                        "Der Browser liess sich nicht starten - weder Chrome "
+                        "noch das mitgelieferte Chromium. Ist "
+                        "'BROWSER-EINRICHTEN.bat' einmal gelaufen? "
+                        f"({type(zweiter).__name__}: {zweiter})"
+                    ) from zweiter
+
+            await self._aufraeumen()
             raise BrowserNichtBereit(
                 "Der Browser liess sich nicht starten. Ist Chrome installiert "
                 "und 'BROWSER-EINRICHTEN.bat' gelaufen? "

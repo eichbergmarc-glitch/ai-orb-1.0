@@ -11,12 +11,36 @@
 
   if (window.aiOrb) return;
 
+  // Die Vorschau ist nur die Vorschau.
+  //
+  // Solange diese Datei jede Seite ohne Electron uebernahm, ersetzte sie
+  // auch den echten Ereigniskanal durch eine Attrappe - im Browser sah
+  // der Orb dann verbunden aus, obwohl nie ein Ereignis ankam. Sie
+  // meldet sich deshalb nur noch, wenn die Adresse ausdruecklich nach
+  // einer Aufnahme fragt (?preview=1, ?state=..., ?synaptix=1 ...) oder
+  // die Seite ohne Server direkt von der Festplatte geoeffnet wurde.
+  // Sonst uebernimmt web-bridge.js und spricht mit dem echten Backend.
+  var vorschauParams = new URLSearchParams(window.location.search);
+  var vorschauGewollt =
+    vorschauParams.has("preview") ||
+    vorschauParams.has("state") ||
+    vorschauParams.has("synaptix") ||
+    vorschauParams.has("professor") ||
+    vorschauParams.has("scale") ||
+    window.location.protocol === "file:";
+  if (!vorschauGewollt) return;
+
   document.documentElement.dataset.orbPreview = "true";
   document.body.style.background =
     "radial-gradient(circle at 50% 42%, #0b2b56 0%, #03152d 48%, #010816 100%)";
 
   var params = new URLSearchParams(window.location.search);
   var state = params.get("state") || "idle";
+  var professor = params.get("professor") === "1";
+  // ?synaptix=1 zeigt das Synaptix-Gehirn statt des Energy-Orb.
+  // Voreinstellung bleibt bewusst aus, damit bestehende
+  // Referenzaufnahmen unveraendert vergleichbar bleiben.
+  var synaptix = params.get("synaptix") === "1";
   var previewScale = Number(params.get("scale") || "0.28");
   if (!Number.isFinite(previewScale)) previewScale = 0.28;
   var backendListeners = [];
@@ -28,6 +52,7 @@
       return {
         orb: {
           energie: true,
+          synaptix: synaptix,
           scale: previewScale,
           target_fps: 60,
           idle_fps: 60,
@@ -49,6 +74,11 @@
       window.setTimeout(function () {
         callback({ event: "orb.state.changed", payload: { state: state } });
       }, 80);
+      if (professor) {
+        window.setTimeout(function () {
+          callback({ event: "orb.professor.changed", payload: { active: true } });
+        }, 120);
+      }
     },
     onOrbOffset: function (callback) { offsetListeners.push(callback); },
     onGlobalPointer: function (callback) { pointerListeners.push(callback); },

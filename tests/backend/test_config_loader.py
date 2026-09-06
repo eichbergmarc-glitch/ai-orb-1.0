@@ -120,3 +120,32 @@ def test_yaml_fehler_meldet_zeile(tmp_path):
     config.write_text("orb:\n  scale: [1,\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="Zeile"):
         ConfigLoader(config_path=config)
+
+
+def test_die_konfiguration_hat_keine_doppelten_abschnitte():
+    """Ein zweiter Abschnitt gleichen Namens loescht den ersten - lautlos.
+
+    Am 01.09.2026 ist genau das passiert: Ein neu eingefuegter Abschnitt
+    'routing:' stand ein zweites Mal in der Datei, und YAML nahm den
+    letzten. Damit waren 'routing.mode', die Netzpruefungshosts und die
+    Umschaltregeln aus der Konfiguration verschwunden, ohne dass irgendwo
+    ein Fehler erschien. Der Orb lief mit Vorgabewerten weiter.
+    """
+
+    import collections
+
+    from backend.utils.paths import get_config_path
+
+    text = get_config_path().read_text(encoding="utf-8")
+    oberste_ebene = [
+        zeile.split(":", 1)[0]
+        for zeile in text.splitlines()
+        if zeile and not zeile[0].isspace() and not zeile.lstrip().startswith("#")
+        and ":" in zeile
+    ]
+    doppelt = [
+        name for name, anzahl in collections.Counter(oberste_ebene).items()
+        if anzahl > 1
+    ]
+
+    assert not doppelt, f"doppelte Abschnitte in der config.yaml: {doppelt}"

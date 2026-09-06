@@ -287,7 +287,9 @@ export interface PostProcessing {
   bloom: UnrealBloomPass;
   render(): void;
   setSize(width: number, height: number): void;
+  setPixelRatio(pixelRatio: number): void;
   setBloomStrength(strength: number): void;
+  dispose(): void;
 }
 
 /**
@@ -346,10 +348,20 @@ export function createPostProcessing(
     },
     setSize(width: number, height: number): void {
       composer.setSize(width, height);
-      bloom.setSize(width, height);
+    },
+    setPixelRatio(pixelRatio: number): void {
+      composer.setPixelRatio(pixelRatio);
     },
     setBloomStrength(multiplier: number): void {
       bloom.strength = baseStrength * multiplier;
+    },
+    dispose(): void {
+      // EffectComposer gibt nur seine eigenen Renderziele und den internen
+      // Kopier-Pass frei. Die hinzugefuegten Paesse behalten ihre Texturen
+      // und Materialien sonst bis zum Ende des Renderer-Prozesses.
+      bloom.dispose();
+      edgeFade.dispose();
+      composer.dispose();
     },
   };
 }

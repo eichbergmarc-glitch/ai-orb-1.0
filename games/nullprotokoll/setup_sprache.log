@@ -1,0 +1,25 @@
+--- Umgebung ---------------------------------------------
+PowerShell : 5.1.26100.9278
+Betriebssys: Microsoft Windows NT 10.0.26200.0
+Richtlinie : Bypass
+----------------------------------------------------------
+
+== Python
+   Gefunden: C:\Users\info\AppData\Local\Programs\Python\Python312\python.exe
+
+== ffmpeg
+   Gefunden: C:\Users\info\AI-Orb\games\nullprotokoll\.tools\speech\ffmpeg\ffmpeg-9.0.1-essentials_build\bin\ffmpeg.exe
+
+== Spracherkennung (whisper.cpp)
+   Lade whisper.cpp (Windows) ...
+   whisper.cpp (Windows) geladen.
+   Server: C:\Users\info\AI-Orb\games\nullprotokoll\.tools\speech\whisper\Release\whisper-server.exe
+   Modell ggml-small (466 MB)
+   Lade Whisper-Modell small ...
+   Whisper-Modell small geladen.
+   START_SPRACHE.bat geschrieben.
+
+== Fertig
+   Sprachsteuerung einsatzbereit. STARTEN.bat startet den Dienst automatisch mit.
+   33 vorgerenderte Sprachdateien vorhanden.
+

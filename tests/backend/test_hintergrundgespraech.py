@@ -24,6 +24,25 @@ import pytest
 from backend.voice.gespraechsrichtung import einschaetzen
 
 
+def test_tagebucheintrag_ist_auch_ohne_weckwort_ein_eindeutiger_befehl():
+    urteil = einschaetzen("Tagebucheintrag", sicherheit=0.9)
+
+    assert urteil.antworten
+    assert urteil.art == "an_mich"
+
+
+def test_tagebuchbild_ist_auch_ohne_weckwort_ein_eindeutiger_befehl():
+    assert einschaetzen("Bild ins Tagebuch", sicherheit=0.9).antworten
+
+
+def test_reale_whisper_fehlform_bleibt_ein_tagebuchauftrag():
+    urteil = einschaetzen(
+        "Alle Orte bestellen einen neuen Tagebucheintrag.", sicherheit=0.93
+    )
+
+    assert urteil.antworten
+
+
 # --- Was NICHT an den Orb gerichtet war (echte Protokollzeilen) -------------
 
 
@@ -65,6 +84,9 @@ def test_hintergrundgespraech_wird_erkannt(satz, sicherheit):
         "Lies mir die Nachrichten vor",
         "Stopp",
         "Weiter",
+        "Fahre fort mit der Vorlesung",
+        "Mache weiter mit der Vorlesung über Mesopotamien",
+        "Halte mir eine Vorlesung über Sprachwissenschaft",
         "Was steht heute an?",
     ],
 )
@@ -289,3 +311,111 @@ def test_ein_gefallenes_weckwort_hebelt_die_pruefung_aus():
     assert "not weckwort_gefallen" in ausschnitt
     # Und die Ermittlung muss VOR dem Abschneiden stehen.
     assert ausschnitt.index("weckwort_gefallen =") < ausschnitt.index("strip_wake_word")
+
+
+# --- Die vierte Luecke: die Antwort auf die eigene Frage (20.08.2026) --------
+#
+# Der Benutzer meldete wiederkehrend verschluckte Saetze im Wachfenster.
+# Das Protokoll bestaetigte es - die Stimme kam durch (Erkennung 0.91),
+# verworfen hat die Richtungspruefung. Die Saetze unten sind die echten
+# Protokollzeilen vom 20.08., 03:12 bis 04:35.
+
+
+@pytest.mark.parametrize(
+    "satz",
+    [
+        "Ja, bitte, tu das.",                                   # 04:35:36
+        "Ja, wenn das reicht, bin ich genau die Danke.",        # 04:27:11
+        "Vielen Dank, das passt so.",
+    ],
+)
+def test_nach_eigener_frage_zaehlt_die_antwort(satz):
+    urteil = einschaetzen(satz, sicherheit=0.91, wurde_gefragt=True)
+    assert urteil.antworten, f"Antwort auf die eigene Frage verworfen: {urteil.grund}"
+
+
+def test_ohne_offene_frage_bleibt_die_zustimmung_hintergrund():
+    """Das Gegenstueck: Dieselben Worte ohne offene Frage sind weiter
+    Zustimmung in einem Gespraech, das dem Orb nicht galt."""
+
+    urteil = einschaetzen("Ja, wenn das reicht, bin ich genau die Danke.",
+                          sicherheit=0.91, wurde_gefragt=False)
+    assert not urteil.antworten
+
+
+def test_auch_nach_eigener_frage_zaehlt_fremde_rede_nicht():
+    """Die offene Frage hebelt die Adressaten- und Schleifenpruefung
+    NICHT aus - ein Gespraech mit Dritten bleibt Hintergrund."""
+
+    mit_dritten = einschaetzen("Ja, aber ihr habt das doch gestern besprochen.",
+                               sicherheit=0.9, wurde_gefragt=True)
+    assert not mit_dritten.antworten
+
+    schleife = einschaetzen("was wir haben, was wir haben, was wir haben, "
+                            "was wir haben, was wir haben",
+                            sicherheit=0.9, wurde_gefragt=True)
+    assert not schleife.antworten
+
+
+def test_unsicheres_bleibt_auch_nach_eigener_frage_draussen():
+    urteil = einschaetzen("Ja, und in Spannung von dem Ding.",
+                          sicherheit=0.45, wurde_gefragt=True)
+    assert not urteil.antworten
+
+
+@pytest.mark.parametrize(
+    "satz",
+    [
+        "Erzählen wir etwas über den neuen Realismus nach Markus Gabriel.",  # 04:24:58
+        "Erzählen wir das über den neuen Realismus.",                        # 03:12:29
+        "Machen wir weiter.",
+        "Fangen wir mit der Julikrise an.",
+        "Schauen wir uns die Gesteine an.",
+    ],
+)
+def test_der_wir_imperativ_ist_ein_auftrag(satz):
+    urteil = einschaetzen(satz, sicherheit=0.9)
+    assert urteil.antworten, f"Wir-Imperativ verworfen: {urteil.grund}"
+
+
+@pytest.mark.parametrize(
+    "satz",
+    [
+        "Das heißt, wir machen das schon seit Jahren.",
+        "Und dann haben wir das besprochen.",
+        "Ja, und in Spannung von dem Ding, was wir haben.",
+    ],
+)
+def test_wir_in_aussagestellung_bleibt_hintergrund(satz):
+    urteil = einschaetzen(satz, sicherheit=0.85)
+    assert not urteil.antworten, f"Aussage mit 'wir' galt als Auftrag: {urteil.grund}"
+
+
+def test_tu_das_ist_ein_befehl_auch_ohne_offene_frage():
+    urteil = einschaetzen("Tu das bitte gleich.", sicherheit=0.9)
+    assert urteil.antworten
+
+
+def test_ja_bitte_zaehlt_trotz_kommas_als_anschluss():
+    """Whisper setzt Kommas nach Laune: 'Ja, bitte' und 'ja bitte' sind
+    dieselbe Antwort und muessen gleich behandelt werden."""
+
+    urteil = einschaetzen("Ja, bitte.", sicherheit=0.9, wurde_gefragt=True)
+    assert urteil.antworten
+    assert "Rückfrage" in urteil.grund or "Frage" in urteil.grund
+
+
+def test_die_eigene_frage_setzt_das_wartezeichen():
+    """Die Verdrahtung: Endet die eigene Rede mit '?', wartet der Orb auf
+    die Antwort - endet sie ohne, faellt das Zeichen zurueck."""
+
+    from pathlib import Path
+
+    quelle = Path("backend/voice/voice_pipeline.py").read_text(encoding="utf-8")
+    stelle = quelle.find("gesprochen = await self._say_locked")
+    assert stelle > 0, "die Sprechsperre um _say_locked fehlt"
+    danach = quelle[stelle : stelle + 900]
+    assert "_wartet_auf_antwort" in danach, (
+        "die eigene Rede setzt das Wartezeichen nicht mehr"
+    )
+    assert 'endswith("?")' in danach

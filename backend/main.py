@@ -148,6 +148,39 @@ logger = get_logger(__name__)
 #: Electron sie vom übrigen Protokoll unterscheiden kann.
 PROGRESS_PREFIX = "@@ORB@@"
 
+# Muss fuer die gesamte Prozesslebensdauer referenziert bleiben. Schliesst
+# Python den Handle, verschwindet auch der benannte Windows-Mutex.
+_INSTANCE_MUTEX_HANDLE: int | None = None
+
+
+def _acquire_single_instance() -> bool:
+    """Laesst unter Windows genau einen Orb-Kern pro Anmeldung zu.
+
+    Die HTTP-Portpruefung kommt zu spaet: Bis der zweite Prozess dort
+    scheitert, laufen Mikrofon und TTS bereits. Genau so entstanden am
+    24.08.2026 zwei Stimmen und doppelte Tagebucheintraege. Der Mutex wird
+    deshalb vor Launcher, Runtime und Audiogeraeten erworben.
+    """
+
+    global _INSTANCE_MUTEX_HANDLE
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        handle = kernel32.CreateMutexW(None, False, "Local\\AI-Orb-Backend-SingleInstance")
+        if not handle:
+            logger.warning("Einzelinstanz-Sperre konnte nicht angelegt werden.")
+            return True
+        _INSTANCE_MUTEX_HANDLE = int(handle)
+        return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
+    except Exception:  # noqa: BLE001 - Start nicht wegen Schutzmechanismus verhindern.
+        logger.exception("Einzelinstanz-Sperre ist fehlgeschlagen.")
+        return True
+
 
 def _emit(kind: str, payload: dict[str, object]) -> None:
     """Schreibt eine maschinenlesbare Zeile für die Oberfläche."""
@@ -330,6 +363,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.check:
         return run_check()
+
+    if not _acquire_single_instance():
+        message = "AI-Orb läuft bereits; der zweite Start wurde beendet."
+        logger.warning(message)
+        print(message, flush=True)
+        return 0
 
     if arguments.launcher:
         return run_with_launcher()

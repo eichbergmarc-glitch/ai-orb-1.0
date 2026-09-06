@@ -63,6 +63,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait
+from typing import Any
 from datetime import datetime
 
 from backend.system.logging_setup import get_logger
@@ -358,6 +359,44 @@ def wikipedia_suchen(
 # ---------------------------------------------------------------------------
 
 
+def _abstract_aus_index(index: Any) -> str:
+    """Baut den Abstract aus OpenAlex' umgedrehtem Wortregister zusammen.
+
+    OpenAlex liefert Abstracts aus rechtlichen Gruenden nicht als Text,
+    sondern als ``{"Wort": [Positionen]}``. Wieder zusammensetzen laesst er
+    sich trotzdem, und genau das ist der Unterschied zwischen einem Titel
+    und einer Fundstelle, in der man etwas nachlesen kann.
+    """
+
+    if not isinstance(index, dict) or not index:
+        return ""
+    positionen: list[tuple[int, str]] = []
+    for wort, stellen in index.items():
+        for stelle in stellen or []:
+            try:
+                positionen.append((int(stelle), str(wort)))
+            except (TypeError, ValueError):
+                continue
+    if not positionen:
+        return ""
+    positionen.sort()
+    return " ".join(wort for _, wort in positionen)
+
+
+def _openalex_schlagworte(arbeit: dict) -> list[str]:
+    """Die Begriffe, unter denen OpenAlex eine Arbeit einordnet."""
+
+    begriffe: list[str] = []
+    for feld in ("topics", "concepts"):
+        for eintrag in arbeit.get(feld) or []:
+            name = str((eintrag or {}).get("display_name") or "").strip()
+            if name and name not in begriffe:
+                begriffe.append(name)
+        if begriffe:
+            break
+    return begriffe
+
+
 def openalex_suchen(query: str, *, limit: int = 4) -> list[dict[str, str]]:
     """Durchsucht OpenAlex - über zweihundert Millionen Arbeiten."""
 
@@ -386,6 +425,16 @@ def openalex_suchen(query: str, *, limit: int = 4) -> list[dict[str, str]]:
             " · ".join(teil for teil in (zeitschrift, jahr) if teil),
         )
         if gefunden:
+            # Der eigentliche Inhalt, nicht nur die Titelzeile. Ohne diese
+            # beiden Felder landete im Gedaechtnis ein Titel plus
+            # "Zeitschrift · Jahr" - inhaltlich nicht durchsuchbar, und die
+            # Suche traf nur, wer den Titel schon kannte.
+            kurzfassung = _abstract_aus_index(arbeit.get("abstract_inverted_index"))
+            if kurzfassung:
+                gefunden["abstract"] = _sauber(kurzfassung)[:1500]
+            schlagworte = _openalex_schlagworte(arbeit)
+            if schlagworte:
+                gefunden["schlagworte"] = ", ".join(schlagworte[:6])
             treffer.append(gefunden)
         if len(treffer) >= limit:
             break
@@ -472,7 +521,10 @@ def _inhaltsworte(query: str) -> list[str]:
     """Die Wörter einer Frage, die wirklich ein Thema benennen."""
 
     worte = re.split(r"\W+", str(query or "").lower())
-    return [w for w in worte if len(w) > 3 and w not in _FUELLWOERTER]
+    return [
+        w for w in worte
+        if (len(w) > 3 or w in {"ki", "ai"}) and w not in _FUELLWOERTER
+    ]
 
 
 def schlagzeilen_suchen(
@@ -499,15 +551,10 @@ def schlagzeilen_suchen(
 
     def _ein_feed(adresse: str) -> list[dict[str, str]]:
         eintraege = rss_lesen(adresse, limit=je_feed, filter_text=thema)
-        if eintraege or not thema:
-            return eintraege
-        # Das Thema hat alles weggefiltert - haeufig, weil deutsch gefragt
-        # und englisch getitelt wird ("Nahen Osten" findet "Middle East"
-        # nie). Dann lieber die ECHTEN obersten Schlagzeilen als gar
-        # nichts: Am 17.08. bekam das Modell in dieser Lage null Treffer
-        # vorgelegt und erfand daraufhin welche. Echte, als allgemein
-        # erkennbare Schlagzeilen machen das unmoeglich.
-        return rss_lesen(adresse, limit=2, filter_text="")
+        # Bei einer thematischen Frage sind beliebige Top-Schlagzeilen keine
+        # Ausweichantwort. Dieser fruehere Rueckfall lieferte zu "KI-Modelle"
+        # Meldungen ueber Gasspeicher, Beeren und das Magazin Bravo.
+        return eintraege
 
     gesammelt: list[dict[str, str]] = []
     pool = ThreadPoolExecutor(max_workers=min(6, len(quellen)))

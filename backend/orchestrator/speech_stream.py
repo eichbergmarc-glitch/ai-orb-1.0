@@ -68,10 +68,21 @@ _FENCE = "```"
 #: Entscheidung „Zaun oder nicht" gewartet wird.
 _FENCE_LOOKAHEAD = len(_FENCE)
 
-# A local model sometimes produces one long sentence. Waiting for its final
-# full stop kept an already available answer silent for almost eight seconds.
-# Around 90 characters form a natural spoken phrase without sounding chopped.
-_SOFT_BREAK_AFTER = 70
+# Ein unvollstaendiger Satz darf nicht nach wenigen Woertern als eigene
+# Audiodatei enden. Besonders ein Schnitt am Komma erzeugt
+# Fortsetzungsintonation plus technische Luecke und klingt dadurch unsicher.
+# Ein Semikolon darf bei langen Saetzen frueher trennen; das Komma bleibt
+# eine spaete Notloesung.
+_SOFT_BREAK_AFTER = 240
+_COMMA_BREAK_AFTER = 400
+
+#: Ab dieser Laenge wird notfalls auch an einem blossen Leerzeichen
+#: gebrochen. Der gewoehnliche weiche Umbruch nimmt nur Komma und
+#: Semikolon - dort macht auch ein Mensch beim Sprechen eine kleine
+#: Pause. Der alte Schnitt am letzten Leerzeichen zerteilte lange
+#: Saetze mitten im Satzglied, und jede Schnittstelle wurde zur
+#: hoerbaren Luecke (Meldung des Benutzers vom 20.08.2026).
+_NOTBRUCH_AB = 600
 
 
 class SpeechStream:
@@ -239,15 +250,25 @@ class SpeechStream:
             # A naked tool call has no sentence ending either. Never release
             # part of its JSON merely to improve latency.
             if not stripped.startswith(("{", "```")):
-                limit = min(len(rest), _SOFT_BREAK_AFTER + 24)
+                limit = min(len(rest), _SOFT_BREAK_AFTER + 80)
                 window = rest[:limit]
-                cut = max(window.rfind(", "), window.rfind("; "), window.rfind(" "))
-                if cut >= 55:
-                    candidate = rest[:cut].strip()
+                # Zuerst nur am Semikolon: Dort ist eine abgeschlossene
+                # Sprechphrase wahrscheinlich. Ein Komma wird erst bei
+                # aussergewoehnlich langen Saetzen benutzt.
+                cut = window.rfind("; ")
+                schnittlaenge = 2
+                if cut < 80 and len(rest) >= _COMMA_BREAK_AFTER:
+                    kommafenster = rest[: min(len(rest), _COMMA_BREAK_AFTER + 80)]
+                    cut = kommafenster.rfind(", ")
+                if cut < 80 and len(rest) >= _NOTBRUCH_AB:
+                    cut = rest[:_NOTBRUCH_AB].rfind(" ")
+                    schnittlaenge = 1
+                if cut >= 80:
+                    candidate = rest[: cut + schnittlaenge - 1].strip()
                     if candidate and not _ist_maschinensprache(candidate):
                         saetze.append(candidate)
                         self._merken(candidate)
-                        rest = rest[cut:].lstrip()
+                        rest = rest[cut + schnittlaenge - 1 :].lstrip()
 
         return saetze, rest
 
@@ -283,6 +304,12 @@ def _endet_auf_abkuerzung(text: str) -> bool:
     if not text.endswith("."):
         return False
     letztes = text[:-1].rsplit(" ", 1)[-1].lower()
+    # Die Ordnungszahl: "Zwischen dem 6. und 8. Jahrhundert" ist EIN
+    # Gedanke. Ein bis zwei Ziffern vor dem Punkt sind eine Ordnungszahl
+    # oder ein Datumsteil, kein Satzende; eine Jahreszahl ("... endete
+    # 1815.") bleibt eines.
+    if letztes.isdigit() and len(letztes) <= 2:
+        return True
     return letztes in _ABBREVIATIONS
 
 

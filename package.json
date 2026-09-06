@@ -8,7 +8,7 @@
   "private": true,
   "scripts": {
     "build:main": "tsc -p tsconfig.json",
-    "build:renderer": "esbuild desktop/renderer/main.ts --bundle --format=iife --target=es2020 --loader:.glsl=text --outfile=desktop/electron/dist/renderer/renderer.js",
+    "build:renderer": "esbuild ./desktop/renderer/main.ts --bundle --format=iife --target=es2020 --loader:.glsl=text --outfile=./desktop/electron/dist/renderer/renderer.js && esbuild ./desktop/renderer/flipper-center.ts --bundle --format=iife --target=es2020 --outfile=./desktop/electron/dist/renderer/flipper-center.js",
     "build:assets": "node scripts/copy-assets.js",
     "build": "npm run build:main && npm run build:renderer && npm run build:assets",
     "start": "npm run build && electron .",

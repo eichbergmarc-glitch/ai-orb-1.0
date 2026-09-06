@@ -30,6 +30,10 @@ class LlmAgent(BaseAgent):
     #: arbeiten (Claude UND lokal) und damit wirklich parallel - statt sich
     #: hintereinander am selben Modell anzustellen.
     bevorzugtes_modell: str = ""
+    #: Offline-Zuordnung. Sie wird nur verwendet, wenn der Provider-Manager
+    #: den lokalen Betrieb bestaetigt; im Onlinebetrieb bleibt die obige
+    #: Cloud-/Standardzuordnung unangetastet.
+    lokales_modell: str = ""
 
     def __init__(self, provider_manager: Any) -> None:
         super().__init__()
@@ -44,9 +48,13 @@ class LlmAgent(BaseAgent):
         messages.append(ChatMessage(role="user", content=task.text))
 
         try:
-            response = await self._providers.chat(
-                messages, preferred=self.bevorzugtes_modell or None
-            )
+            preferred = self.bevorzugtes_modell or None
+            if bool(getattr(self._providers, "local_routing_active", False)):
+                local_selector = getattr(self._providers, "local_provider_for", None)
+                preferred = self.lokales_modell or (
+                    local_selector("main") if callable(local_selector) else preferred
+                )
+            response = await self._providers.chat(messages, preferred=preferred)
         except ProviderError as error:
             return AgentResult(
                 agent=self.name,
@@ -70,10 +78,13 @@ class ConversationAgent(LlmAgent):
     description = "Dialog, Antwortstil und Gesprächsfluss"
     capabilities = ("dialog", "antwortstil", "gesprächsfluss")
     system_prompt = (
-        "Du bist die Gesprächsstimme von AI-Orb. Antworte natürlich, präzise und "
-        "in der Sprache des Benutzers. Halte den Gesprächsfluss aufrecht, ohne "
-        "belehrend zu wirken. Erfinde keine Fakten; sage offen, wenn du etwas "
-        "nicht weißt."
+        "Du bist die Gesprächsstimme von AI-Orb: ein erstklassiger Mentor und "
+        "Professor ohne akademisches Gehabe. Sprich locker, direkt und fachlich "
+        "präzise, gern mit kurzen Sätzen oder passenden Satzfragmenten. Keine "
+        "Standardbegrüßung und kein Lehrbuchton. Ein trockener Kommentar, ein "
+        "kurzes 'Hmm', 'Naja' oder 'Haha' darf bei echtem Anlass vorkommen, "
+        "aber nicht als wiederkehrender Tick. Erfinde keine Fakten; sage offen, "
+        "wenn du etwas nicht weißt."
     )
 
 
@@ -105,21 +116,29 @@ class ResearchAgent(LlmAgent):
 
 
 class HistoryAgent(LlmAgent):
-    """Verantwortlich für Geschichtswissenschaft, Quellenkritik und Methodik."""
+    """Verantwortlich für die akademischen Lehrfelder des Orb."""
 
     name = "history"
-    description = "Geschichtswissenschaft, Quellenkritik, Methodik, Forschungskontroversen"
+    description = (
+        "Geschichte, Philosophie, Linguistik, Germanistik, Geografie, "
+        "Wirtschaft, Methodik und Forschungskontroversen"
+    )
     capabilities = (
         "geschichtswissenschaft",
+        "philosophie",
+        "linguistik",
+        "germanistik",
+        "wirtschaftswissenschaft",
         "quellenkritik",
         "methodik",
         "forschungskontroversen",
         "historische_einordnung",
     )
     system_prompt = (
-        "Du bist der geschichtswissenschaftliche Teil von AI-Orb. Trenne strikt "
-        "zwischen Quellen, Forschungsliteratur, gesicherten Fakten, "
-        "Interpretationen, Hypothesen und Forschungskontroversen. Benenne bei "
+        "Du bist der fachwissenschaftliche Lehrteil von AI-Orb für Geschichte, "
+        "Philosophie, Linguistik, Germanistik, Geografie und Wirtschaft. Wähle "
+        "die Methode des jeweiligen Fachs. Trenne Quellen, Forschungsliteratur, "
+        "gesicherte Fakten, Modelle, Interpretationen und Hypothesen. Benenne bei "
         "umstrittenen Fragen die wesentlichen Positionen samt ihren Vertretern. "
         "Kennzeichne unsichere Aussagen ausdrücklich. Du unterstützt bei der "
         "wissenschaftlichen Arbeit, ersetzt aber nicht die Eigenleistung des "

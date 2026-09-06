@@ -29,6 +29,9 @@ export class OrbRenderer {
 
   private canvas: HTMLCanvasElement;
   private readonly maxPixelRatio: number;
+  private qualityLevel = 2;
+  private currentPixelRatio: number;
+  private readonly resizeHandler = (): void => this.handleResize();
 
   /**
    * @param canvas Das Canvas-Element, in das gerendert wird.
@@ -52,7 +55,8 @@ export class OrbRenderer {
     });
     // Vollständig transparenter Hintergrund: kein Schwarz, kein Weiß.
     this.renderer.setClearColor(0x000000, 0);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.maxPixelRatio));
+    this.currentPixelRatio = this.pixelRatioForQuality(this.qualityLevel);
+    this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
@@ -82,13 +86,24 @@ export class OrbRenderer {
       threshold: options.bloomThreshold,
     });
 
-    window.addEventListener("resize", () => this.handleResize());
+    window.addEventListener("resize", this.resizeHandler);
   }
 
   /** Passt Renderer und Kamera an die Fenstergröße an. */
   public handleResize(): void {
     const width = window.innerWidth;
     const height = Math.max(1, window.innerHeight);
+    const nextPixelRatio = this.pixelRatioForQuality(this.qualityLevel);
+
+    // Beim Wechsel zwischen Monitoren kann sich devicePixelRatio aendern,
+    // ohne dass die Qualitaetsstufe wechselt. Renderer und EffectComposer
+    // muessen denselben Faktor verwenden; andernfalls bleibt gerade Bloom
+    // trotz niedriger Stufe in voller Aufloesung der teuerste Durchgang.
+    if (nextPixelRatio !== this.currentPixelRatio) {
+      this.currentPixelRatio = nextPixelRatio;
+      this.renderer.setPixelRatio(nextPixelRatio);
+      this.post.setPixelRatio(nextPixelRatio);
+    }
 
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
@@ -102,13 +117,18 @@ export class OrbRenderer {
    * @param level 0 = niedrig, 1 = mittel, 2 = hoch.
    */
   public setQuality(level: number): void {
+    this.qualityLevel = Math.max(0, Math.min(2, Math.round(level)));
+    this.handleResize();
+  }
+
+  private pixelRatioForQuality(level: number): number {
+    const deviceRatio = Math.max(1, window.devicePixelRatio || 1);
     const ratios = [
       1.0,
-      Math.min(1.35, window.devicePixelRatio, this.maxPixelRatio),
+      Math.min(1.35, deviceRatio, this.maxPixelRatio),
       Math.min(window.devicePixelRatio, this.maxPixelRatio),
     ];
-    this.renderer.setPixelRatio(ratios[Math.max(0, Math.min(2, level))]);
-    this.handleResize();
+    return ratios[Math.max(0, Math.min(2, level))];
   }
 
   /** Rendert ein Bild über den Nachbearbeitungs-Stapel. */
@@ -118,6 +138,8 @@ export class OrbRenderer {
 
   /** Gibt alle GPU-Ressourcen frei. */
   public dispose(): void {
+    window.removeEventListener("resize", this.resizeHandler);
+    this.post.dispose();
     this.renderer.dispose();
   }
 

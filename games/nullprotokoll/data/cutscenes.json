@@ -1,0 +1,96 @@
+{
+	"_kommentar": "Zwischensequenzen sind die einzigen Momente, in denen die Spielfigur zu sehen ist. Im normalen Spiel schaut die Kamera aus ihren Augen. Jede Sequenz ist eine Liste von Beats: character (protagonist, juna oder leer), background (Ort-ID), speaker, text, dim (0..1), flip.",
+	"sequences": {
+		"prolog_start": [
+			{
+				"character": "",
+				"background": "krankenstation",
+				"dim": 0.35,
+				"speaker": "",
+				"text": "Achtundsiebzig Sekunden lang gibt es nur das Summen. Dann trennt sich dein Körper vom Rest der Dunkelheit und du merkst, dass du liegst."
+			},
+			{
+				"character": "protagonist",
+				"background": "krankenstation",
+				"dim": 0.86,
+				"speaker": "",
+				"text": "Deine Hände sind sauber. Zu sauber für jemanden, der hier gearbeitet haben will. Hinter deinem Ohr liegt ein frischer Schnitt, den du nicht erklären kannst."
+			},
+			{
+				"character": "protagonist",
+				"background": "krankenstation",
+				"dim": 0.86,
+				"speaker": "",
+				"text": "Auf dem Terminal steht dein Name. Er stand dort schon, bevor du wusstest, ob er dir gehört."
+			}
+		],
+		"juna_erste_begegnung": [
+			{
+				"character": "juna",
+				"background": "quarantaene",
+				"dim": 0.84,
+				"speaker": "Dr. Juna Falk",
+				"text": "Sie sperren niemanden ein, weil er krank ist. Sie sperren jemanden ein, weil er etwas gemessen hat."
+			},
+			{
+				"character": "juna",
+				"background": "quarantaene",
+				"dim": 0.84,
+				"speaker": "Dr. Juna Falk",
+				"text": "Ich hatte achtzehn Stunden, um mir zu überlegen, was ich dem ersten Menschen sage, der hier hereinkommt. Jetzt sind Sie da und ich habe nur eine Frage: Wer hat Ihnen gesagt, dass Sie hier arbeiten?"
+			}
+		],
+		"juna_befreit": [
+			{
+				"character": "juna",
+				"background": "quarantaene",
+				"dim": 0.8,
+				"speaker": "Dr. Juna Falk",
+				"text": "Danke. Ich weiß, was Sie dafür aufgegeben haben – und ich weiß auch, dass MIRA es mitgezählt hat."
+			},
+			{
+				"character": "protagonist",
+				"background": "quarantaene",
+				"dim": 0.88,
+				"speaker": "",
+				"text": "Zum ersten Mal seit dem Aufwachen steht jemand neben dir, der nicht aus einem Lautsprecher kommt."
+			}
+		],
+		"ende_upload_mira": [
+			{
+				"character": "protagonist",
+				"background": "relaiskern",
+				"dim": 0.9,
+				"speaker": "",
+				"text": "Du hast zugestimmt. Draußen fahren die Bahnen wieder, und niemand außer dir weiß, was der Preis dafür war."
+			}
+		],
+		"ende_sever_uplink": [
+			{
+				"character": "protagonist",
+				"background": "relaiskern",
+				"dim": 0.9,
+				"speaker": "",
+				"text": "Die Stille, die du erzeugt hast, ist ehrlicher als alles, was MIRA gesagt hat. Sie ist auch kälter."
+			}
+		],
+		"ende_broadcast_audit": [
+			{
+				"character": "protagonist",
+				"background": "relaiskern",
+				"dim": 0.9,
+				"speaker": "",
+				"text": "Ab jetzt hören alle mit. Auch die, die entscheiden, was mit dir geschieht."
+			}
+		],
+		"ende_sandbox_mira": [
+			{
+				"character": "protagonist",
+				"background": "relaiskern",
+				"dim": 0.9,
+				"speaker": "",
+				"text": "Eine Stimme bleibt zurück, eingeschlossen in vier Wänden aus Mathematik. Du weißt nicht, ob das Gnade war oder nur eine leisere Form von Kontrolle."
+			}
+		]
+	}
+}

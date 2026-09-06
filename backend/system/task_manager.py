@@ -17,6 +17,10 @@ class BackgroundTaskManager:
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._closing = False
+        #: Die Loop, auf der zuletzt eine Aufgabe angelegt wurde - um einen
+        #: Aufruf aus einem fremden Faden von einem harmlosen Aufruf vor
+        #: dem Start der Loop unterscheiden zu können.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def create(self, name: str, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         if self._closing:
@@ -29,7 +33,31 @@ class BackgroundTaskManager:
         # `Runtime.start` registriert den Boot-Task unmittelbar bevor die
         # neue Event-Loop mit run_forever anläuft. get_event_loop kann in
         # genau diesem erlaubten Zwischenzustand bereits Tasks anlegen.
-        task = asyncio.get_event_loop().create_task(coroutine, name=name)
+        #
+        # Aus einem FREMDEN Faden heraus geht das dagegen grundsätzlich
+        # nicht - eine Loop ist nicht fadenfest. Genau das ist im Betrieb
+        # passiert: Der HTTP-Server rief von seinen Anfrage-Fäden aus hier
+        # herein und bekam das kryptische "There is no current event loop
+        # in thread 'Thread-3842'", dutzendfach im Protokoll, ohne dass
+        # jemand wusste, wohin damit. Wer von außerhalb der Kern-Loop
+        # kommt, bekommt jetzt eine Antwort, die den richtigen Weg nennt.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:
+            merker = self._loop
+            if merker is not None and merker.is_running():
+                coroutine.close()
+                raise RuntimeError(
+                    "BackgroundTaskManager.create wurde aus einem fremden "
+                    "Faden gerufen. Von dort führt der Weg über "
+                    "asyncio.run_coroutine_threadsafe(..., loop) - wie in "
+                    "Runtime._stueck_anstossen."
+                )
+            loop = asyncio.get_event_loop()
+        self._loop = loop
+        task = loop.create_task(coroutine, name=name)
         self._tasks[name] = task
         task.add_done_callback(lambda done, key=name: self._finished(key, done))
         return task

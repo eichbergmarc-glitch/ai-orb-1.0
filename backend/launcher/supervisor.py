@@ -261,6 +261,24 @@ class Supervisor:
         for service in services:
             if service.state in (ServiceState.FAILED, ServiceState.UNAVAILABLE):
                 continue
+
+            if service.state is ServiceState.RECOVERING:
+                # Hier lag ein Dienst bisher fuer immer.
+                #
+                # Ein misslungener Neustart hinterlaesst RECOVERING, und
+                # die Zeile darunter liess nur RUNNING durch. Der Dienst
+                # wurde also nie wieder geprueft: kein weiterer Versuch,
+                # kein Aufgeben, keine Meldung. Er verschwand einfach aus
+                # der Ueberwachung - der Ausfall stand in keiner Liste, und
+                # niemandem fiel er auf.
+                #
+                # Endlos wird das nicht: ``_recover`` zaehlt jeden Versuch
+                # mit und gibt nach ``max_restarts`` auf. Dann steht der
+                # Dienst auf FAILED oder UNAVAILABLE - und das ist eine
+                # Aussage, die man sehen kann.
+                events.append(self._recover(service))
+                continue
+
             if service.state is not ServiceState.RUNNING:
                 continue
 

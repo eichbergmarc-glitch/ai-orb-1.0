@@ -1,0 +1,66 @@
+Pruefstand fuer den AI-Orb
+Ordner : C:\Users\info\AI-Orb
+Zeit   : 04.09.2026 00:27:34
+
+--- Python --------------------------------------------------------
+  [OK    ] Python 3.11.9
+  [OK    ] Der Pruefstand laeuft im gebuendelten Python des Orb.
+
+--- Quelltext -----------------------------------------------------
+  [OK    ] Alle 305 Dateien unter backend lassen sich uebersetzen.
+
+--- Einstellungen -------------------------------------------------
+  [OK    ] Erstes Sprachmodell: claude_code (sonnet)
+  [OK    ] Rueckfall: ollama (lfm2.5:8b)
+  [OK    ] Rueckfragen bei schweren Rechten sind eingeschaltet.
+
+--- Netz und Sprachmodelle ----------------------------------------
+  [OK    ] Internet erreichbar.
+  [OK    ] Ollama laeuft, 8 Modell(e) geladen.
+           ai-doc:mts1, qwen2.5:14b-instruct, qwen2.5:3b-instruct, lfm2.5:8b, gemma2:2b, qwen2.5:7b-instruct, llama3.1:8b, llama3.2:3b
+
+--- Der Orb selbst ------------------------------------------------
+  [HINWEIS] Der Orb laeuft gerade nicht (127.0.0.1:8756 ist zu).
+           Starte den Orb und lasse den Pruefstand noch einmal laufen -
+           dann werden auch die Schnittstellen mitgeprueft.
+
+--- Vorlesungen ---------------------------------------------------
+  [OK    ] Alle 10 Auftraege fuer eine neue Vorlesung werden erkannt.
+  [OK    ] Saetze ohne Vorlesungsbezug loesen nichts aus.
+  [OK    ] Das Thema wird sauber erkannt: 'Geschichtswissenschaft, Schwerpunkt Mittelalter'
+  [OK    ] 2 gespeicherte Vorlesung(en).
+           philosophie                                   Abschnitt 20
+           geschichtswissenschaft haeltst und zwar ueber Abschnitt 3
+  [HINWEIS] Der Ablagename enthaelt ein Verb: 'geschichtswissenschaft haeltst und zwar ueber das mittelalter'
+           Er stammt aus der alten Themenerkennung. Der Fortschritt
+           bleibt erhalten; du kannst die Vorlesung unter diesem
+           Namen weiter fortsetzen oder neu beginnen.
+
+--- Protokolle der letzten 24 Stunden -----------------------------
+  [OK    ] 41 Protokolldateien wurden heute geschrieben.
+             3990725 Byte  system.log
+             2087244 Byte  backend_tools_web_tools.log
+             1385919 Byte  backend_whisper_transcriber.log
+             1331992 Byte  backend_system_performance_trace.log
+             1295480 Byte  backend_voice_voice_pipeline.log
+              679568 Byte  backend_orchestrator_providers_claude_code_provider.log
+  [HINWEIS] 1930 Fehlerzeilen in den letzten 24 Stunden.
+           2026-08-17 22:29:16 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
+           2026-08-17 23:00:15 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
+           2026-08-17 23:11:25 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
+           2026-08-18 00:04:57 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
+           2026-08-18 00:08:41 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
+           2026-08-18 00:12:45 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
+           2026-08-27 13:32:51 | ERROR    | ai_orb.backend.api.http_server | Fehler in GET /stimme/ton
+           2026-08-27 13:32:52 | ERROR    | ai_orb.backend.api.http_server | Fehler in GET /stimme/ton
+
+--- Ablage --------------------------------------------------------
+  [OK    ] data ist da und beschreibbar.
+  [OK    ] logs ist da und beschreibbar.
+  [OK    ] data/evolution ist da und beschreibbar.
+
+Dauer  : 2.1 Sekunden
+
+======================================================================
+  16 in Ordnung, 3 Hinweise, 0 Fehler
+======================================================================

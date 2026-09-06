@@ -447,7 +447,9 @@ class Launcher:
             Service(
                 name="Backend",
                 start=lambda: self._restart_runtime(),
-                is_alive=lambda: runtime is not None and runtime.is_running(),
+                # kern_gesund statt is_running: Ein halb hochgefahrener
+                # Kern soll nicht als gesund durchgehen.
+                is_alive=lambda: runtime is not None and runtime.kern_gesund(),
                 stop=lambda: runtime.stop(),
                 required=True,
                 failure_message=(

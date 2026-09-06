@@ -75,10 +75,17 @@ _GESPERRTE_NAMEN: dict[str, str] = {
     ),
     "user_profile.json": "Das sind die gespeicherten Angaben über den Benutzer.",
     "requirements.txt": "Ohne die Abhängigkeitsliste lässt sich der Orb nicht neu aufsetzen.",
+    "tagebuch.json": (
+        "Das ist das Tagebuch des Benutzers - persönliche Einträge, die "
+        "sich nicht wiederherstellen lassen. Neue Einträge schreibt man "
+        "mit 'tagebuch_schreiben', nie durch Überschreiben der Datei."
+    ),
 }
 
 #: Ordner, in denen gar nichts geschrieben wird.
-_GESPERRTE_ORDNER: tuple[str, ...] = (".git", "node_modules", "__pycache__")
+_GESPERRTE_ORDNER: tuple[str, ...] = (
+    ".git", "node_modules", "__pycache__", "tagebuch-bilder",
+)
 
 #: Wohin die alten Fassungen wandern.
 _SICHERUNGSORDNER = Path("data") / "datei_sicherungen"

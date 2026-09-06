@@ -96,6 +96,8 @@ class Transcriber:
         beam_size: int = 1,
         models_directory: Path | None = None,
         anfangshinweis: str = "",
+        vad_filter: bool = False,
+        temperatur_treppe: bool = True,
     ) -> None:
         """
         Args:
@@ -134,6 +136,36 @@ class Transcriber:
         self._beam_size = max(1, beam_size)
         self._models_directory = models_directory
         self._anfangshinweis = anfangshinweis.strip()
+
+        # Sprachaktivitaetsfilter vor dem Dekodieren.
+        #
+        # Whisper fuellt JEDE Aufnahme intern auf dreissig Sekunden auf.
+        # Ein 0,6-Sekunden-Fenster kostet damit dasselbe wie ein halbminuetiger
+        # Satz - und wenn nichts drin ist, faengt das Modell an zu raten. Der
+        # Filter wirft die Stille vorher weg, und uebrig bleibt nichts zu
+        # dekodieren.
+        self._vad_filter = bool(vad_filter)
+
+        # Die Temperatur-Treppe.
+        #
+        # Faellt ein Durchgang durch die Guetepruefung, versucht
+        # faster-whisper es von selbst noch einmal - mit 0.2, dann 0.4, bis
+        # 1.0. SECHS Durchgaenge, wo einer nicht reichte. Bei echter Sprache
+        # ist das eine gute Rettung; bei Stille faellt jeder Durchgang, und
+        # der ganze Turm wird abgearbeitet, bevor am Ende doch nichts
+        # herauskommt.
+        #
+        # Genau das steht im Protokoll vom 06.09.: dieselbe Art Fenster,
+        # 0,6 Sekunden, dasselbe Modell -
+        #
+        #     15:09:32   1,4 s
+        #     15:09:33   1,2 s
+        #     15:09:48  14,4 s
+        #
+        # Nichts anderes lief zu dieser Zeit; im Protokoll steht in diesen
+        # fuenfzehn Sekunden keine einzige andere Zeile. Der Faktor zwoelf
+        # ist die Treppe.
+        self._temperatur_treppe = bool(temperatur_treppe)
 
         self._model: Any | None = None
         self._load_lock = threading.Lock()
@@ -359,6 +391,15 @@ class Transcriber:
         if model is None:
             return Transcript()
 
+        # Die Aufnahme kann waehrend des Wartens verschwunden sein: Beim
+        # Stoppen der Sprachsteuerung raeumt die Aufnahme ihre Dateien weg,
+        # auch wenn hier noch eine in der Schlange steht. Das ist kein
+        # Fehler der Erkennung, sondern ein ueberholter Auftrag - eine
+        # Zeile im Protokoll, keine Rueckverfolgung.
+        if not audio_path.is_file():
+            logger.info("Aufnahme verworfen: %s wurde bereits aufgeraeumt.", audio_path.name)
+            return Transcript()
+
         started = time.perf_counter()
         try:
             segments, info = model.transcribe(
@@ -377,9 +418,16 @@ class Transcriber:
                 # Er kostet nichts an Rechenzeit und wird nie mit
                 # ausgegeben.
                 initial_prompt=self._anfangshinweis or None,
-                # Die Sprachaktivität wurde bereits vor der Aufnahme
-                # geprüft; eine zweite Filterung würde nur Zeit kosten.
-                vad_filter=False,
+                # Fuer den Hauptweg ist der Filter aus: Dort ist die
+                # Sprachaktivitaet schon vor der Aufnahme geprueft, und eine
+                # zweite Filterung kostet nur Zeit. Fuer die Stop-Fenster ist
+                # er an - die entstehen unabhaengig davon, ob jemand spricht.
+                vad_filter=self._vad_filter,
+                # Ein einzelner Durchgang statt der sechsstufigen Treppe,
+                # wo sie nicht gebraucht wird.
+                temperature=0.0 if not self._temperatur_treppe else [
+                    0.0, 0.2, 0.4, 0.6, 0.8, 1.0
+                ],
                 condition_on_previous_text=False,
             )
 

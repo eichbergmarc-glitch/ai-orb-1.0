@@ -1,0 +1,38 @@
+======================================================================
+ Lokales Sprachmodell
+======================================================================
+ 30.08.2026 23:03   Ordner: C:\Users\info\AI-Orb
+
+[1/6] Konfiguration
+      OK   ai.fallback: engine=ollama  model=lfm2.5:8b
+           ai.primary : engine=claude_code  model=sonnet  timeout=45
+
+[2/6] Ollama vorhanden
+      OK   C:\Users\info\AppData\Local\Programs\Ollama\ollama.EXE
+
+[3/6] Dienst laeuft
+      OK   Antwortet auf http://127.0.0.1:11434
+
+[4/6] Modell vorhanden
+           Lokal vorhanden: ai-doc:mts1, qwen2.5:14b-instruct, qwen2.5:3b-instruct, lfm2.5:8b, gemma2:2b, qwen2.5:7b-instruct, llama3.1:8b, llama3.2:3b
+      OK   'lfm2.5:8b' ist da.
+
+[5/6] Ins Gedaechtnis holen
+      OK   Liegt bereit (nach 0.0 s, bleibt 30 Minuten).
+
+[6/6] Eine echte Frage
+      OK   Geantwortet in 4.6 s:
+           "<think> The user asks: "Antworte in einem einzigen kurzen deutschen Satz: Was ist eine Quelle in der Geschichtswissenschaft?" So they want a single short German sentence answering that question. Something like: "Eine Quelle in der Geschichtswissenschaft ist jedes Dokument, Objekt oder Erlebnis, das "
+
+  Zum Offline-Betrieb:
+    Vorn steht 'claude_code' - ein Anbieter aus dem Netz. Ohne
+    Internet wartet der Orb erst dessen Zeitlimit ab (45 s),
+    bevor er das lokale Modell fragt. Das sieht aus wie ein Ausfall.
+
+    Umstellen mit:  python werkzeug\ollama_reparieren.py --offline
+    Zurueck mit  :  python werkzeug\ollama_reparieren.py --online
+
+======================================================================
+ Das lokale Modell traegt.
+ Mitgeschrieben: ollama-diagnose.txt
+======================================================================

@@ -16,6 +16,7 @@ from backend.utils.paths import get_project_root
 
 STATES = get_project_root() / "desktop" / "renderer" / "states.ts"
 ORB = get_project_root() / "desktop" / "renderer" / "energy_orb.ts"
+TRI_CORE = get_project_root() / "desktop" / "renderer" / "tri_core_orb.ts"
 MAIN = get_project_root() / "desktop" / "renderer" / "main.ts"
 HTML = get_project_root() / "desktop" / "renderer" / "index.html"
 PRELOAD = get_project_root() / "desktop" / "electron" / "preload.ts"
@@ -75,7 +76,12 @@ def test_emotionale_extreme_bleiben_erkennbar():
 def test_orb_bleibt_kompakt_und_zustandswechsel_sind_begrenzt():
     config = (get_project_root() / "config.yaml").read_text(encoding="utf-8")
     scale = float(re.search(r"^\s+scale:\s*([0-9.]+)", config, re.MULTILINE).group(1))
-    assert 0.20 <= scale <= 0.35
+    # 26.08.2026 Obergrenze von 0.35 auf 0.45 angehoben. Das Synaptix-
+    # Gehirn endet an seiner Kontur, waehrend der Energy-Orb noch Ringe
+    # nach aussen hatte - bei gleichem Wert wirkt es kleiner. Der Sinn
+    # der Schranke bleibt: Der Orb ist ein Zeichen auf dem Desktop und
+    # darf kein Fenster werden.
+    assert 0.20 <= scale <= 0.45
     for name in ("idle", "listening", "thinking", "speaking", "executing", "success"):
         assert 0.6 <= _state(name)["scale"] <= 1.1
 
@@ -86,13 +92,15 @@ def test_shader_enthaelt_augen_und_beide_symbole():
         assert token in text
 
 
-def test_referenzsilhouette_hat_kleinen_kern_dichte_korona_und_fuenf_bahnen():
+def test_stellar_silhouette_hat_doppel_kern_und_fuenf_weite_bahnen():
     text = ORB.read_text(encoding="utf-8")
     core = float(re.search(r"coreRadius:\s*([0-9.]+)", text).group(1))
     corona = float(re.search(r"coronaRadius:\s*([0-9.]+)", text).group(1))
     assert core <= 0.62
     assert corona >= 0.86
     assert len(re.findall(r"\{ a: [^\n]+ violet:", text)) == 5
+    axes = [float(raw) for raw in re.findall(r"\{ a: ([0-9.]+), b:", text)]
+    assert min(axes) >= 1.35
     for token in ("CORONA_FRAG", "coronaMaterial", "uAccent", "uWarm", "violettesBahnlicht"):
         assert token in text
 
@@ -279,20 +287,25 @@ def test_transparenter_webgl_puffer_bleibt_bis_zur_desktopkomposition_erhalten()
     assert "premultipliedAlpha: true" in renderer
 
 
-def test_original_orbits_sind_sichtbar_aber_gegen_ueberstrahlen_begrenzt():
+def test_orbitale_kreise_sind_vollstaendig_aus_der_laufzeitszene_entfernt():
     orb = ORB.read_text(encoding="utf-8")
-    assert "idle: 0.62" in orb
-    assert "this.referenceOrbitTarget = 0.62" in orb
+    assert "this.referenceOrbit.visible = false" in orb
+    assert "this.group.add(this.referenceOrbit)" not in orb
+    assert 'orbitIdle: "assets/orb/reference-layers/idle-orbits.png"' not in orb
+    assert "this.referenceOrbitTarget = 0.62" not in orb
+    assert "this.referenceOrbitTarget = pattern.orbit" not in orb
+    assert "P.rings.forEach" not in orb
+    assert "ringGroup.add" not in orb
     assert 'crown.target = state === "idle" ? 0.90 : 0.86' in orb
     assert "this.referenceInnerTarget = 0.28" in orb
-    assert "ring.particles.visible = true" in orb
+    assert "for (const filament of this.filaments) filament.mesh.visible = true" in orb
 
 
 def test_synaptischer_nebel_fuellt_den_raum_zwischen_kern_und_huelle():
     orb = ORB.read_text(encoding="utf-8")
     assert "const SYNAPTIC_MIST_FRAG" in orb
-    assert "synapticInnerRadius: 0.675" in orb
-    assert "synapticOuterRadius: 0.785" in orb
+    assert "synapticInnerRadius: 0.595" in orb
+    assert "synapticOuterRadius: 0.765" in orb
     assert "private readonly synapticInnerMaterial" in orb
     assert "private readonly synapticOuterMaterial" in orb
     shader = orb.split("const SYNAPTIC_MIST_FRAG", 1)[1].split("`;", 1)[0]
@@ -300,23 +313,27 @@ def test_synaptischer_nebel_fuellt_den_raum_zwischen_kern_und_huelle():
     assert "sin(uTime" not in shader
     assert "float branchA" in shader and "float branchB" in shader
     assert "float synapse" in shader
-    assert "strength = min(strength, 0.38)" in shader
+    assert "strength = min(strength, 0.54)" in shader
+    assert "pow(1.0 - facing, 0.58)" in shader
+    assert "this.styleMistGain" in orb
 
 
-def test_orbitale_schweife_bleiben_raeumlich_sichtbar_aber_gedaempft():
+def test_enge_energiekorona_bleibt_ohne_weite_orbitale_kreise_erhalten():
     orb = ORB.read_text(encoding="utf-8")
     ring_shader = orb.split("const RING_FRAG", 1)[1].split("`;", 1)[0]
     assert "float orbitPhase" in ring_shader
-    assert "comet * 0.26" in ring_shader
-    assert "glow = min(glow, 0.16)" in ring_shader
+    assert "comet * 0.42" in ring_shader
+    assert "glow = min(glow, 0.30)" in ring_shader
     assert "if (glow < 0.004) discard" in ring_shader
     assert "float drift" not in ring_shader
-    assert "ring.mesh.visible = visible" in orb
-    assert "this.styleRingGain * 0.30" in orb
-    assert "ringParticles: 12" in orb
-    assert "function ellipseArcTube" in orb
-    assert "ringGroup.add(...arcs)" in orb
-    assert "ring.arcMaterial.opacity" in orb
+    assert "filament.mesh.visible = !this.stellarMode" in orb
+    assert "this.dust.visible = !this.stellarMode && q >= 1" in orb
+    assert "this.coronaMaterial.uniforms.uIntensity.value = this.stellarMode" in orb
+    assert "this.styleFilamentGain" in orb
+    assert "function filamentTube(" in orb
+    assert "P.filaments.forEach" in orb
+    assert "P.rings.forEach" not in orb
+    assert "ringGroup.add(...arcs)" not in orb
 
 
 def test_transferentladung_springt_von_der_huelle_in_die_atomare_bahn():
@@ -332,7 +349,7 @@ def test_transferentladung_springt_von_der_huelle_in_die_atomare_bahn():
     assert "this.synapsenRot" in orb and "this.synapsenOrange" in orb
     assert "this.transferWait = Math.random() < 0.16" in orb
     assert "2.4 + Math.random() * 5.8" in orb
-    assert "new THREE.TubeGeometry(curve, 64, 0.015, 5, false)" in orb
+    assert "new THREE.TubeGeometry(curve, 64, 0.017, 5, false)" in orb
     assert "chosen.duration = 1.25 + Math.random() * 0.95" in orb
     assert "chosen.group.rotation.z = Math.random() * Math.PI * 2.0" in orb
 
@@ -350,13 +367,14 @@ def test_aussenbahnen_haben_keine_pulsierende_grundlinie():
     assert "float tw" not in dust_shader
 
 
-def test_bodenspiegelung_folgt_orbitfarben_und_entladungen():
+def test_bodenspiegelung_enthaelt_keine_orbitkreise_aber_entladungen():
     orb = ORB.read_text(encoding="utf-8")
     shader = orb.split("const GROUND_FRAG", 1)[1].split("`;", 1)[0]
-    assert "uOrbitPhase" in shader and "uTransferEnergy" in shader
-    assert "float orbitA" in shader and "float orbitB" in shader
+    assert "uOrbitPhase" not in shader
+    assert "float orbitA" not in shader and "float orbitB" not in shader
+    assert "uTransferEnergy" in shader
     assert "float transfer" in shader
-    assert "this.groundMaterial.uniforms.uOrbitPhase.value = this.ringPhase" in orb
+    assert "this.groundMaterial.uniforms.uOrbitPhase.value" not in orb
     assert "this.groundMaterial.uniforms.uTransferEnergy.value = this.transferReflection" in orb
     assert "this.referenceReflectionTarget = 0.16" in orb
 
@@ -364,9 +382,10 @@ def test_bodenspiegelung_folgt_orbitfarben_und_entladungen():
 def test_zustandsfarben_faerben_kern_nebel_huelle_und_atomsegmente():
     orb = ORB.read_text(encoding="utf-8")
     assert "uDeep.value as THREE.Color" in orb
-    assert "a.smokeDensity * 0.68" in orb
-    assert "a.smokeDensity * 0.48" in orb
-    assert "0.44 * a.lightIntensity" in orb
+    assert "a.smokeDensity * 0.72" in orb
+    assert "a.smokeDensity * 0.56" in orb
+    assert "0.58 : 0.44" in orb
+    assert "Math.max(0.90, a.lightIntensity)" in orb
     assert "ring.arcMaterial.color.copy" in orb
 
 
@@ -375,9 +394,9 @@ def test_start_und_laufzeit_nutzen_dieselben_ruhigen_energiewerte():
     main = MAIN.read_text(encoding="utf-8")
     # applyAppearance und update duerfen die Bahnhelligkeit nicht beim
     # ersten Frame auf einen voellig anderen Faktor springen lassen.
-    assert orb.count("a.ringIntensity * bright * 0.58") == 1
-    assert orb.count("a.ringIntensity * this.brightFactor * ringDamp * 0.58") == 1
-    assert orb.count("this.styleRingGain * 0.30") >= 2
+    assert orb.count("this.styleFilamentGain") >= 3
+    assert orb.count("this.styleRingGain") >= 3
+    assert orb.count("this.stellarMode ? 0.52 : 0.30") >= 2
     assert "baseBloomStrength * appearance.bloomStrength" in main
 
 
@@ -390,7 +409,10 @@ def test_ringmenue_chat_automatik_und_globale_maus_sind_verdrahtet():
                   'id="chat-form"', 'id="chat-input"'):
         assert token in html
     assert 'id="personalization"' not in html
-    assert "automaticStyles" in main and "setVisualStyle" in main
+    assert "new EnergyOrb(" in main
+    assert 'from "./energy_orb"' in main
+    assert "new TriCoreOrb(" not in main
+    assert "automaticStyles" not in main
     assert "backend.ask(text)" in main and 'showChat(true)' in main
     assert "setChatFocus(show)" in main
     assert 'ipcRenderer.send("window:chat-focus"' in preload
@@ -400,6 +422,72 @@ def test_ringmenue_chat_automatik_und_globale_maus_sind_verdrahtet():
     assert "screen.getCursorScreenPoint" in electron and '"pointer:global"' in electron
     assert "lastMousePassthrough" in main
     assert "lastCursorX" in electron and "}, 50);" in electron
+
+
+def test_tri_core_fusion_bleibt_als_inaktiver_entwurf_erhalten():
+    tri = TRI_CORE.read_text(encoding="utf-8")
+    main = MAIN.read_text(encoding="utf-8")
+    assert "export class TriCoreOrb" in tri
+    assert "[this.blue, this.red, this.yellow]" in tri
+    assert "new THREE.SphereGeometry(0.155" in tri
+    assert "new THREE.SphereGeometry(0.31" in tri
+    assert "new THREE.SphereGeometry(0.38" in tri
+    assert "new THREE.SphereGeometry(0.43" in tri
+    assert "new THREE.SphereGeometry(0.50" in tri
+    assert "case \"executing\"" in tri and ", 1.0]" in tri
+    assert "case \"speaking\"" in tri and ", 0.92]" in tri
+    assert "this.fusion +=" in tri
+    assert "this.cores[0].target.copy(a)" in tri
+    assert "uProfessor" in tri and "this.professorTarget" in tri
+    assert "setPointer(x: number, y: number, active: boolean)" in tri
+    assert "const FUSION_MIST_FRAG" in tri
+    assert "const FUSION_SHELL_FRAG" in tri
+    assert "synapseArcGeometry" in tri
+    assert "this.professorMix * 0.96" in tri
+    assert "dustParticles" not in tri
+    assert "ringParticles" not in tri
+    assert "new TriCoreOrb(" not in main
+    assert "new EnergyOrb(" in main
+
+
+def test_tri_core_bewegt_sich_organisch_und_hat_lesbare_fusionsaugen():
+    tri = TRI_CORE.read_text(encoding="utf-8")
+    assert "private formationPhase = 0.0" in tri
+    assert "this.formationPhase += delta" in tri
+    assert "const targetFormationSpeed" in tri
+    assert 'this.state === "thinking" ? 0.18' in tri
+    assert "const rotation = t * 0.20" not in tri
+    assert "private pointerTarget" in tri
+    assert "this.pointer.lerp(this.pointerTarget" in tri
+    assert "Math.exp(-delta * 2.15)" in tri
+    assert "const organicX" in tri and "const organicY" in tri
+    assert "new THREE.PlaneGeometry(0.94, 0.72)" in tri
+    assert "vec2(0.58, 0.42)" in tri
+    assert "0.072 * uOpen, 0.039" in tri
+    assert "body * 1.35" in tri
+    assert "this.baseScale * pulse * reactionScale" in tri
+
+
+def test_tri_core_hat_feste_grundfarben_und_unregelmaessige_teilfusionen():
+    tri = TRI_CORE.read_text(encoding="utf-8")
+    for color in ("0x1688ff", "0xff4054", "0xffd23f"):
+        assert color in tri
+    assert "uniform vec3 uColorB" in tri and "uniform vec3 uColorC" in tri
+    assert "uniform float uFluidMix" in tri
+    assert "this.fusedMaterial.uniforms.uFluidMix.value = 1.0" in tri
+    assert "float fieldA" in tri and "float fieldB" in tri
+    assert "const livingField" in tri
+    assert "Math.sin(t * 0.173)" in tri
+    assert "Math.sin(t * 0.287 + 1.73)" in tri
+    assert "smoothstep(0.44, 0.84, livingField)" in tri
+    assert "core.phaseDriftTarget" in tri and "core.radiusDriftTarget" in tri
+    assert "core.velocity.addScaledVector" in tri
+    assert "const MEMBRANE_FRAG" in tri
+    assert "float influence" in tri and "float vein" in tri
+    assert "3 * 18 * 2 * 3" in tri
+    assert "const contraction = 1.0 - this.fusion * 0.82" in tri
+    assert "0.38 + this.fusion * 0.72" in tri
+    assert "semanticMix" not in tri
 
 
 def test_automatische_position_wird_als_fensterecke_in_orbmittelpunkt_umgerechnet():

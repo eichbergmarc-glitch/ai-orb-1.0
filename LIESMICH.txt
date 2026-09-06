@@ -1,33 +1,46 @@
-AI-ORB - STIMM-PATCH (Thorsten, kostenlos, natuerlicher)
-=========================================================
+AI-Orb — Vorlesungen instand setzen und Pruefstand
+==================================================
+3. September 2026
 
-Was dieser Patch aendert:
+In dieses ZIP gehoert der Inhalt DIREKT in deinen Orb-Ordner
+C:\Users\info\AI-Orb — also so, dass die beiden .bat-Dateien neben
+ORB-STARTEN.bat liegen und der Ordner werkzeug sich mit dem vorhandenen
+mischt. Vorhandene Dateien werden nicht ueberschrieben; alles hier ist neu.
 
-  1. Die Stimme steht auf "de_DE-thorsten-high" - die natuerlichste
-     kostenlose deutsche Stimme, die lokal laeuft. Nichts verlaesst deinen
-     Rechner, keine Cloud, kein Schluessel.
 
-  2. Thorsten klingt jetzt lebendiger statt monoton. Zwei Regler, die
-     vorher ungenutzt waren, sind gesetzt:
-       - noise_w   (0.9)  gibt der Sprache Rhythmus statt Gleichtakt
-       - noise_scale (0.72) gibt ihr Ausdruck, nimmt das Blecherne
-     Diese Werte stehen in config.yaml unter voice.output.piper und lassen
-     sich nachjustieren: hoeher = lebendiger, zu hoch = unruhig.
+1. PRUEFSTAND.bat
+-----------------
+Zuerst diesen. Er geht einmal durch alle Funktionen und schreibt dir
+schwarz auf weiss, was laeuft und was nicht: Quelltext, Einstellungen,
+Internet, Ollama, der Orb selbst, die Vorlesungen, die Protokolle und die
+Ablage. Er aendert nichts und startet nichts.
 
-Zwei Dateien:
+Lass den Orb dabei ruhig laufen — dann werden auch seine Schnittstellen
+mitgeprueft.
 
-  backend/tts/piper_engine.py   <- wertet die neuen Regler aus
-  config.yaml                    <- Stimme + Reglerwerte
+Der Bericht steht danach in pruefstand-bericht.txt neben dem Orb.
 
-So einspielen:
 
-  Beide Dateien in deinen Projektordner kopieren und die vorhandenen
-  ersetzen:
-    ...\AI-Orb\AI-Orb\backend\tts\piper_engine.py
-    ...\AI-Orb\AI-Orb\config.yaml
+2. VORLESUNG-REPARIEREN-2.bat
+-----------------------------
+Setzt die erneuerte Vorlesungserkennung ein. Menuepunkt 1 zeigt erst nur,
+was geaendert wuerde — sieh dir die Zeilennummern an, bevor du 2 waehlst.
+Menuepunkt 3 macht alles rueckgaengig, byteweise.
 
-  Danach den Orb neu starten (ORB-STARTEN.bat).
+Geaendert werden genau drei Mitglieder von VorlesungsSession:
+_FORTSETZEN, _thema_aus und befehl. Sonst nichts.
 
-Hinweis: Beim ersten Sprechen mit "high" laedt Thorsten einmalig sein
-groesseres Modell nach (paar Sekunden, einmalig). Ist dir das zu langsam,
-setze in config.yaml voice.output.piper.voice auf "de_DE-thorsten-medium".
+
+Danach den Orb neu starten und es einmal sagen:
+
+    "Halte mir eine Vorlesung ueber die Franzoesische Revolution"
+
+Der Orb muss von vorn beginnen. Und:
+
+    "Fahre fort"
+
+muss die zuletzt begonnene Vorlesung weiterfuehren.
+
+
+Was gefunden wurde, steht in docs\BEFUND.md — mit den Belegen aus deiner
+eigenen data\vorlesung.json und den Protokollen vom 26.08.

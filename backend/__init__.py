@@ -10,4 +10,4 @@ Umgesetzt sind beide Lastenhefte: AI-Orb v2 (Phasen 1 bis 5) und AI-Orb v3
 ohne bestehende Module zu verändern.
 """
 
-__version__ = "0.28.2"
+__version__ = "0.36.0"

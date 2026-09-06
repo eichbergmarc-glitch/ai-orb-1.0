@@ -1,0 +1,38 @@
+{
+	"_kommentar": "Zuordnung der Sprechrollen zu XTTS-v2-Stimmen. Zwei Wege sind moeglich: 'reference' verweist auf eine eigene Sprachprobe (WAV, 6-15 Sekunden, sauber aufgenommen) und klont diese Stimme. 'speaker' waehlt stattdessen eine der im Modell mitgelieferten Studiostimmen; das braucht keine eigene Aufnahme. Ist eine reference-Datei vorhanden, hat sie Vorrang. speed steuert das Tempo (1.0 = normal, kleiner = langsamer).",
+
+	"sprache": "de",
+
+	"rollen": {
+		"gedanke_w": {
+			"beschreibung": "Innerer Monolog der weiblichen Spielfigur. Ruhig, dicht am Ohr, nicht vorgetragen.",
+			"reference": "tools/stimmproben/gedanke_w.wav",
+			"speaker": "Sofia Hellen",
+			"speed": 0.94
+		},
+		"gedanke_m": {
+			"beschreibung": "Innerer Monolog der maennlichen Spielfigur.",
+			"reference": "tools/stimmproben/gedanke_m.wav",
+			"speaker": "Damien Black",
+			"speed": 0.94
+		},
+		"juna": {
+			"beschreibung": "Dr. Juna Falk, 44, erschoepft und wach zugleich, kontrolliert.",
+			"reference": "tools/stimmproben/juna.wav",
+			"speaker": "Tanja Adelina",
+			"speed": 0.97
+		},
+		"samir": {
+			"beschreibung": "Samir Dastan, ueber Funk, angespannt und leise.",
+			"reference": "tools/stimmproben/samir.wav",
+			"speaker": "Baldur Sanjin",
+			"speed": 1.0
+		},
+		"funk": {
+			"beschreibung": "Unbekannte Funkstimme, distanziert.",
+			"reference": "tools/stimmproben/funk.wav",
+			"speaker": "Viktor Menelaos",
+			"speed": 1.02
+		}
+	}
+}

@@ -153,12 +153,12 @@ def test_health_report_format_matches_specification() -> None:
 
 
 def test_optional_failure_does_not_block_readiness() -> None:
-    """Ohne Kokoro läuft AI-Orb – ohne Backend nicht."""
+    """Ohne Sprachausgabe läuft AI-Orb – ohne Backend nicht."""
 
     report = HealthReport(
         results=[
             CheckResult("Backend", CheckState.OK, required=True),
-            CheckResult("Kokoro", CheckState.WARNING, "keine Stimme", required=False),
+            CheckResult("Sprachausgabe", CheckState.WARNING, "keine Stimme", required=False),
         ]
     )
     assert report.ready

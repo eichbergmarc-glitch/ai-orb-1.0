@@ -32,6 +32,18 @@ def test_menue_schliessen_entsperrt_die_oberflaeche():
     assert pipeline._event_bus.events == [("orb.menu.requested", {"action": "close"})]
 
 
+def test_chat_oeffnen_ist_ein_lokaler_sprachbefehl():
+    pipeline = _Pipeline()
+    assert asyncio.run(pipeline._menue_befehl("Öffne den Chat")) is True
+    assert pipeline._event_bus.events == [("orb.chat.requested", {"action": "open"})]
+
+
+def test_orb_beenden_ist_unabhaengig_vom_chatfenster():
+    pipeline = _Pipeline()
+    assert asyncio.run(pipeline._menue_befehl("Beende den Orb")) is True
+    assert pipeline._event_bus.events == [("orb.quit.requested", {"source": "voice"})]
+
+
 def test_normale_frage_wird_nicht_als_menuebefehl_verschluckt():
     pipeline = _Pipeline()
     assert asyncio.run(pipeline._menue_befehl("Was steht heute auf dem Menü?")) is False

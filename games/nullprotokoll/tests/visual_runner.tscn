@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://tests/visual_runner.gd" id="1_visual"]
+
+[node name="VisualRunner" type="Node"]
+script = ExtResource("1_visual")
+

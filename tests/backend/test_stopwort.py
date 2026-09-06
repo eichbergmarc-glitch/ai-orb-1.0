@@ -247,16 +247,22 @@ def test_der_orb_gibt_sofort_ein_zeichen():
     assert ausschnitt.index("VoiceState.THINKING") < ausschnitt.index("_respond")
 
 
-def test_der_denkklang_ist_hinterlegt():
-    # Ohne Datei bleibt es still, und der Zustandswechsel nuetzt nichts.
+def test_der_denkklang_ist_abgeschaltet_aber_greifbar():
+    # Der Klang war am 19.08. eingebaut worden und wurde am 20.08. auf
+    # ausdruecklichen Wunsch des Benutzers wieder entfernt ("ein neuer
+    # Ton ist implementiert worden, entferne diesen wieder"). Die Datei
+    # bleibt liegen, damit ein Eintrag in der config genuegt, um ihn
+    # zurueckzuholen - aber eingetragen sein darf er nicht mehr.
     from pathlib import Path
 
     import yaml
 
     daten = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
     pfad = daten["voice"]["output"]["thinking_sound"]
-    assert pfad, "kein Denk-Klang eingetragen"
-    assert Path(pfad).is_file(), f"{pfad} fehlt"
+    assert not pfad, f"der Denk-Klang ist wieder eingetragen ({pfad!r})"
+    assert Path("audio/denken.wav").is_file(), (
+        "die Klangdatei soll als Rueckholoption liegen bleiben"
+    )
 
 
 # --- Und warum der Orb sich damit selbst zerriss ---------------------------
@@ -334,3 +340,111 @@ def test_ein_unsicheres_fenster_bricht_nichts_ab():
     assert ausschnitt.index("_fremd_mindestsicherheit") < ausschnitt.index(
         "Stop-Wort %r erkannt"
     )
+
+
+# ---------------------------------------------------------------------------
+# Der Späher bekam gar nichts zu hören (26.08.2026)
+# ---------------------------------------------------------------------------
+#
+# Die Wortprüfung oben war die ganze Zeit in Ordnung. Sie kam nur nie an
+# die Reihe: ``_stop_spaeher_fuer_ausgabe`` schaltete den Späher bei jeder
+# lokalen Stimme ab, und in ``config.yaml`` steht als einzige Engine
+# ``supertonic``. Im Protokoll stand ab dem 25.08. deshalb keine einzige
+# Zeile "Stop-Späher: N Hörfenster" mehr - nur noch die Bereitmeldung.
+
+
+class _Aufnahme:
+    """Merkt sich, ob der Späher ein- oder ausgeschaltet wurde."""
+
+    def __init__(self) -> None:
+        self.zustaende: list[bool] = []
+
+    def set_stop_spotting(self, aktiv: bool) -> None:
+        self.zustaende.append(bool(aktiv))
+
+
+class _Ergebnis:
+    def __init__(self, engine: str, context: dict | None = None) -> None:
+        self.engine = engine
+        self.context = context or {}
+
+
+def _pipeline(*, waehrend_lokaler_stimme: bool):
+    """Baut nur so viel Pipeline, wie die geprüfte Methode braucht."""
+
+    from backend.voice.voice_pipeline import VoicePipeline
+
+    pipeline = VoicePipeline.__new__(VoicePipeline)
+    pipeline._capture = _Aufnahme()
+    pipeline._stop_waehrend_lokaler_stimme = waehrend_lokaler_stimme
+    return pipeline
+
+
+def test_die_lokale_stimme_schaltet_den_spaeher_nicht_mehr_ab():
+    """Supertonic darf das Stop-Wort nicht aushebeln."""
+
+    pipeline = _pipeline(waehrend_lokaler_stimme=True)
+    pipeline._stop_spaeher_fuer_ausgabe(
+        _Ergebnis("supertonic", {"avoid_stop_transcription": True, "local": True})
+    )
+    assert pipeline._capture.zustaende == [True]
+
+
+def test_ein_laufender_pcm_strom_bleibt_ausgenommen():
+    """Dort entsteht die Datei noch beim Abspielen - echte Gleichzeitigkeit."""
+
+    pipeline = _pipeline(waehrend_lokaler_stimme=True)
+    pipeline._stop_spaeher_fuer_ausgabe(_Ergebnis("pocket_tts", {"pcm_stream": object()}))
+    assert pipeline._capture.zustaende == [False]
+
+
+def test_der_alte_weg_bleibt_abschaltbar():
+    """Wer die Ruecksicht auf die CPU will, bekommt sie weiterhin."""
+
+    pipeline = _pipeline(waehrend_lokaler_stimme=False)
+    pipeline._stop_spaeher_fuer_ausgabe(
+        _Ergebnis("supertonic", {"avoid_stop_transcription": True})
+    )
+    assert pipeline._capture.zustaende == [False]
+
+
+def test_eine_entfernte_stimme_horcht_immer_mit():
+    pipeline = _pipeline(waehrend_lokaler_stimme=False)
+    pipeline._stop_spaeher_fuer_ausgabe(_Ergebnis("elevenlabs", {}))
+    assert pipeline._capture.zustaende == [True]
+
+
+def test_ohne_jeden_unterbrechungsweg_wird_gewarnt(caplog):
+    """Alle drei Wege zu heisst: Der Orb ist nicht mehr zu stoppen."""
+
+    import logging
+
+    from backend.voice.voice_pipeline import VoicePipeline
+
+    pipeline = VoicePipeline.__new__(VoicePipeline)
+    pipeline._stop_words = {"stop", "stopp", "halt"}
+    pipeline._stop_waehrend_lokaler_stimme = False
+    pipeline._stimme_lokal = True
+    pipeline._interrupt_taste = ""
+    pipeline._barge_in = False
+
+    with caplog.at_level(logging.WARNING):
+        pipeline._unterbrechungsweg_pruefen()
+    assert any("NICHT zu unterbrechen" in eintrag.message for eintrag in caplog.records)
+
+
+def test_ein_offener_weg_genuegt_und_schweigt(caplog):
+    import logging
+
+    from backend.voice.voice_pipeline import VoicePipeline
+
+    pipeline = VoicePipeline.__new__(VoicePipeline)
+    pipeline._stop_words = {"stop"}
+    pipeline._stop_waehrend_lokaler_stimme = True
+    pipeline._stimme_lokal = True
+    pipeline._interrupt_taste = ""
+    pipeline._barge_in = False
+
+    with caplog.at_level(logging.WARNING):
+        pipeline._unterbrechungsweg_pruefen()
+    assert not any("NICHT zu unterbrechen" in e.message for e in caplog.records)

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Vorschläge des Orb</title>
+<style>
+  :root{--base:#4aa3ff;--accent:#bfe4ff;--text:#e8f1ff;--muted:#8fa6c4;
+    --flaeche:rgba(14,21,33,.82);--linie:rgba(120,170,230,.18);
+    --gruen:#3fdd90;--gelb:#ffc53f;--rot:#ff5f6d}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:#05080f;color:var(--text);min-height:100vh;
+    font:400 17px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(circle at 50% -10%,rgba(74,163,255,.16),transparent 55%)}
+  .huelle{max-width:760px;margin:0 auto;padding:calc(env(safe-area-inset-top) + 22px) 20px
+    calc(env(safe-area-inset-bottom) + 40px)}
+  header{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+  h1{font-size:26px;margin:0;letter-spacing:-.02em}
+  a.zurueck{color:var(--base);text-decoration:none;font-size:15px;font-weight:590}
+  .stand{color:var(--muted);font-size:14px;margin:0 0 26px}
+
+  .zahlen{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px;margin-bottom:28px}
+  .zahl{background:var(--flaeche);border:1px solid var(--linie);border-radius:16px;padding:13px 15px}
+  .zahl b{display:block;font-size:23px;font-weight:640;letter-spacing:-.02em}
+  .zahl span{color:var(--muted);font-size:12.5px}
+
+  h2{font-size:14px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);
+    font-weight:590;margin:32px 0 12px}
+  .karte{background:var(--flaeche);border:1px solid var(--linie);border-radius:18px;
+    padding:17px 19px;margin-bottom:12px}
+  .karte h3{margin:0 0 6px;font-size:17.5px;font-weight:600;line-height:1.35}
+  .karte p{margin:0 0 12px;color:var(--muted);font-size:14.5px}
+  .marken{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:13px}
+  .marke{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--linie);
+    color:var(--muted)}
+  .marke.gruen{color:var(--gruen);border-color:rgba(63,221,144,.4)}
+  .marke.gelb{color:var(--gelb);border-color:rgba(255,197,63,.4)}
+  .marke.rot{color:var(--rot);border-color:rgba(255,95,109,.4)}
+  .knopfreihe{display:flex;gap:9px;flex-wrap:wrap}
+  button{appearance:none;border-radius:12px;padding:11px 17px;font:inherit;font-size:15px;
+    font-weight:590;cursor:pointer;border:1px solid var(--linie);background:rgba(255,255,255,.05);
+    color:var(--text)}
+  button.ja{background:rgba(63,221,144,.18);border-color:rgba(63,221,144,.45);color:#c8ffe4}
+  button:active{transform:scale(.97)}
+  button[disabled]{opacity:.45}
+  .leer{color:var(--muted);padding:22px 0;font-size:15px}
+  .idee{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--linie);font-size:15px}
+  .idee:last-child{border-bottom:none}
+  .idee .wo{flex:none;width:118px;padding-right:10px;color:var(--muted);font-size:12.5px;padding-top:2px;
+    text-transform:uppercase;letter-spacing:.06em}
+  .meldung{margin:18px 0;padding:13px 16px;border-radius:14px;font-size:15px;
+    background:rgba(74,163,255,.12);border:1px solid rgba(74,163,255,.32)}
+  .meldung.fehler{background:rgba(255,95,109,.13);border-color:rgba(255,95,109,.36)}
+  footer{margin-top:34px;color:var(--muted);font-size:13.5px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="huelle">
+  <header>
+    <h1>Vorschläge</h1>
+    <a class="zurueck" href="./">← zum Orb</a>
+  </header>
+  <p class="stand" id="stand">wird geladen …</p>
+
+  <div class="zahlen" id="zahlen"></div>
+  <div id="meldung"></div>
+
+  <h2>Warten auf deine Freigabe</h2>
+  <div id="patches"><p class="leer">wird geladen …</p></div>
+
+  <h2>Gefunden, noch nicht bearbeitet</h2>
+  <div class="karte" id="ideen"><p class="leer">wird geladen …</p></div>
+
+  <div class="knopfreihe" style="margin-top:26px">
+    <button id="zurueckdrehen">Letzte Übernahme rückgängig</button>
+  </div>
+
+  <footer>
+    Gebaut wird ausschließlich in einer Arbeitskopie. An den laufenden
+    Dateien ändert der Nachtlauf nichts – erst dein Antippen übernimmt einen
+    Patch, und auch das lässt sich zurückdrehen.
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var el = function (id) { return document.getElementById(id); };
+
+  function melden(text, schlecht) {
+    el("meldung").innerHTML = "";
+    if (!text) return;
+    var d = document.createElement("div");
+    d.className = "meldung" + (schlecht ? " fehler" : "");
+    d.textContent = text;
+    el("meldung").appendChild(d);
+  }
+
+  function zahl(wert, was) {
+    return '<div class="zahl"><b>' + wert + "</b><span>" + was + "</span></div>";
+  }
+
+  function risikoklasse(risiko) {
+    var r = String(risiko || "").toLowerCase();
+    if (/niedrig|low|gering/.test(r)) return "gruen";
+    if (/hoch|high/.test(r)) return "rot";
+    return "gelb";
+  }
+
+  function laden() {
+    fetch("api/evolution/report", { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("Der Orb antwortet mit " + r.status);
+        return r.json();
+      })
+      .then(zeichnen)
+      .catch(function (e) {
+        el("stand").textContent = "keine Verbindung zum Orb";
+        melden(e.message + " – läuft der Orb auf dem PC?", true);
+        el("patches").innerHTML = '<p class="leer">–</p>';
+        el("ideen").innerHTML = '<p class="leer">–</p>';
+      });
+  }
+
+  function zeichnen(d) {
+    var wann = d.letzte_analyse ? new Date(d.letzte_analyse * 1000) : null;
+    el("stand").textContent = wann
+      ? "Letzte Selbstanalyse: " + wann.toLocaleString("de-DE")
+      : "Noch keine Selbstanalyse gelaufen.";
+
+    var patches = d.bereite_patches || [];
+    var ideen = d.gefundene_verbesserungen || [];
+    var punkte = d.wiederherstellungspunkte || [];
+    el("zahlen").innerHTML =
+      zahl(patches.length, "bereit") +
+      zahl(ideen.length, "gefunden") +
+      zahl(punkte.length, "Rückwege");
+
+    // --- Patches ---
+    var ziel = el("patches");
+    ziel.innerHTML = "";
+    if (!patches.length) {
+      ziel.innerHTML = '<p class="leer">Nichts zu entscheiden. '
+        + 'Der nächste Nachtlauf sieht wieder nach.</p>';
+    }
+    patches.forEach(function (p) {
+      var karte = document.createElement("div");
+      karte.className = "karte";
+
+      var h = document.createElement("h3");
+      h.textContent = p.titel || p.title || "Ohne Titel";
+      karte.appendChild(h);
+
+      if (p["begründung"] || p.begruendung) {
+        var t = document.createElement("p");
+        t.textContent = p["begründung"] || p.begruendung;
+        karte.appendChild(t);
+      }
+
+      var marken = document.createElement("div");
+      marken.className = "marken";
+      function marke(text, klasse) {
+        if (!text) return;
+        var s = document.createElement("span");
+        s.className = "marke" + (klasse ? " " + klasse : "");
+        s.textContent = text;
+        marken.appendChild(s);
+      }
+      marke("Risiko: " + (p.risiko || p.risk || "?"), risikoklasse(p.risiko || p.risk));
+      marke(p.tests ? "Tests: " + p.tests : "", "gruen");
+      marke(p.review ? "Review: " + p.review : "");
+      marke(p.leistung && p.leistung !== "nicht gemessen" ? p.leistung : "");
+      karte.appendChild(marken);
+
+      var offen = p.unsicherheiten || [];
+      if (offen.length) {
+        var u = document.createElement("p");
+        u.textContent = "Offen: " + offen.join(" · ");
+        karte.appendChild(u);
+      }
+
+      var reihe = document.createElement("div");
+      reihe.className = "knopfreihe";
+      var ja = document.createElement("button");
+      ja.className = "ja";
+      ja.textContent = "Übernehmen";
+      ja.onclick = function () { uebernehmen(p.id, ja); };
+      reihe.appendChild(ja);
+      karte.appendChild(reihe);
+
+      ziel.appendChild(karte);
+    });
+
+    // --- Ideen ---
+    var iziel = el("ideen");
+    iziel.innerHTML = "";
+    if (!ideen.length) {
+      iziel.innerHTML = '<p class="leer">Nichts gefunden.</p>';
+    }
+    ideen.slice(0, 12).forEach(function (i) {
+      var zeile = document.createElement("div");
+      zeile.className = "idee";
+      var wo = document.createElement("span");
+      wo.className = "wo";
+      wo.textContent = i.category || i.kategorie || i.type || "Idee";
+      var was = document.createElement("span");
+      was.textContent = i.title || i.titel || i.description || i.beschreibung || "–";
+      zeile.appendChild(wo);
+      zeile.appendChild(was);
+      iziel.appendChild(zeile);
+    });
+  }
+
+  function uebernehmen(id, knopf) {
+    if (!id) { melden("Diesem Vorschlag fehlt eine Kennung.", true); return; }
+    knopf.disabled = true;
+    knopf.textContent = "wird übernommen …";
+    fetch("api/evolution/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patch_id: id, confirmed: true }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        melden(d.message || "Übernommen. Der Orb muss neu gestartet werden.", !d.applied && d.applied !== undefined);
+        laden();
+      })
+      .catch(function (e) {
+        melden("Das hat nicht geklappt: " + e.message, true);
+        knopf.disabled = false;
+        knopf.textContent = "Übernehmen";
+      });
+  }
+
+  el("zurueckdrehen").onclick = function () {
+    var k = this;
+    k.disabled = true;
+    fetch("api/evolution/undo", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { melden(d.message || "Zurückgedreht."); k.disabled = false; laden(); })
+      .catch(function (e) { melden("Das hat nicht geklappt: " + e.message, true); k.disabled = false; });
+  };
+
+  laden();
+  setInterval(laden, 60000);
+})();
+</script>
+</body>
+</html>

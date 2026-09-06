@@ -34,6 +34,12 @@ import * as path from "path";
 import { BackendProcess } from "./backend_process";
 import { ConsentBridge } from "./consent";
 import { DesktopManager } from "./desktop_manager";
+import { FlipperCenter, readFlipperStatus } from "./flipper_center";
+import {
+  LectureVisualWindow,
+  type LectureVisualBounds,
+  type LectureVisualPayload,
+} from "./lecture_visual";
 import { MonitorManager } from "./monitor_manager";
 import {
   describePaths,
@@ -57,12 +63,16 @@ const PROJECT_ROOT = getAppRoot();
 
 /** Verzeichnis der gebauten Renderer-Dateien. */
 const RENDERER_DIR = path.resolve(__dirname, "..", "renderer");
+const flipperCenter = new FlipperCenter(RENDERER_DIR);
 
 /** Die geladene Konfiguration. */
 let config: Record<string, any> = {};
 
 let orbWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
+const lectureVisual = new LectureVisualWindow((visible, bounds) => {
+  setLectureVisualMode(visible, bounds);
+});
 
 /** Der Python-Kern, den dieser Prozess startet und überwacht. */
 let backend: BackendProcess | null = null;
@@ -346,6 +356,15 @@ function buildContextMenu(): Menu {
     { label: `AI-Orb ${readConfig("app.version", "0.1.0")}`, enabled: false },
     { type: "separator" },
     {
+      label: "Flipper Control Center",
+      click: () => flipperCenter.show(),
+    },
+    {
+      label: "Chat öffnen",
+      click: () => sendToRenderer("orb.chat.requested", { action: "open", source: "tray" }),
+    },
+    { type: "separator" },
+    {
       label: "Position merken",
       click: () => {
         if (orbWindow === null) return;
@@ -468,7 +487,7 @@ function setupSmartDesktop(window: BrowserWindow): void {
       switchThreshold: readConfig("smart_desktop.switch_threshold", 0.08),
       evaluationInterval: readConfig("smart_desktop.evaluation_interval_ms", 1500),
       backendUrl:
-        `http://${readConfig("backend.host", "127.0.0.1")}:` +
+        `http://${backendHost()}:` +
         `${readConfig("backend.port", 8756)}`,
     },
     {
@@ -597,6 +616,46 @@ function moveOrbTo(window: BrowserWindow, targetX: number, targetY: number): voi
 }
 
 /**
+ * Reserviert links unten neben der Lehrtafel einen festen Platz fuer den Orb.
+ *
+ * Das Orb-Fenster ist groesser als die sichtbare Kugel und transparent. Fuer
+ * die Kollisionsrechnung ist daher allein der sichtbare Radius entscheidend.
+ * Die Smart-Desktop-Automatik bleibt ausgesetzt, solange die Tafel offen ist;
+ * sonst koennte die naechste Mausbewegung die Anordnung sofort aufheben.
+ */
+function setLectureVisualMode(
+  visible: boolean,
+  bounds?: LectureVisualBounds,
+): void {
+  desktopManager?.setSuspended("lecture-visual", visible);
+  if (!visible || bounds === undefined || orbWindow === null || orbWindow.isDestroyed()) {
+    return;
+  }
+
+  const display = screen.getDisplayMatching(bounds);
+  const [width, height] = orbWindow.getSize();
+  const orbRadius = (Math.min(width, height) / 2) * readConfig("orb.scale", 0.5);
+  const workArea = display.workArea;
+  const gap = 6;
+
+  // Rechts liegt die Tafel. Der Orb sitzt mit seiner sichtbaren Aussenkante
+  // links davon und mit seiner Unterkante knapp ueber dem Bildschirmrand.
+  // Falls ein kleiner Monitor weniger Raum bietet, halten die Grenzen ihn
+  // trotzdem vollstaendig im sichtbaren Arbeitsbereich.
+  const targetX = Math.max(
+    workArea.x + orbRadius,
+    Math.min(bounds.x - orbRadius - gap, workArea.x + workArea.width - orbRadius),
+  );
+  const targetY = Math.max(
+    workArea.y + orbRadius,
+    workArea.y + workArea.height - orbRadius - 8,
+  );
+
+  moveOrbTo(orbWindow, targetX, targetY);
+  orbWindow.showInactive();
+}
+
+/**
  * Setzt das Fenster so um, dass der Orb wieder in seiner Mitte sitzt.
  *
  * Wird nach dem Ziehen aufgerufen, damit dem Orb anschließend in alle
@@ -646,7 +705,7 @@ function ensureVisible(window: BrowserWindow): void {
  * unterbrochen. Deshalb wird still protokolliert statt gestört.
  */
 function requestVoiceInterrupt(): void {
-  const host = readConfig("backend.host", "127.0.0.1");
+  const host = backendHost();
   const port = readConfig<number>("backend.port", 8756);
 
   const request = http.request(
@@ -700,6 +759,10 @@ function setInterruptShortcut(active: boolean): void {
 
 /** Registriert alle IPC-Handler. */
 function registerIpcHandlers(): void {
+  ipcMain.handle("flipper:status", () => readFlipperStatus());
+  ipcMain.handle("flipper:open-qflipper", () => flipperCenter.launchQFlipper());
+  ipcMain.handle("flipper:choose-app", () => flipperCenter.chooseApp());
+
   // Bei jedem Abruf frisch von der Platte lesen.
   //
   // Sonst bekäme der Renderer nach einem Neuladen die beim Programmstart
@@ -714,8 +777,12 @@ function registerIpcHandlers(): void {
     setInterruptShortcut(speaking);
   });
 
+  ipcMain.on("lecture-visual:show", (_event, payload: LectureVisualPayload) => {
+    void lectureVisual.show(payload, orbWindow);
+  });
+
   ipcMain.handle("backend:url", () => {
-    const host = readConfig("backend.host", "127.0.0.1");
+    const host = backendHost();
     const port = readConfig("backend.port", 8756);
     return `http://${host}:${port}`;
   });
@@ -762,7 +829,11 @@ function registerIpcHandlers(): void {
       void shell.openPath(app.getPath("documents"));
     } else if (action === "settings") {
       void shell.openPath(getConfigPath());
-    } else if (action === "chat" || action === "search") {
+    } else if (action === "chat") {
+      sendToRenderer("orb.chat.requested", { action: "open", source: "menu" });
+    } else if (action === "quit") {
+      app.quit();
+    } else if (action === "search") {
       sendToRenderer("orb.listen.toggle", { source: action });
     }
   });
@@ -832,7 +903,7 @@ function registerIpcHandlers(): void {
  * @returns Ob der Kern bereit ist.
  */
 async function startBackend(): Promise<boolean> {
-  const host = readConfig<string>("backend.host", "127.0.0.1");
+  const host = backendHost();
   const port = readConfig<number>("backend.port", 8756);
 
   splash = new SplashScreen();
@@ -1042,8 +1113,26 @@ if (!app.requestSingleInstanceLock()) {
     desktopManager?.stop();
     tray?.destroy();
     splash?.close();
+    lectureVisual.close();
+    flipperCenter.close();
     // Keine Taste zurücklassen, die AI-Orb nach dem Beenden noch abfinge.
     globalShortcut.unregisterAll();
     stopBackend();
   });
+}
+
+/**
+ * Die Adresse, unter der DIESER Prozess den Kern erreicht.
+ *
+ * `backend.host` beantwortet eine andere Frage als die, die hier gestellt
+ * wird. Es sagt, auf welchen Netzwerkkarten der Server LAUSCHT. "0.0.0.0"
+ * heisst dort "auf allen" - als Ziel einer Verbindung ist es dagegen
+ * keine Adresse, sondern die Abwesenheit einer Adresse. Wer sie einsetzt,
+ * baut sich einen Fehler, der genau dann auftritt, wenn der Fernzugang
+ * eingerichtet wurde: Der Orb auf dem Rechner selbst faende seinen
+ * eigenen Kern nicht mehr.
+ */
+function backendHost(): string {
+  const host = readConfig<string>("backend.host", "127.0.0.1");
+  return host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
 }

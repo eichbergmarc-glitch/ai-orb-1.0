@@ -1,0 +1,210 @@
+/* =============================================================================
+   orb.css – Grundlayout der Orb-Oberfläche
+   =============================================================================
+   Die Oberfläche besteht ausschließlich aus einem bildschirmfüllenden
+   Canvas. Es gibt keinen sichtbaren Hintergrund, keine Ränder, keine
+   Bildlaufleisten und keine Bedienelemente – der Orb soll wie ein freies
+   Objekt auf dem Desktop wirken.
+   ============================================================================= */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+
+  /* Vollständig transparent: weder Schwarz noch Weiß. */
+  background: transparent;
+
+  /* Die Textauswahl würde beim Ziehen des Orb stören. */
+  user-select: none;
+  -webkit-user-select: none;
+
+  /* Der Fensterbereich außerhalb des Orb bleibt klickdurchlässig; der
+     Hauptprozess schaltet das je nach Zeigerposition um. */
+  cursor: default;
+}
+
+body {
+  /* Verhindert, dass ein versehentliches Wischen das Fenster verschiebt. */
+  -webkit-app-region: no-drag;
+}
+
+#orb-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+
+  /* Weicher Zeiger über dem Orb, damit erkennbar ist, dass er anfassbar ist. */
+  cursor: grab;
+}
+
+#orb-canvas:active {
+  cursor: grabbing;
+}
+
+.orb-menu {
+  --orb-x: 0px;
+  --orb-y: 0px;
+  position: fixed;
+  left: calc(50% + var(--orb-x));
+  top: calc(50% + var(--orb-y));
+  width: 310px;
+  height: 310px;
+  transform: translate(-50%, -50%);
+  z-index: 8;
+  pointer-events: none;
+  animation: menu-in 180ms ease-out;
+}
+
+.orb-menu[hidden] { display: none; }
+
+.orb-menu button {
+  position: absolute;
+  width: 62px;
+  height: 62px;
+  border: 1px solid rgba(82, 207, 255, 0.72);
+  border-radius: 50%;
+  color: #e8fbff;
+  background: radial-gradient(circle at 35% 28%, rgba(38, 125, 210, 0.88), rgba(3, 16, 39, 0.94));
+  box-shadow: 0 0 18px rgba(33, 174, 255, 0.45), inset 0 0 12px rgba(76, 187, 255, 0.22);
+  font: 21px "Segoe UI Symbol", sans-serif;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.orb-menu button:hover { transform: scale(1.1); box-shadow: 0 0 26px rgba(64, 217, 255, 0.78); }
+.orb-menu button span { display: block; margin-top: 2px; font: 9px "Segoe UI", sans-serif; }
+.orb-menu button:nth-of-type(1) { left: 4px; top: 124px; }
+.orb-menu button:nth-of-type(2) { left: 45px; top: 28px; }
+.orb-menu button:nth-of-type(3) { right: 45px; top: 28px; }
+.orb-menu button:nth-of-type(4) { right: 4px; top: 124px; }
+.orb-menu button:nth-of-type(5) { left: 124px; bottom: 0; }
+.orb-menu button:nth-of-type(6) { right: 37px; bottom: 34px; border-color: rgba(255, 112, 126, 0.72); }
+
+.orb-info {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  min-width: 78px;
+  padding: 4px 9px;
+  transform: translate(-50%, 76px);
+  border: 1px solid rgba(69, 200, 255, 0.42);
+  border-radius: 12px;
+  color: #8ee8ff;
+  background: rgba(2, 14, 35, 0.72);
+  text-align: center;
+  font: 10px "Segoe UI", sans-serif;
+  pointer-events: none;
+}
+
+.chat-panel {
+  position: fixed;
+  left: 22px;
+  right: 22px;
+  bottom: 20px;
+  z-index: 13;
+  height: 218px;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+  border: 1px solid rgba(75, 205, 255, 0.65);
+  border-radius: 16px;
+  color: #eafaff;
+  background: rgba(2, 13, 33, 0.96);
+  box-shadow: 0 0 26px rgba(24, 151, 255, 0.38);
+  font: 12px "Segoe UI", sans-serif;
+}
+.chat-panel[hidden] { display: none; }
+.chat-panel header { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; color: #55ddff; border-bottom: 1px solid rgba(69, 174, 228, 0.24); }
+.chat-panel header button { border: 0; color: white; background: transparent; font-size: 20px; cursor: pointer; }
+.chat-messages { overflow-y: auto; padding: 9px 10px; }
+.chat-message { width: fit-content; max-width: 88%; margin: 5px 0; padding: 7px 9px; border-radius: 11px; white-space: pre-wrap; user-select: text; }
+.chat-message--orb { background: rgba(23, 80, 131, 0.82); border: 1px solid rgba(77, 194, 255, 0.28); }
+.chat-message--user { margin-left: auto; background: rgba(73, 45, 155, 0.82); border: 1px solid rgba(170, 125, 255, 0.35); }
+.chat-message--pending { color: #8ccde8; font-style: italic; }
+.chat-form { display: grid; grid-template-columns: 1fr 38px; gap: 7px; padding: 9px; border-top: 1px solid rgba(69, 174, 228, 0.24); }
+.chat-form input { min-width: 0; padding: 8px 10px; border: 1px solid rgba(76, 190, 245, 0.38); border-radius: 10px; outline: none; color: white; background: rgba(9, 34, 63, 0.9); }
+.chat-form input:focus { border-color: #55ddff; box-shadow: 0 0 8px rgba(58, 201, 255, 0.34); }
+.chat-form button { border: 1px solid rgba(76, 201, 255, 0.58); border-radius: 10px; color: white; background: #126ca8; cursor: pointer; }
+
+@keyframes menu-in { from { opacity: 0; transform: translate(-50%, -50%) scale(.82); } }
+
+/* Bildlaufleisten sind in dieser Oberfläche niemals erwünscht. */
+::-webkit-scrollbar {
+  display: none;
+}
+
+.diagnostics {
+  position: fixed;
+  top: 22px;
+  right: 22px;
+  width: 290px;
+  padding: 14px;
+  color: #dff7ff;
+  background: rgba(3, 13, 31, 0.92);
+  border: 1px solid rgba(70, 200, 255, 0.5);
+  border-radius: 14px;
+  box-shadow: 0 0 28px rgba(35, 150, 255, 0.24);
+  font: 12px/1.45 "Segoe UI", sans-serif;
+  backdrop-filter: blur(12px);
+  z-index: 10;
+}
+
+.diagnostics[hidden] { display: none; }
+.diagnostics__header { display: flex; justify-content: space-between; font-weight: 600; color: #65d9ff; }
+.diagnostics__header button { border: 0; background: transparent; color: #dff7ff; font-size: 20px; cursor: pointer; }
+.diagnostics__content { display: grid; grid-template-columns: 1fr auto; gap: 7px 12px; margin-top: 10px; }
+.diagnostics__label { color: #8ba9be; }
+.diagnostics__value { text-align: right; }
+.diagnostics__ok { color: #69efad; }
+.diagnostics__warn { color: #ffc46b; }
+
+/* Respektiert die Systemeinstellung für reduzierte Bewegung: In diesem Fall
+   bleibt der Orb ruhiger, hört aber nicht vollständig auf, sich zu bewegen –
+   sonst wirkte er leblos. */
+@media (prefers-reduced-motion: reduce) {
+  #orb-canvas {
+    opacity: 0.95;
+  }
+}
+
+
+/* --- Betrieb im Browser (iPad, Handy, fremder Rechner) -------------------
+ *
+ * `web-bridge.js` setzt `data-orb-web` am <html>-Element. Drei Menuepunkte
+ * wirken ausschliesslich auf dem Rechner, auf dem der Kern laeuft: Ordner
+ * oeffnen, Konfigurationsdatei oeffnen, Programm beenden. Aus der Ferne
+ * waeren sie entweder wirkungslos oder ein Fernzugriff auf fremde
+ * Fenster. Sie verschwinden deshalb, statt ins Leere zu fuehren.
+ */
+/* Im Electron-Fenster ist der Hintergrund durchsichtig - dort liegt der
+ * Schreibtisch dahinter. Eine Browser-Seite hat nichts dahinter; ohne
+ * eigenen Grund staende der Orb in einem schwarzen Loch. Dieselbe tiefe
+ * Kuppel wie in der Referenzansicht gibt ihm wieder einen Raum. */
+[data-orb-web],
+[data-orb-web] body {
+  background: radial-gradient(
+    circle at 50% 42%,
+    #0b2b56 0%,
+    #03152d 48%,
+    #010816 100%
+  );
+  /* Kein Gummiband-Scrollen beim Wischen auf dem iPad. */
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+[data-orb-web] #orb-menu button[data-action="files"],
+[data-orb-web] #orb-menu button[data-action="settings"],
+[data-orb-web] #orb-menu button[data-action="quit"] {
+  display: none;
+}

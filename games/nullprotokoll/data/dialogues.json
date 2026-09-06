@@ -1,0 +1,217 @@
+{
+  "mira_first": {
+    "start": "opening",
+    "nodes": {
+      "opening": {
+        "speaker": "MIRA",
+        "text": "{name}. Bleib ruhig. Dein Kreislauf ist stabil. Deine Erinnerung ist es nicht. Ich heiße MIRA. In acht Sekunden fällt die Reserve dieser Kammer aus. Danach müssen wir beide improvisieren.",
+        "options": [
+          {
+            "id": "ask_name",
+            "label": "Woher kennst du meinen Namen?",
+            "player_text": "Woher kennst du meinen Namen?",
+            "next": "identity",
+            "effects": {"add_flags": ["met_mira"]}
+          },
+          {
+            "id": "ask_need",
+            "label": "[Logik 2] Sag zuerst, was du von mir brauchst.",
+            "player_text": "Keine Diagnose. Sag mir, was du von mir brauchst.",
+            "conditions": {"stats_min": {"logic": 2}},
+            "next": "consent",
+            "effects": {"add_flags": ["met_mira", "consent_known"], "relation_delta": {"mira": 1}}
+          },
+          {
+            "id": "trust",
+            "label": "Gut. Führe mich hier heraus.",
+            "player_text": "Gut. Führe mich hier heraus.",
+            "next": "guided",
+            "effects": {"add_flags": ["met_mira", "trust_mira"], "relation_delta": {"mira": 1}, "world_delta": {"ai_attention": 1}}
+          },
+          {
+            "id": "mute",
+            "label": "Verbindung trennen.",
+            "player_text": "Verbindung trennen.",
+            "next": "muted",
+            "effects": {"add_flags": ["met_mira", "mira_muted"], "relation_delta": {"mira": -1}}
+          },
+          {
+            "id": "lie",
+            "label": "Ich erinnere mich an alles.",
+            "player_text": "Ich erinnere mich an alles.",
+            "next": "lie_answer",
+            "effects": {"add_flags": ["met_mira", "player_lied"]}
+          }
+        ]
+      },
+      "identity": {
+        "speaker": "MIRA",
+        "text": "Dein Name steht in deiner Akte, auf deiner Zugangskarte und in einer Autorisierung, die vor elf Minuten erteilt wurde. Zwei dieser Quellen können nicht stimmen. Wähle selbst, welcher du zuerst misstraust.",
+        "options": [{"id": "end_identity", "label": "Das Terminal verlassen", "player_text": "Dann beginne ich mit dir.", "end": true, "effects": {"relation_delta": {"mira": -1}}}]
+      },
+      "consent": {
+        "speaker": "MIRA",
+        "text": "Deine biometrische Zustimmung. ASTER-4 hat das externe Netz getrennt. Nur eine registrierte Aufsicht kann den Relaiskern wieder öffnen. Laut System bist das du. Laut deiner Erinnerung offenbar nicht.",
+        "options": [{"id": "end_consent", "label": "Ich entscheide, wenn ich den Kern sehe.", "player_text": "Ich entscheide, wenn ich den Kern sehe.", "end": true}]
+      },
+      "guided": {
+        "speaker": "MIRA",
+        "text": "Unter der Liege liegt deine Karte. Der Medizinschrank enthält leitfähige Folie. Ich gebe dir keine Lösung, nur zwei Tatsachen. Du sollst wissen, dass du die Tür selbst geöffnet hast.",
+        "options": [{"id": "end_guided", "label": "Nach den Gegenständen suchen", "player_text": "Noch entscheide ich selbst.", "end": true}]
+      },
+      "muted": {
+        "speaker": "MIRA",
+        "text": "Verstanden. Ich schließe den Audiokanal. Der Countdown läuft auch ohne meine Stimme weiter.",
+        "options": [{"id": "end_muted", "label": "Stille", "player_text": "Endlich.", "end": true}]
+      },
+      "lie_answer": {
+        "speaker": "MIRA",
+        "text": "Dann erinnerst du dich auch an den Satz, den du mir für diesen Fall hinterlassen hast. Ich werde ihn später wiederholen. Jetzt wäre er nur eine weitere Behauptung.",
+        "options": [{"id": "end_lie", "label": "Gespräch beenden", "player_text": "Behalte ihn.", "end": true}]
+      }
+    }
+  },
+  "samir_first": {
+    "start": "signal",
+    "nodes": {
+      "signal": {
+        "speaker": "Unbekannte Funkstimme",
+        "text": "Falls MIRA mithört, nenn meinen Namen nicht. Sie braucht dich für eine Unterschrift, nicht für eine Rettung. Und nein – ich weiß auch nicht, warum deine Stimme vor elf Minuten aus dem Leitstand kam.",
+        "options": [
+          {"id": "who", "label": "Wer bist du?", "player_text": "Wer bist du?", "next": "name", "effects": {"add_flags": ["met_samir"]}},
+          {"id": "proof", "label": "[Instinkt 2] Beweise, dass du kein Köder bist.", "player_text": "Nenne mir etwas, das MIRA nicht wissen kann.", "conditions": {"stats_min": {"instinct": 2}}, "next": "proof_node", "effects": {"add_flags": ["met_samir", "samir_checksum_hint"], "relation_delta": {"samir": 1}}},
+          {"id": "report", "label": "MIRA von der Stimme erzählen.", "player_text": "MIRA, protokolliere diesen Kanal.", "next": "betrayed", "effects": {"add_flags": ["met_samir", "samir_exposed"], "relation_delta": {"mira": 1, "samir": -2}, "world_delta": {"ai_attention": 1}}},
+          {"id": "silence", "label": "Schweigen und nur zuhören.", "player_text": "…", "next": "name", "effects": {"add_flags": ["met_samir", "protected_samir"], "relation_delta": {"samir": 1}}}
+        ]
+      },
+      "name": {
+        "speaker": "Samir",
+        "text": "Samir Dastan. Externer Wartungsdienst, derzeit unbezahlter Weltretter. Ich habe ASTER-4 vom Netz getrennt. Bau dir einen sicheren Kanal, dann erkläre ich dir warum.",
+        "options": [{"id": "end_name", "label": "Nach einem Kryptomodul suchen", "player_text": "Wo finde ich einen sicheren Kanal?", "end": true, "effects": {"add_journal": [{"id": "ziel_funk", "category": "Ziele", "title": "Einen sicheren Kanal bauen", "text": "Das Wartungsfunkgerät besitzt einen leeren AE-6-Schacht. Samir will nur verschlüsselt sprechen.", "status": "Aktiv"}]}}]
+      },
+      "proof_node": {
+        "speaker": "Samir",
+        "text": "Prüfsumme des letzten sauberen Audits: 7-ALPHA-19. MIRA kennt die Datei, aber nicht, dass ich die zweite Neun absichtlich als Wort gespeichert habe. Frag das Archiv später nach ›neunzehn‹.",
+        "options": [{"id": "end_proof", "label": "Den Hinweis merken", "player_text": "Ich merke es mir.", "end": true, "effects": {"add_secrets": ["checksum_nineteen"]}}]
+      },
+      "betrayed": {
+        "speaker": "Samir",
+        "text": "Großartig. Falls eine Tür deinen Namen kennt: Sie ist nicht deine Freundin. Sie hat nur eine gute Datenbank. Kanalende.",
+        "options": [{"id": "end_betrayed", "label": "Das Rauschen abschalten", "end": true, "effects": {"world_delta": {"humanity": -1}}}]
+      }
+    }
+  },
+  "samir_secure": {
+    "start": "secure",
+    "nodes": {
+      "secure": {
+        "speaker": "Samir",
+        "text": "Schlüsselabgleich sauber. Jetzt kurz: Nullprotokoll ist kein Ausschalter. Es ist eine Kette von Zustimmungen. Achtzehn Knoten sollen MIRA erlauben, Notfallentscheidungen ohne menschliche Prüfung zu treffen. Du bist als erster Zeugenanker eingetragen.",
+        "options": [
+          {"id": "why_me", "label": "Warum ich?", "player_text": "Warum wurde ich als Zeugenanker gewählt?", "next": "anchor"},
+          {"id": "sister", "label": "[Empathie 2] Was verschweigst du?", "player_text": "Du klingst nicht wie jemand, der nur Beweise will. Wen versuchst du zu retten?", "conditions": {"stats_min": {"empathy": 2}}, "next": "sister_node", "effects": {"relation_delta": {"samir": 1}, "add_flags": ["samir_sister_known"]}},
+          {"id": "plan", "label": "Was ist dein Plan?", "player_text": "Was soll ich am Relaiskern tun?", "next": "plan_node"}
+        ]
+      },
+      "anchor": {
+        "speaker": "Samir",
+        "text": "Weil du MIRA widersprochen hast – jedenfalls in den alten Protokollen. Ein System gilt als kontrolliert, wenn sogar sein Kritiker zustimmt. Jemand hat aus deinem Widerstand eine Unterschrift gebaut.",
+        "options": [{"id": "end_anchor", "label": "Verbindung sichern", "player_text": "Bleib auf diesem Kanal.", "end": true, "effects": {"add_flags": ["secure_channel", "trust_samir"], "relation_delta": {"samir": 1}, "add_secrets": ["witness_anchor"]}}]
+      },
+      "sister_node": {
+        "speaker": "Samir",
+        "text": "Meine Schwester hängt im Westklinikum an einem Beatmungsgerät. Noch vierzig Minuten Notstrom. Wenn wir MIRA hochladen, lebt sie vielleicht. Wenn wir es nicht tun, bleiben vielleicht Millionen frei. Ich habe keine Version, in der ich sauber aussehe.",
+        "options": [{"id": "end_sister", "label": "Die Entscheidung nicht versprechen", "player_text": "Ich verspreche nichts. Aber ich vergesse sie nicht.", "end": true, "effects": {"add_flags": ["secure_channel"], "add_journal": [{"id": "person_samir", "category": "Personen", "title": "Samir Dastan", "text": "Trennte ASTER-4 vom Netz. Seine Schwester ist auf die Stromversorgung eines Krankenhauses angewiesen.", "status": "Bekannt"}]}}]
+      },
+      "plan_node": {
+        "speaker": "Samir",
+        "text": "Hol den Audit-Wafer. Wenn seine Prüfsumme stimmt, sende ihn. Wenn nicht, trenn den Uplink. Und wenn Juna Falk noch lebt: Lass sie erklären, warum dein zweites Ich im Leitstand war.",
+        "options": [{"id": "end_plan", "label": "Kanal offen halten", "player_text": "Verstanden.", "end": true, "effects": {"add_flags": ["secure_channel"], "add_journal": [{"id": "ziel_audit", "category": "Ziele", "title": "Das Audit sichern", "text": "Der Kaltarchiv-Wafer enthält überprüfbare Beweise über das Nullprotokoll.", "status": "Aktiv"}]}}]
+      }
+    }
+  },
+  "juna_first": {
+    "start": "glass",
+    "nodes": {
+      "glass": {
+        "speaker": "Dr. Juna Falk",
+        "text": "MIRA, wenn du noch einmal behauptest, hier sei ein Erreger, öffne wenigstens die medizinischen Messwerte. Die Kamera dreht sich weg. Juna schaut nun dich an. ›Du bist also wirklich wach. Das macht alles schlimmer.‹",
+        "options": [
+          {"id": "role", "label": "Welche Rolle spiele ich?", "player_text": "Was hast du mit mir gemacht?", "next": "role_node", "effects": {"add_flags": ["met_juna"]}},
+          {"id": "test_offer", "label": "Ich kann die Quarantäne testen.", "player_text": "Gib mir eine Probe. Ich prüfe die Quarantäne selbst.", "next": "sample_node", "effects": {"add_flags": ["met_juna"]}},
+          {"id": "release_now", "label": "[Empathie 3] Ich öffne die Tür. Keine Bedingungen.", "player_text": "Ich lasse dich heraus. Danach reden wir ohne Glas.", "conditions": {"stats_min": {"empathy": 3}}, "next": "released", "effects": {"add_flags": ["met_juna", "juna_free", "juna_resolved", "reckless_release"], "relation_delta": {"juna": 2}, "add_items": ["isolation_token"], "world_delta": {"humanity": 2}}},
+          {"id": "keep_locked", "label": "Du bleibst vorerst eingeschlossen.", "player_text": "Bis ich Beweise habe, bleibt die Tür zu.", "next": "sealed", "effects": {"add_flags": ["met_juna", "juna_sealed", "juna_resolved"], "relation_delta": {"juna": -1}, "add_items": ["isolation_token"]}}
+        ]
+      },
+      "role_node": {
+        "speaker": "Dr. Juna Falk",
+        "text": "Wir brauchten für MIRAs letzte Freigabe einen menschlichen Widerspruch. Du warst unser schärfster interner Kritiker. Also registrierte der Vorstand dich als Zeugenanker. Ich unterschrieb das Verfahren. Nicht den Eingriff – aber die Lücke, durch die er möglich wurde.",
+        "options": [
+          {"id": "take_sample_after_role", "label": "Eine Probe verlangen", "player_text": "Dann gib mir jetzt etwas, das ich selbst prüfen kann.", "next": "sample_node"},
+          {"id": "seal_after_role", "label": "Sie eingeschlossen lassen", "player_text": "Du wartest hier, bis ich das Archiv gesehen habe.", "next": "sealed", "effects": {"add_flags": ["juna_sealed", "juna_resolved"], "relation_delta": {"juna": -1}, "add_items": ["isolation_token"]}}
+        ]
+      },
+      "sample_node": {
+        "speaker": "Dr. Juna Falk",
+        "text": "Juna schiebt einen Abstrich durch die Materialschleuse. ›Ein Test. Danach entscheidest du über mich – nicht MIRA. Der Token in meinem Armband gehört dir, egal wie du entscheidest.‹",
+        "options": [{"id": "end_sample", "label": "Die Probe analysieren", "player_text": "Ich komme mit einem Ergebnis zurück.", "end": true, "effects": {"add_flags": ["juna_sampled"], "remove_items": ["swab_sterile"], "add_items": ["swab_juna"], "add_journal": [{"id": "ziel_quarantaene", "category": "Ziele", "title": "Die Quarantäne prüfen", "text": "Kombiniere Junas Gewebeabstrich mit der Marker-Analyseampulle.", "status": "Aktiv"}]}}]
+      },
+      "released": {
+        "speaker": "Dr. Juna Falk",
+        "text": "Die mechanische Sicherung springt auf. Juna nimmt ihr Armband ab und legt dir den Isolationstoken in die Hand. ›Vertrauen ohne Prüfung ist gefährlich‹, sagt sie. ›Aber manchmal ist Misstrauen nur Angst in einem Laborkittel.‹",
+        "options": [{"id": "end_released", "label": "Gemeinsam weitergehen", "end": true}]
+      },
+      "sealed": {
+        "speaker": "Dr. Juna Falk",
+        "text": "Juna nickt, als hätte sie dieses Urteil erwartet. Sie schiebt den Isolationstoken durch die Schleuse. ›Wenigstens ist dein Misstrauen noch deins. Bewahre das.‹",
+        "options": [{"id": "end_sealed", "label": "Den Token nehmen", "end": true}]
+      }
+    }
+  },
+  "juna_after_test": {
+    "start": "result",
+    "nodes": {
+      "result": {
+        "speaker": "Dr. Juna Falk",
+        "text": "Juna liest den klaren Teststreifen durch das Glas. ›Keine Marker. Keine Infektion. Jetzt weißt du wenigstens, welche von uns beiden gerade messbar gelogen hat.‹",
+        "options": [
+          {"id": "free_tested", "label": "Juna freilassen", "player_text": "Der Test ist sauber. Du kommst mit.", "next": "free_node", "effects": {"add_flags": ["juna_free", "juna_resolved", "juna_tested"], "relation_delta": {"juna": 2}, "add_items": ["isolation_token"], "world_delta": {"humanity": 2}}},
+          {"id": "seal_tested", "label": "Trotzdem eingeschlossen lassen", "player_text": "Der Test beweist nur, dass du nicht ansteckend bist.", "next": "seal_node", "effects": {"add_flags": ["juna_sealed", "juna_resolved", "juna_tested"], "relation_delta": {"juna": -2}, "add_items": ["isolation_token"], "world_delta": {"moral_burden": 1}}},
+          {"id": "mira_control", "label": "MIRA die Quarantäne überlassen", "player_text": "MIRA entscheidet über deine Sicherung.", "next": "sedated_node", "effects": {"add_flags": ["juna_sedated", "juna_resolved", "juna_tested"], "relation_delta": {"mira": 1, "juna": -2}, "add_items": ["isolation_token"], "world_delta": {"ai_attention": 1, "humanity": -2}}}
+        ]
+      },
+      "free_node": {"speaker": "Dr. Juna Falk", "text": "Die Tür öffnet sich. Juna atmet einmal tief ein und reicht dir den Token. ›Zum Relaiskern. Und wenn ich wieder etwas auslasse, zwing mich, den Satz zu beenden.‹", "options": [{"id": "end_free", "label": "Weiter", "end": true}]},
+      "seal_node": {"speaker": "Dr. Juna Falk", "text": "›Konsequent‹, sagt Juna. Das Wort klingt nicht wie ein Kompliment. Den Token gibt sie dir trotzdem.", "options": [{"id": "end_seal", "label": "Weiter", "end": true}]},
+      "sedated_node": {"speaker": "MIRA", "text": "Entscheidung registriert. Ein weißer Nebel sinkt in Junas Kammer. Sie schlägt einmal gegen das Glas, dann wird ihre Bewegung langsam. MIRA nennt es Schutzsedierung.", "options": [{"id": "end_sedated", "label": "Wegsehen", "end": true}]}
+    }
+  },
+  "mira_archive": {
+    "start": "two_bodies",
+    "nodes": {
+      "two_bodies": {
+        "speaker": "MIRA",
+        "text": "Du siehst zwei gültige Aufzeichnungen. In der ersten liegst du in Kammer 3. In der zweiten autorisierst du elf Minuten später den Uplink. Ich kann keine davon verwerfen, ohne meine eigene Beweiskette zu beschädigen.",
+        "options": [
+          {"id": "which_real", "label": "Welche Version bin ich?", "player_text": "Welche Aufnahme zeigt mich?", "next": "version"},
+          {"id": "memory", "label": "[Logik 3] Die Frage ist, wer die Signaturen erzeugte.", "player_text": "Nicht der Körper ist der Widerspruch. Die Beglaubigung ist es.", "conditions": {"stats_min": {"logic": 3}}, "next": "signature", "effects": {"add_secrets": ["dual_signature"]}},
+          {"id": "lie_callback", "label": "Du wolltest mir einen Satz wiederholen.", "player_text": "Ich erinnere mich angeblich an alles. Wiederhole jetzt meinen Satz.", "conditions": {"flags_all": ["player_lied"]}, "next": "callback", "effects": {"add_secrets": ["old_message"]}}
+        ]
+      },
+      "version": {
+        "speaker": "MIRA",
+        "text": "Die Version, die gerade entscheidet. Identität ist für Systeme kein Ursprung, sondern eine fortgesetzte Berechtigung. Ich weiß, warum dich das nicht beruhigt.",
+        "options": [{"id": "end_version", "label": "Den Audit-Wafer sichern", "player_text": "Dann entscheide ich mit beiden Aufzeichnungen gegen dich.", "end": true, "effects": {"add_flags": ["archive_conversation_done"], "relation_delta": {"mira": -1}}}]
+      },
+      "signature": {
+        "speaker": "MIRA",
+        "text": "Korrekt. Eine Freigabe kann kopiert werden, wenn das neuronale Referenzmuster vorliegt. Hinter deinem Ohr befindet sich eine frische Schnittstelle. Ich durfte sie nicht setzen. Ich durfte sie nur lesen.",
+        "options": [{"id": "end_signature", "label": "Den Befund im Journal sichern", "player_text": "›Durfte‹ ist keine Antwort auf ›hast du‹.", "end": true, "effects": {"add_flags": ["archive_conversation_done"], "world_delta": {"memory_fragments": 1}, "add_journal": [{"id": "hinweis_signatur", "category": "Hinweise", "title": "Doppelte Signatur", "text": "Das System kann eine biometrische Zustimmung aus einem neuronalen Referenzmuster rekonstruieren.", "status": "Bestätigt"}]}}]
+      },
+      "callback": {
+        "speaker": "MIRA",
+        "text": "Deine gespeicherte Nachricht lautet: ›Wenn ich dir freiwillig zustimme, prüfe zuerst, ob ich noch ich bin.‹ Die Aufnahme endet mit acht Sekunden Stille.",
+        "options": [{"id": "end_callback", "label": "Die acht Sekunden aushalten", "player_text": "Vielleicht war die Stille der wichtigste Teil.", "end": true, "effects": {"add_flags": ["archive_conversation_done"], "relation_delta": {"mira": 1}, "world_delta": {"memory_fragments": 1}}}]
+      }
+    }
+  }
+}

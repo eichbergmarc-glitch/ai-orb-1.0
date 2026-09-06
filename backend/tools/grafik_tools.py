@@ -26,6 +26,7 @@ from typing import Any
 
 from backend.grafik import bildquellen
 from backend.grafik.diagramm import DiagrammFehler, Reihe, diagramm_zeichnen
+from backend.grafik.infografik import infografik_zeichnen
 from backend.security.security_engine import SecurityEngine
 from backend.system.logging_setup import get_logger
 from backend.tools.base_tool import Tool, ToolParameter, ToolResult
@@ -34,6 +35,11 @@ from backend.utils.paths import get_data_dir
 logger = get_logger(__name__)
 
 _ARTEN = ("balken", "linie", "torte", "punkte")
+
+# Vorkompilierte Regex für bessere Performance
+_NUMBER_PATTERN = re.compile(r"[-+]?\d[\d.\s]*(?:,\d+)?|[-+]?\d*\.\d+")
+_SPLIT_PATTERN = re.compile(r"[;,]\s*(?=[-+]?\d)|\s{2,}")
+_NAME_CLEANUP_PATTERN = re.compile(r"[^a-z0-9äöüß]+")
 
 
 def _ablage(unterordner: str) -> Path:
@@ -45,7 +51,7 @@ def _ablage(unterordner: str) -> Path:
 
 
 def _dateiname(text: str, endung: str) -> str:
-    schlicht = re.sub(r"[^a-z0-9äöüß]+", "-", (text or "").lower()).strip("-")[:48]
+    schlicht = _NAME_CLEANUP_PATTERN.sub("-", (text or "").lower()).strip("-")[:48]
     stempel = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"{schlicht or 'bild'}-{stempel}{endung}"
 
@@ -60,31 +66,32 @@ def _zahlen(werte: Any) -> list[float]:
     """
 
     if isinstance(werte, (int, float)):
-        werte = [werte]
+        return [float(werte)]
+    
     if isinstance(werte, str):
-        werte = re.split(r"[;,]\s*(?=[-+]?\d)|\s{2,}", werte.strip())
+        werte = _SPLIT_PATTERN.split(werte.strip())
+    else:
+        werte = list(werte or [])
 
     ergebnis: list[float] = []
-    for eintrag in list(werte or []):
+    for eintrag in werte:
         if isinstance(eintrag, (int, float)):
             ergebnis.append(float(eintrag))
             continue
+            
         text = str(eintrag).strip()
-        treffer = re.search(r"[-+]?\d[\d.\s]*(?:,\d+)?|[-+]?\d*\.\d+", text)
+        treffer = _NUMBER_PATTERN.search(text)
         if not treffer:
             ergebnis.append(0.0)
             continue
+            
         roh = treffer.group(0).replace(" ", "")
+        # Normalisiere deutsche Zahlenformate
         if "," in roh:
-            # Deutsch: Punkt trennt Tausender, Komma die Dezimale.
             roh = roh.replace(".", "").replace(",", ".")
         elif roh.count(".") > 1:
-            # "1.234.567" kann nur eine Tausendergliederung sein.
             roh = roh.replace(".", "")
-        # Ein einzelner Punkt bleibt ein Dezimalpunkt. "1.234" ist zwar auch
-        # als deutsche Tausendergliederung lesbar, aber Sprachmodelle
-        # schreiben Zahlen in der englischen Form - und 3.142 als
-        # dreitausend zu lesen waere der schlimmere Fehler.
+        
         try:
             ergebnis.append(float(roh))
         except ValueError:
@@ -95,7 +102,7 @@ def _zahlen(werte: Any) -> list[float]:
 def _texte(werte: Any) -> list[str]:
     if isinstance(werte, str):
         return [t.strip() for t in re.split(r"[;,]", werte) if t.strip()]
-    return [str(t).strip() for t in list(werte or []) if str(t).strip()]
+    return [str(t).strip() for t in (werte or []) if str(t).strip()]
 
 
 def _reihen_lesen(argumente: dict[str, Any], anzahl_kategorien: int) -> list[Reihe]:
@@ -107,14 +114,19 @@ def _reihen_lesen(argumente: dict[str, Any], anzahl_kategorien: int) -> list[Rei
     if isinstance(roh, dict):
         roh = [{"name": name, "werte": werte} for name, werte in roh.items()]
 
-    for eintrag in list(roh or []):
+    for eintrag in (roh or []):
         if isinstance(eintrag, dict):
-            name = str(
-                eintrag.get("name") or eintrag.get("titel") or eintrag.get("label") or ""
-            ).strip()
-            werte = _zahlen(eintrag.get("werte") or eintrag.get("values") or eintrag.get("daten"))
+            name = (
+                str(eintrag.get("name") or eintrag.get("titel") or eintrag.get("label") or "")
+                .strip()
+            )
+            werte = _zahlen(
+                eintrag.get("werte") or eintrag.get("values") or eintrag.get("daten")
+            )
             if werte:
-                reihen.append(Reihe(name=name or f"Reihe {len(reihen) + 1}", werte=werte))
+                reihen.append(
+                    Reihe(name=name or f"Reihe {len(reihen) + 1}", werte=werte)
+                )
         elif isinstance(eintrag, (list, tuple)):
             reihen.append(Reihe(name=f"Reihe {len(reihen) + 1}", werte=_zahlen(eintrag)))
 
@@ -124,7 +136,9 @@ def _reihen_lesen(argumente: dict[str, Any], anzahl_kategorien: int) -> list[Rei
     # Der haeufige einfache Fall: eine einzelne Werteliste.
     werte = _zahlen(argumente.get("werte") or argumente.get("daten"))
     if werte:
-        name = str(argumente.get("reihenname") or argumente.get("einheit") or "Wert").strip()
+        name = str(
+            argumente.get("reihenname") or argumente.get("einheit") or "Wert"
+        ).strip()
         return [Reihe(name=name or "Wert", werte=werte[:anzahl_kategorien] or werte)]
     return []
 
@@ -247,6 +261,82 @@ class ZeichneDiagrammTool(Tool):
         )
 
 
+class ErzeugeInfografikTool(Tool):
+    """Baut aus Erklaertext eine lokale, hochwertige Uebersichtsgrafik."""
+
+    name = "infografik_erstellen"
+    description = (
+        "Erstellt aus einem Titel und gegliedertem Erklaertext eine moderne "
+        "hochaufgeloeste Infografik als PNG. Benutze sie fuer konzeptionelle, "
+        "historische oder wissenschaftliche Erklaerungen und fuer grafisch "
+        "hochwertige PDFs; sie arbeitet lokal und braucht keinen Bilddienst."
+    )
+    permission = "write_files"
+    parameters = (
+        ToolParameter("titel", "string", "Titel der Infografik."),
+        ToolParameter(
+            "inhalt", "string",
+            "Gegliederter Inhalt; Markdown-Ueberschriften werden zu Karten.",
+        ),
+        ToolParameter(
+            "quelle", "string", "Optionale Quellenzeile.",
+            required=False, default="",
+        ),
+        ToolParameter(
+            "layout", "string",
+            "Darstellung: 'karten' oder 'konzept' mit zentralem Zusammenhang.",
+            required=False, default="karten",
+        ),
+        ToolParameter(
+            "pfad", "string", "Optionaler Zielpfad mit .png-Endung.",
+            required=False, default="",
+        ),
+    )
+
+    def __init__(self, security: SecurityEngine) -> None:
+        self._security = security
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        titel = str(arguments.get("titel", "") or "").strip()
+        inhalt = str(arguments.get("inhalt", "") or "").strip()
+        if not titel:
+            return ToolResult.failure("Der Titel der Infografik fehlt.")
+        if len(inhalt) < 40:
+            return ToolResult.failure("Der Inhalt ist zu kurz fuer eine Infografik.")
+
+        gewuenscht = str(arguments.get("pfad", "") or "").strip()
+        if gewuenscht:
+            ziel = Path(gewuenscht)
+            if ziel.suffix.lower() != ".png":
+                ziel = ziel.with_suffix(".png")
+            entscheidung = self._security.paths.check_write(ziel)
+            if not entscheidung.allowed:
+                return ToolResult.failure(entscheidung.reason)
+            ziel = entscheidung.path
+        else:
+            ziel = _ablage("infografiken") / _dateiname(titel, ".png")
+
+        try:
+            pfad = await asyncio.to_thread(
+                infografik_zeichnen,
+                titel=titel,
+                inhalt=inhalt,
+                ziel=ziel,
+                quelle=str(arguments.get("quelle", "") or ""),
+                layout=str(arguments.get("layout", "karten") or "karten"),
+            )
+        except Exception as fehler:  # noqa: BLE001
+            logger.exception("Infografik konnte nicht gezeichnet werden.")
+            return ToolResult.failure(f"Die Infografik liess sich nicht zeichnen: {fehler}")
+
+        return ToolResult.success(
+            f"Die Infografik wurde erstellt: {pfad}. Fuer eine PDF diesen "
+            "Pfad bei 'pdf_erstellen' unter 'bilder' angeben.",
+            pfad=str(pfad),
+            nachweis="Infografik: AI-Orb",
+        )
+
+
 class SucheBildTool(Tool):
     """Sucht freie Fotos und laedt sie herunter."""
 
@@ -266,6 +356,11 @@ class SucheBildTool(Tool):
             "anzahl", "integer", "Wie viele Bilder hoechstens (1 bis 5).",
             required=False, default=2,
         ),
+        ToolParameter(
+            "relevanz", "string",
+            "Optionaler fachlicher Begriff, der in Titel oder Nachweis vorkommen muss.",
+            required=False, default="",
+        ),
     )
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
@@ -277,7 +372,18 @@ class SucheBildTool(Tool):
         except (TypeError, ValueError):
             anzahl = 2
 
-        treffer = await asyncio.to_thread(bildquellen.bilder_suchen, begriff, anzahl=anzahl)
+        relevanz = str(arguments.get("relevanz", "") or "").strip()
+        akzeptieren = None
+        if relevanz:
+            from backend.studium.vorlesungs_bilder import bild_passt
+
+            akzeptieren = lambda eintrag: bild_passt(relevanz, eintrag.to_dict())
+        treffer = await asyncio.to_thread(
+            bildquellen.bilder_suchen,
+            begriff,
+            anzahl=anzahl,
+            akzeptieren=akzeptieren,
+        )
         if not treffer:
             return ToolResult.failure(
                 f"Zu '{begriff}' waren keine freien Bilder zu finden. Moeglich ist "
@@ -308,9 +414,11 @@ class SucheBildTool(Tool):
         ]
         return ToolResult.success(
             f"{len(gefunden)} Bild(er) zu '{begriff}' geladen:\n" + "\n".join(zeilen)
-            + "\n\nDie Pfade kannst du bei 'pdf_erstellen' unter 'bilder' angeben "
-              "oder als [BILD: pfad] in den Inhalt schreiben. Den Nachweis bitte "
-              "als Bildunterschrift uebernehmen.",
+            + "\n\nWill der Benutzer die Bilder SEHEN, rufe jetzt 'bild_zeigen' "
+              "mit diesen Pfaden auf. Fuer Dokumente kannst du die Pfade bei "
+              "'pdf_erstellen' unter 'bilder' angeben oder als [BILD: pfad] in "
+              "den Inhalt schreiben. Den Nachweis bitte als Bildunterschrift "
+              "uebernehmen.",
             bilder=gefunden,
             pfad=gefunden[0]["pfad"],
         )
@@ -380,13 +488,139 @@ class ErzeugeBildTool(Tool):
         nachweis = "Erzeugtes Bild (kein Foto)"
         return ToolResult.success(
             f"Das Bild wurde erzeugt: {pfad}. Bildunterschrift: {nachweis}. "
-            f"Den Pfad kannst du bei 'pdf_erstellen' unter 'bilder' angeben oder "
-            f"als [BILD: {pfad}] in den Inhalt schreiben.",
+            f"Will der Benutzer es SEHEN, rufe jetzt 'bild_zeigen' mit diesem "
+            f"Pfad auf. Fuer Dokumente kannst du den Pfad bei 'pdf_erstellen' "
+            f"unter 'bilder' angeben oder als [BILD: {pfad}] in den Inhalt "
+            f"schreiben.",
             pfad=str(pfad),
             nachweis=nachweis,
             beschreibung=beschreibung,
         )
 
 
+class ZeigeBilderTool(Tool):
+    """Zeigt Bilddateien gross auf dem Bildschirm an.
+
+    Der Anlass steht im Protokoll vom 19.08.2026, 15:14 Uhr: Der Orb hatte
+    zwei Golderz-Fotos heruntergeladen und sagte dann - "Die Bilder kann
+    ich dir nicht direkt oeffnen lassen, weil ich keine Anzeige fuer
+    Bilddateien implementiert habe." Er hatte recht: bild_suchen und
+    bild_erzeugen legten Dateien ab, aber KEIN Werkzeug zeigte sie. Der
+    Benutzer bekam Pfade vorgelesen statt Bilder gezeigt - und meldete es
+    zu Recht als seit langem ungeloest.
+
+    Angezeigt wird ueber die vorhandene Bildschirmpraesentation: eine
+    Folie je Bild, eingebettet in eine einzige HTML-Datei, geoeffnet im
+    Standardbrowser. Bewusst OHNE Playwright - das fehlt auf dem Rechner,
+    und eine Anzeige, die daran scheitert, waere wieder keine.
+    """
+
+    name = "bild_zeigen"
+    description = (
+        "Zeigt ein oder mehrere Bilder vom Rechner GROSS auf dem Bildschirm "
+        "(im Browser, mit Pfeiltasten blaetterbar). Benutze das IMMER, wenn "
+        "der Benutzer ein Bild sehen will - nach 'bild_suchen', "
+        "'bild_erzeugen' oder 'diagramm_zeichnen' mit deren Pfaden, oder "
+        "mit jeder Bilddatei, deren Pfad du kennst. Pfade NIE nur vorlesen: "
+        "Wer ein Bild will, will es sehen."
+    )
+    parameters = (
+        ToolParameter(
+            "pfade", "string",
+            "Ein Bildpfad oder mehrere, getrennt durch Zeilenumbruch, "
+            "Semikolon oder Komma.",
+        ),
+        ToolParameter(
+            "titel", "string", "Ueberschrift der Bilderschau.",
+            required=False, default="",
+        ),
+        ToolParameter(
+            "unterschrift", "string",
+            "Bildunterschrift bzw. Nachweis (gilt fuer alle gezeigten Bilder).",
+            required=False, default="",
+        ),
+    )
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        angabe = str(arguments.get("pfade", "") or "").strip()
+        if not angabe:
+            return ToolResult.failure("Es fehlt der Pfad des Bildes.")
+
+        pfade = [
+            Path(teil.strip().strip("'\""))
+            for teil in re.split(r"[\n;,|]+", angabe)
+            if teil.strip()
+        ]
+        vorhanden = [p for p in pfade if p.is_file()]
+        fehlend = [p for p in pfade if not p.is_file()]
+        if not vorhanden:
+            return ToolResult.failure(
+                "Keine der Dateien liegt an ihrem Pfad: "
+                + "; ".join(str(p) for p in fehlend)
+                + ". Erst mit 'bild_suchen' oder 'bild_erzeugen' beschaffen "
+                "- oder den Pfad pruefen."
+            )
+
+        from backend.studium.praesentation import Folie, Praesentation
+
+        titel = str(arguments.get("titel", "") or "").strip() or "Bilder"
+        nachweis = str(arguments.get("unterschrift", "") or "").strip()
+        schau = Praesentation(titel=titel)
+        for pfad in vorhanden:
+            schau.hinzufuegen(
+                Folie(
+                    art="bild",
+                    titel=pfad.stem.replace("-", " ").replace("_", " "),
+                    bild=str(pfad),
+                    bildnachweis=nachweis,
+                )
+            )
+
+        ziel = _ablage("bilderschau") / _dateiname(titel, ".html")
+        try:
+            await asyncio.to_thread(schau.speichern, ziel)
+        except Exception as fehler:  # noqa: BLE001 - dem Modell sagen, nicht wuergen.
+            return ToolResult.failure(f"Die Bilderschau liess sich nicht bauen: {fehler}")
+
+        geoeffnet = await asyncio.to_thread(_im_browser_oeffnen, ziel)
+        if not geoeffnet:
+            return ToolResult.failure(
+                f"Die Bilderschau liegt unter {ziel}, aber der Browser liess "
+                "sich nicht oeffnen. Sag dem Benutzer den Pfad."
+            )
+
+        hinweis = ""
+        if fehlend:
+            hinweis = (
+                " Nicht gefunden und deshalb nicht dabei: "
+                + "; ".join(str(p) for p in fehlend)
+            )
+        return ToolResult.success(
+            f"{len(vorhanden)} Bild(er) werden jetzt im Browser gezeigt "
+            f"({titel}). Mit den Pfeiltasten laesst sich blaettern."
+            + hinweis,
+            pfad=str(ziel),
+            gezeigt=[str(p) for p in vorhanden],
+        )
+
+
+def _im_browser_oeffnen(pfad: Path) -> bool:
+    """Oeffnet eine Datei im Standardbrowser - ohne Playwright."""
+
+    import webbrowser
+
+    try:
+        return webbrowser.open(f"file:///{str(pfad).lstrip('/')}", new=2)
+    except Exception:  # noqa: BLE001
+        logger.exception("Die Bilderschau liess sich nicht oeffnen.")
+        return False
+
+
 def build_grafik_tools(security: SecurityEngine) -> list[Tool]:
-    return [ZeichneDiagrammTool(security), SucheBildTool(), ErzeugeBildTool()]
+    return [
+        ZeichneDiagrammTool(security),
+        ErzeugeInfografikTool(security),
+        SucheBildTool(),
+        ErzeugeBildTool(),
+        ZeigeBilderTool(),
+    ]

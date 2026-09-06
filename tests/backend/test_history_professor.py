@@ -172,6 +172,24 @@ def test_modi_werden_erkannt(tmp_path):
         assert professor_engine.build_prompt(text, profile=profil).mode == modus, text
 
 
+def test_lernwerkstatt_bleibt_fuer_die_antwort_aktiv():
+    session = ProfessorSession()
+    auftrag = "Erarbeite das Thema Inflation mit mir, Frage für Frage."
+
+    erster_prompt = session.prompt_for(auftrag)
+    assert "Stelle genau EINE Frage" in erster_prompt
+
+    session.after_turn(
+        auftrag,
+        "Beginnen wir beim Preisanstieg: Wodurch unterscheidet er sich von Inflation?",
+    )
+    assert session.status()["lernfrage_offen"] is True
+
+    folgeprompt = session.prompt_for("Ich denke, Inflation betrifft viele Preise.")
+    assert "LERNWERKSTATT" in folgeprompt
+    assert "was daran zutrifft" in folgeprompt
+
+
 def test_laufender_vorgang_wird_nicht_unterbrochen(tmp_path):
     """Ein Modus, der bei jedem Satz umspringt, ist keiner."""
 
@@ -207,6 +225,48 @@ def test_allgemeine_erklaerung_nutzt_den_kompakten_professor(tmp_path, monkeypat
     assert len(prompt) < 500
     assert "keine historische Recherche" in prompt
     assert session.status()["modus"] == "erklaeren"
+
+
+def test_professor_erkennt_alle_neuen_lehrfaecher(tmp_path):
+    profil = LearningProfile(tmp_path / "lp.json")
+    faelle = {
+        "Halte eine Vorlesung über Kants Erkenntnistheorie.": "philosophie",
+        "Halte eine Vorlesung über Phonologie und Morphologie.": "sprachwissenschaft",
+        "Halte eine Vorlesung über Kafka in der Germanistik.": "germanistik",
+        "Halte eine Vorlesung über Inflation und Geldpolitik.": "wirtschaft",
+    }
+
+    for text, fach in faelle.items():
+        turn = professor_engine.build_prompt(text, profile=profil)
+        assert turn.field == fach, text
+        assert f"FACH: {professor_engine._FACH_TITEL[fach]}" in turn.system_prompt
+
+
+def test_professor_session_haelt_das_fach_bei_fortsetzung():
+    session = ProfessorSession()
+    erster = session.prompt_for("Halte eine Vorlesung über Germanistik und Kafka.")
+    zweiter = session.prompt_for("Fahre mit dem nächsten Abschnitt fort.")
+
+    assert "FACH: Germanistik" in erster
+    assert "FACH: Germanistik" in zweiter
+    assert session.status()["fach"] == "germanistik"
+
+
+def test_fachmethoden_sind_nicht_nur_geschichtsregeln(tmp_path):
+    profil = LearningProfile(tmp_path / "lp.json")
+    philosophie = professor_engine.build_prompt(
+        "Erkläre Kants Erkenntnistheorie.", profile=profil
+    ).system_prompt
+    linguistik = professor_engine.build_prompt(
+        "Erkläre den Unterschied zwischen Phonem und Morphem.", profile=profil
+    ).system_prompt
+    wirtschaft = professor_engine.build_prompt(
+        "Erkläre Inflation und Leitzins.", profile=profil
+    ).system_prompt
+
+    assert "Prämissen und Schluss" in philosophie
+    assert "Beschreibe Sprache statt sie vorzuschreiben" in linguistik
+    assert "positive Analyse" in wirtschaft
 
 
 # ---------------------------------------------------------------------------

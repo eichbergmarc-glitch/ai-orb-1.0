@@ -160,6 +160,28 @@ def test_das_erfinden_bleibt_verboten():
     assert "erfinde niemals" in _prompt()
 
 
+def test_die_neue_mentor_persona_ist_direkt_aber_nicht_mechanisch():
+    """Locker und trocken ja; ein "Hmm" vor jeder Antwort weiterhin nein."""
+
+    prompt = _prompt()
+    assert "mentor" in prompt and "professor" in prompt
+    assert "ohne akademisches gehabe" in prompt
+    assert "lehrbuch" in prompt
+    assert "trocken kommentieren" in prompt
+    assert "nur gelegentlich" in prompt
+    assert "nie als ritual" in prompt
+    assert float(get_config().get("personality.humor", 0.0)) > 0.65
+
+
+def test_professormodus_verwendet_dieselbe_sprechhaltung():
+    from backend.agents.history_agent.professor_engine import PERSONA
+
+    persona = PERSONA.lower()
+    assert "ohne akademisches gehabe" in persona
+    assert "trocken kommentieren" in persona
+    assert "nie als wiederkehrendes ritual" in persona
+
+
 # --- Die Spracherkennung ------------------------------------------------------------
 
 

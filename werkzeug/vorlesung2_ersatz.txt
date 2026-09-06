@@ -1,0 +1,286 @@
+    # --- Thema und Befehl: erneuerte Erkennung ----------------------------
+    #
+    # Warum das hier steht: Am 26.08.2026 sagte der Benutzer
+    #
+    #   "ich moechte gerne dass du mir die einfuehrungsvorlesung ueber die
+    #    geschichtswissenschaft haeltst und zwar ueber das mittelalter"
+    #
+    # und in data/vorlesung.json landete als Thema
+    #
+    #   "die geschichtswissenschaft haeltst und zwar ueber das mittelalter"
+    #
+    # Drei Fehler auf einmal: das Verb "haeltst" blieb im Thema stehen, die
+    # Einengung "und zwar ueber das Mittelalter" wurde nicht als solche
+    # erkannt, und die Umlaute waren fort, weil die Erkennung auf dem
+    # normalisierten Text arbeitete. Der Orb hielt daraufhin eine allgemeine
+    # Einfuehrung in die Geschichtswissenschaft - er begann bei Aegypten,
+    # nicht beim Mittelalter.
+    #
+    # Dazu kam: Von zwanzig natuerlich gesprochenen Auftraegen fuer eine NEUE
+    # Vorlesung erkannte die alte Fassung zehn ueberhaupt nicht. Diese Saetze
+    # liefen als gewoehnliche Frage weiter - mit dem alten Vorlesungsverlauf
+    # im Gespraech. Das ist die Ursache von "er kann keine neue Vorlesung
+    # beginnen, er knuepft einfach dort an wo er war".
+
+    #: Ein Wort, das eine Vorlesung benennt - in der Schreibweise des
+    #: Originaltextes, also mit Umlauten.
+    _LEHRWORT = (
+        r"(?:einf(?:\u00fc|ue)hrungs)?"
+        r"(?:vorl(?:es|\u00e4s|aes|ass|eis)\w*|vortrag|seminar)"
+    )
+
+    _THEMA_MUSTER = re.compile(
+        _LEHRWORT
+        + r"\s+(?:\u00fcber|ueber|zu|zum|zur|in|betreffend)\s+"
+        r"(?:dem\s+|das\s+)?(?:Thema\s+)?(.+)",
+        re.IGNORECASE,
+    )
+    _THEMA_DOPPELPUNKT = re.compile(_LEHRWORT + r"\s*[:,-]\s*(.+)", re.IGNORECASE)
+    _THEMA_STICHWORT = re.compile(r"\bThema\s*[:,]?\s+(.+)", re.IGNORECASE)
+    _THEMA_LEHRVERB = re.compile(
+        r"\b(?:doziere?|dozieren|referiere?|referieren|unterrichte?|unterrichten"
+        r"|trag\w*\s+vor|lehre?)\b\s+(?:\u00fcber|ueber|zu|zum|zur)\s+(.+)",
+        re.IGNORECASE,
+    )
+
+    #: "... als Vorlesung" am Satzende benennt die Form, nicht das Thema.
+    _ALS_FORM = re.compile(
+        r"\s+als\s+(?:einf(?:\u00fc|ue)hrungs)?"
+        r"(?:vorl(?:es|\u00e4s|aes|ass|eis)\w*|vortrag|seminar)\s*$",
+        re.IGNORECASE,
+    )
+
+    #: Verben und Floskeln der Bitte. Sie stehen im Deutschen gern hinter dem
+    #: Thema ("... ueber Kant halten") oder mitten darin.
+    _BITTWORT = re.compile(
+        r"\b(?:h(?:\u00e4|ae)lt?st|h(?:\u00e4|ae)lst|halten|abhalten|abzuhalten"
+        r"|halte|machst|machen|mache|mach|gibst|gib|gibt"
+        r"|erz(?:\u00e4|ae)hlst|erz(?:\u00e4|ae)hlen|erz(?:\u00e4|ae)hl"
+        r"|vortragen|vortr(?:\u00e4|ae)gst|referierst|referieren|dozierst"
+        r"|dozieren|unterrichtest|unterrichten|bitte|f(?:\u00fc|ue)r\s+mich"
+        r"|mir|uns|du)\b",
+        re.IGNORECASE,
+    )
+
+    #: Wo der Satz das Thema noch einmal einengt.
+    _EINENGUNG = re.compile(
+        r"\b(?:und\s+zwar|speziell|insbesondere|genauer\s+gesagt"
+        r"|n(?:\u00e4|ae)mlich|schwerpunktm(?:\u00e4|ae)ssig"
+        r"|schwerpunktm(?:\u00e4|ae)\u00dfig|mit\s+schwerpunkt|konkret"
+        r"|im\s+besonderen)\b"
+        r"(?:\s+(?:\u00fcber|ueber|zu|zum|zur|auf|das|die|der))*\s*",
+        re.IGNORECASE,
+    )
+
+    #: Ein neuer Hauptsatz beendet das Thema.
+    _SATZENDE = re.compile(
+        r"[.!?;]|\s+(?:damit|weil|denn|aber|sodass|so\s+dass)\b", re.IGNORECASE
+    )
+    _ARTIKEL = re.compile(
+        r"^(?:die|der|das|den|dem|des|eine[nmrs]?|ein)\s+", re.IGNORECASE
+    )
+
+    #: Ausdrueckliche Ansage, dass etwas Neues beginnen soll. Sie schlaegt
+    #: jede Fortsetzung - sonst knuepft der Orb an die alte Vorlesung an.
+    _NEUANFANG = re.compile(
+        r"\b(?:neue[nmrs]?|weitere[nmrs]?|andere[nmrs]?|naechste[nmrs]?"
+        r"|noch\s+eine)\s+(?:\w+\s+){0,2}?"
+        r"\w*(?:vorl(?:es|aes|ass|eis)\w*|vortrag|seminar)\b"
+        r"|\bvon\s+vorne?\s+(?:anfangen|beginnen|starten)\b"
+        r"|\bneues\s+thema\b"
+    )
+
+    #: Einem Lehrwort folgt in wenigen Woertern ein Thema. Das ist die Regel,
+    #: die bisher fehlte: Wer ein Thema nennt, will eine neue Vorlesung.
+    _THEMA_GENANNT = re.compile(
+        r"\w*(?:vorl(?:es|aes|ass|eis)\w*|vortrag|seminar)\b"
+        r"(?:\s+\w+){0,2}?\s+(?:ueber|zu|zum|zur|in|thema)\s+\w+"
+    )
+    _LEHRVERB_GENANNT = re.compile(
+        r"\b(?:dozier\w*|referier\w*|unterricht\w*|lehr\w*|trag\w*\s+vor)\b"
+        r"(?:\s+\w+){0,2}?\s+(?:ueber|zu|zum|zur)\s+\w+"
+    )
+    _LEHRWORT_MIT_WORT = re.compile(
+        r"\w*(?:vorl(?:es|aes|ass|eis)\w*|vortrag|seminar)\b\s*[:,-]?\s*\w+"
+    )
+
+    #: Der Rahmen einer Bitte. Bewusst weit - Menschen sagen es auf zwanzig
+    #: Arten, und jede nicht erkannte Art landet als gewoehnliche Frage im
+    #: laufenden Vorlesungsgespraech.
+    _BITTRAHMEN = re.compile(
+        r"\b(?:ich\s+(?:moechte|will|haette|brauche|wuensche|bitte"
+        r"|wuerde\s+gern)|kannst\s+du|koennen\s+sie|koenntest\s+du"
+        r"|wuerdest\s+du|magst\s+du|lass\s+uns|lasst\s+uns"
+        r"|wir\s+(?:machen|starten|beginnen|nehmen)|gib\s+mir|gib\s+mal"
+        r"|halte?|haltst|haelst|haeltst|starte?|beginne?|fang|mach|mache"
+        r"|erzaehl\w*|bitte|gestalte?|referiere|doziere|unterrichte"
+        r"|bring\s+mir\s+bei)\b"
+    )
+
+    #: Getrennte Verben des Anhaltens: "halt die Vorlesung AN".
+    _ANHALTEN_GETRENNT = re.compile(
+        r"\b(?:halt|h(?:oe)?r|brich|brech)\w*\b(?:\s+\w+){0,4}\s+(?:an|auf|ab)\b"
+    )
+    _ANHALTEWORTE = (
+        "stopp", "stop", "pause", "pausier", "beend", "unterbrich",
+        "anhalt", "aufhoer", "abbrech", "schluss", "genug", "reicht",
+    )
+
+    #: Nackte Zurufe. Kurz, eindeutig, und nur bei vorhandener Vorlesung.
+    _ZURUFE = frozenset({
+        "weiter", "weiter bitte", "bitte weiter", "weiter gehts",
+        "weiter im text", "weiter im stoff", "und weiter",
+    })
+    _STARTMARKER = (
+        "halt", "beginn", "starte", "einfuehr", "komplett", "vollstaendig",
+        "ganz ab", "bis ich", "ohne unterbrech", "durchgehend",
+        "selbststaendig",
+    )
+    _FORT_LOSE = re.compile(
+        r"\b(?:fahr\w*|mach\w*|setz\w*)\b(?:\s+\w+){0,7}\s+(?:fort|weiter)\b"
+    )
+    #: Wendungen der Fortsetzung. Gegenueber frueher um die Faelle ergaenzt,
+    #: in denen das Verb am Satzende steht ("... die Vorlesung fortsetzen").
+    _FORTSETZEN = (
+        "fahre fort", "fahr fort", "mach weiter", "mache weiter",
+        "fahre mit der vorlesung fort", "fahr mit der vorlesung fort",
+        "weiter mit der vorlesung", "setze die vorlesung fort",
+        "vorlesung fortsetzen", "halte die vorlesung weiter",
+        "fortsetzen", "fortfahren", "weitermachen",
+    )
+    _WEITERREDEN = (
+        "selbststaendig", "durchgehend", "ohne unterbrech",
+        "nicht immer rueckfrag", "keine rueckfrag", "einfach weiter",
+    )
+
+    @classmethod
+    def _saeubern(cls, teil: str) -> str:
+        """Nimmt Artikel, Bittwoerter und Satzzeichen aus einem Themenstueck."""
+
+        stueck = cls._BITTWORT.sub(" ", str(teil or ""))
+        stueck = " ".join(stueck.split()).strip(" .,!?:;-\u2013\u2014")
+        while True:
+            gekuerzt = cls._ARTIKEL.sub("", stueck).strip()
+            if gekuerzt == stueck:
+                break
+            stueck = gekuerzt
+        return stueck
+
+    @classmethod
+    def _thema_aus(cls, text: str) -> str:
+        """Das Thema einer Vorlesung aus dem gesprochenen Satz.
+
+        Gearbeitet wird auf dem ORIGINALTEXT. Die frueher benutzte
+        normalisierte Fassung machte aus "Franzoesische Revolution" ein
+        "franzoesische revolution" - und genau dieser Text stand danach als
+        Thema im Auftrag an das Sprachmodell.
+        """
+
+        roh = " ".join(str(text or "").split()).strip(" .")
+        if not roh:
+            return ""
+
+        treffer = (
+            cls._THEMA_MUSTER.search(roh)
+            or cls._THEMA_DOPPELPUNKT.search(roh)
+            or cls._THEMA_STICHWORT.search(roh)
+            or cls._THEMA_LEHRVERB.search(roh)
+        )
+        if not treffer:
+            return roh[:240]
+
+        rest = cls._SATZENDE.split(treffer.group(1), maxsplit=1)[0]
+        rest = cls._ALS_FORM.sub("", rest)
+
+        teile = cls._EINENGUNG.split(rest, maxsplit=1)
+        breit = cls._saeubern(teile[0])
+        eng = cls._saeubern(teile[1]) if len(teile) > 1 else ""
+        if eng:
+            eng = eng[0].upper() + eng[1:]
+
+        if breit and eng:
+            thema = "%s, Schwerpunkt %s" % (breit, eng)
+        else:
+            thema = breit or eng
+        if not thema:
+            return roh[:240]
+        return (thema[0].upper() + thema[1:])[:240]
+
+    def befehl(self, text: str) -> str:
+        """Liefert ``start``, ``fortsetzen``, ``pausieren`` oder ``""``.
+
+        Die Reihenfolge traegt die ganze Bedeutung: Ein ausdrueckliches
+        "neue Vorlesung" wird VOR jeder Fortsetzung geprueft, und eine
+        Fortsetzung greift nur noch, wenn eine Vorlesung laeuft, das Wort
+        Vorlesung faellt oder der Satz ein nackter Zuruf ist. "Fahre mit dem
+        Programm fort" loeste vorher eine Vorlesung aus.
+        """
+
+        klein = _normalisieren(text)
+        if not klein:
+            return ""
+        worte = klein.split()
+        hat_lehrwort = bool(
+            _enthaelt_vorlesungswort(klein)
+            or re.search(r"\b(?:vortrag|seminar)\b", klein)
+        )
+
+        # --- 1. anhalten --------------------------------------------------
+        if self.aktiv and klein in {"stop", "stopp", "halt", "pause", "pausieren"}:
+            return "pausieren"
+        if self.vorhanden and any(wendung in klein for wendung in self._PAUSIEREN):
+            return "pausieren"
+        if self.vorhanden and hat_lehrwort and self._ANHALTEN_GETRENNT.search(klein):
+            return "pausieren"
+        if self.vorhanden and hat_lehrwort and any(
+            wort in klein for wort in self._ANHALTEWORTE
+        ):
+            return "pausieren"
+
+        # --- 2. ausdruecklich etwas Neues ---------------------------------
+        if self._NEUANFANG.search(klein) and (hat_lehrwort or "neues thema" in klein):
+            self._gewuenschtes_fach = ""
+            return "start"
+
+        # --- 3. fortsetzen ------------------------------------------------
+        if self.vorhanden and klein in self._ZURUFE:
+            return "fortsetzen"
+        darf_fortsetzen = self.vorhanden and (
+            self.aktiv or hat_lehrwort or len(worte) <= 3
+        )
+        if darf_fortsetzen and any(wendung in klein for wendung in self._FORTSETZEN):
+            genannt = self._thema_aus(text) if hat_lehrwort else ""
+            bisher = _normalisieren(self.stand.thema)
+            neu = _normalisieren(genannt)
+            if neu and bisher and neu not in bisher and bisher not in neu:
+                # Ein anderes Fach. Kennen wir es bereits, ist das ein
+                # Wechsel und keine neue Vorlesung - der begonnene Stand
+                # darf dabei nicht verloren gehen.
+                if self._passenden_schluessel(genannt):
+                    self._gewuenschtes_fach = genannt
+                    return "fortsetzen"
+                return "start"
+            self._gewuenschtes_fach = genannt
+            return "fortsetzen"
+        if darf_fortsetzen and self._FORT_LOSE.search(klein):
+            return "fortsetzen"
+        if (
+            self.vorhanden
+            and hat_lehrwort
+            and any(marker in klein for marker in self._WEITERREDEN)
+            and not self._THEMA_GENANNT.search(klein)
+        ):
+            return "fortsetzen"
+
+        # --- 4. beginnen --------------------------------------------------
+        if not hat_lehrwort:
+            return ""
+        if self._THEMA_GENANNT.search(klein) or self._LEHRVERB_GENANNT.search(klein):
+            return "start"
+        if (
+            self._LEHRWORT_MIT_WORT.search(klein)
+            and self._BITTRAHMEN.search(klein)
+            and any(marker in klein for marker in self._STARTMARKER)
+        ):
+            return "start"
+        return ""

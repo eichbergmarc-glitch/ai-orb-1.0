@@ -17,7 +17,6 @@ import { BackendClient, type BackendEvent } from "./api";
 import {
   EnergyOrb,
   type OrbEmotionName,
-  type OrbVisualStyle,
 } from "./energy_orb";
 import { DiagnosticsPanel } from "./diagnostics";
 import { InteractionController } from "./interaction";
@@ -25,6 +24,7 @@ import { Orb } from "./orb";
 import { MovementEngine } from "./movement";
 import { PresenceEngine } from "./presence";
 import { OrbRenderer } from "./renderer";
+import { SynaptixBrain } from "./synaptix_brain";
 import { ORB_STATES, StateMachine, type OrbStateName, type StateAppearance } from "./states";
 
 /** Die von `preload.ts` bereitgestellte, abgesicherte Schnittstelle. */
@@ -45,6 +45,16 @@ interface AiOrbBridge {
   setInteractionLock(active: boolean, reason: string): void;
   setChatFocus(active: boolean): void;
   setSpeaking(speaking: boolean): void;
+  showLectureVisual(payload: {
+    path?: string;
+    title?: string;
+    topic?: string;
+    caption?: string;
+    kind?: string;
+    layout?: string;
+    summary?: Array<{ title?: string; text?: string }>;
+    generation?: number;
+  }): void;
   getBackendUrl(): Promise<string>;
 }
 
@@ -131,22 +141,37 @@ async function bootstrap(): Promise<void> {
     farbeB: readConfig<number | undefined>(config, "orb.animation.farbe_b", undefined),
   };
 
-  // Der Energy-Orb ist die neue Anzeige (lebendiges Energie-Wesen mit
-  // Kern, Plasma, Energiebahnen und Augen). `orb.energie: false` in der
-  // config.yaml holt die bisherige Anzeige zurück - der Rückweg, falls ein
-  // Grafiktreiber die neuen Shader nicht übersetzt.
+  // Feste Darstellung aus der Referenzvorlage: dunkler Glaskern,
+  // synaptische Energie im Zwischenraum, geflochtene Lichthuelle,
+  // unterbrochene atomare Umlaufbahnen und dynamische Augen. Der spaetere
+  // Tri-Core-Versuch bleibt als Quelldatei erhalten, ist aber nicht aktiv.
+  // `orb.energie: false` behaelt den schlichten technischen Rueckweg.
   const energieAktiv = readConfig<boolean>(config, "orb.energie", true) !== false;
 
-  const orb = energieAktiv
-    ? new EnergyOrb(
+  // Das Synaptix-Gehirn: fliessende Energie links, Neuronennetz rechts.
+  // Es ersetzt den Energy-Orb vollstaendig, laesst ihn aber unangetastet -
+  // `orb.synaptix: false` bringt sofort die bisherige Anzeige zurueck.
+  const synaptixAktiv = readConfig<boolean>(config, "orb.synaptix", false) === true;
+
+  const orb = synaptixAktiv
+    ? new SynaptixBrain(
         { tempo: animation.tempo, helligkeit: animation.helligkeit },
         renderer.renderer.getPixelRatio()
       )
-    : new Orb(
-        { particleCount, particlesEnabled, detail: 4, clusterEnabled, animation },
-        renderer.renderer.getPixelRatio()
-      );
-  const energyOrb = orb instanceof EnergyOrb ? orb : null;
+    : energieAktiv
+      ? new EnergyOrb(
+          { tempo: animation.tempo, helligkeit: animation.helligkeit },
+          renderer.renderer.getPixelRatio()
+        )
+      : new Orb(
+          { particleCount, particlesEnabled, detail: 4, clusterEnabled, animation },
+          renderer.renderer.getPixelRatio()
+        );
+  // Beide lebendigen Darstellungen teilen sich dieselbe Schnittstelle
+  // (Augen/Netz, Gefuehl, Fortschritt, Blitz). Alles Weitere im Modul
+  // unterscheidet deshalb nicht mehr zwischen ihnen.
+  const energyOrb: EnergyOrb | SynaptixBrain | null =
+    orb instanceof EnergyOrb || orb instanceof SynaptixBrain ? orb : null;
   const orbMenu = document.getElementById("orb-menu") as HTMLElement | null;
   const orbInfo = document.getElementById("orb-info") as HTMLElement | null;
   const chatPanel = document.getElementById("chat-panel") as HTMLElement | null;
@@ -238,9 +263,32 @@ async function bootstrap(): Promise<void> {
     }
   };
 
+  const handleLectureVisual = (event: BackendEvent): void => {
+    if (event.event !== "lecture.visual.changed") return;
+    const imagePath = String(event.payload.path ?? "").trim();
+    const summary = Array.isArray(event.payload.summary)
+      ? event.payload.summary as Array<{ title?: string; text?: string }>
+      : [];
+    if (!imagePath && summary.length === 0) return;
+    window.aiOrb.showLectureVisual({
+      path: imagePath,
+      title: String(event.payload.title ?? "Bild zur Vorlesung"),
+      topic: String(event.payload.topic ?? "Laufende Vorlesung"),
+      caption: String(event.payload.caption ?? ""),
+      kind: String(event.payload.kind ?? ""),
+      // Die Darstellungsart. Sie fehlte hier - und damit war jede
+      // Gliederung im Backend wirkungslos, weil das Fenster nur die
+      // Voreinstellung zu sehen bekam.
+      layout: String(event.payload.layout ?? ""),
+      summary,
+      generation: Number(event.payload.generation ?? 0),
+    });
+  };
+
   backend.onEvent((event) => {
     stimmpegel = pegelAus(event, stimmpegel);
     handleProgress(event);
+    handleLectureVisual(event);
     handleEmotionEvent(event, energyOrb);
     handleProfessorEvent(event, energyOrb);
     handleBackendEvent(event, states);
@@ -248,6 +296,7 @@ async function bootstrap(): Promise<void> {
   window.aiOrb.onBackendEvent((event) => {
     stimmpegel = pegelAus(event, stimmpegel);
     handleProgress(event);
+    handleLectureVisual(event);
     handleEmotionEvent(event, energyOrb);
     handleProfessorEvent(event, energyOrb);
     handleBackendEvent(event, states);
@@ -299,6 +348,18 @@ async function bootstrap(): Promise<void> {
       }, 40);
     }
   };
+
+  const handleChatAndQuitRequests = (event: BackendEvent): void => {
+    if (event.event === "orb.chat.requested") {
+      showChat(String(event.payload.action ?? "open") !== "close");
+      showMenu(false);
+      loop.noteActivity();
+    } else if (event.event === "orb.quit.requested") {
+      window.aiOrb.performMenuAction("quit");
+    }
+  };
+  backend.onEvent(handleChatAndQuitRequests);
+  window.aiOrb.onBackendEvent(handleChatAndQuitRequests);
 
   const addChatMessage = (text: string, kind: "user" | "orb" | "pending"): HTMLDivElement | null => {
     if (chatMessages === null) return null;
@@ -506,13 +567,6 @@ async function bootstrap(): Promise<void> {
   states.onChange((state) => {
     interaction.setEnabled(state !== "sleep");
     void backend.reportState(state);
-    const automaticStyles: Record<OrbStateName, OrbVisualStyle> = {
-      idle: "standard", listening: "nature", thinking: "galactic",
-      speaking: "standard", busy: "fire", error: "fire", sleep: "minimal",
-      executing: "fire", waiting: "ice", success: "nature",
-      warning: "fire", offline: "minimal",
-    };
-    energyOrb?.setVisualStyle(automaticStyles[state]);
     energyOrb?.setState(state);
     if (orbInfo !== null) {
       const labels: Record<OrbStateName, string> = {
@@ -621,7 +675,10 @@ function pegelAus(event: BackendEvent, bisher: number): number {
   return Math.max(0.0, Math.min(1.0, roh));
 }
 
-function handleEmotionEvent(event: BackendEvent, orb: EnergyOrb | null): void {
+function handleEmotionEvent(
+  event: BackendEvent,
+  orb: EnergyOrb | SynaptixBrain | null
+): void {
   if (orb === null) return;
   const aliases: Record<string, OrbEmotionName> = {
     friendly: "friendly", freundlich: "friendly",
@@ -639,7 +696,10 @@ function handleEmotionEvent(event: BackendEvent, orb: EnergyOrb | null): void {
 }
 
 /** ProfessorSession entscheidet fachlich; der Renderer zeichnet nur. */
-function handleProfessorEvent(event: BackendEvent, orb: EnergyOrb | null): void {
+function handleProfessorEvent(
+  event: BackendEvent,
+  orb: EnergyOrb | SynaptixBrain | null
+): void {
   if (orb === null || event.event !== "orb.professor.changed") return;
   const active = (event.payload as { active?: unknown } | undefined)?.active;
   orb.setProfessorMode(active === true);

@@ -29,6 +29,9 @@ from backend.orchestrator.providers.base_provider import (
     ProviderError,
     ProviderResponse,
 )
+from backend.orchestrator.providers.openai_compatible_provider import (
+    OpenAICompatibleProvider,
+)
 
 
 class _Anbieter:
@@ -52,6 +55,8 @@ class _Anbieter:
 
 def _verwalter(anbieter):
     verwalter = ProviderManager.__new__(ProviderManager)
+    verwalter._active_name = "test"
+    verwalter._providers = {"test": anbieter}
 
     async def _chat(messages, **kw):
         return await anbieter.chat(messages, **kw)
@@ -117,7 +122,7 @@ def test_bilddaten_werden_nicht_stillschweigend_verschluckt():
             )
         )
     except ProviderError as fehler:
-        assert "Pfad" in str(fehler), "die Auskunft nennt den gangbaren Weg nicht"
+        assert "keine Bilddaten" in str(fehler)
     else:
         raise AssertionError("Bilddaten wurden stillschweigend verworfen")
 
@@ -173,13 +178,33 @@ def test_freigegeben_wird_nur_der_bildordner():
     assert '"vision"' in zeile, f"freigegeben wird etwas anderes: {zeile}"
 
 
-def test_die_bildauswertung_braucht_ein_lesendes_werkzeug():
-    """Die CLI oeffnet die Datei selbst - dazu braucht sie das Werkzeug."""
+def test_der_aktive_hauptprovider_kann_bildschirmbilder_sehen():
+    """Wer auch immer vorne steht - er muss den Bildschirm ansehen koennen.
 
+    Der Test hing frueher am Namen "openai" fest und war nach jedem Wechsel
+    des Hauptmodells rot, ohne dass etwas kaputt war. Gemeint war nie der
+    Name, sondern die Faehigkeit - und die gibt es auf zwei Wegen, genau wie
+    in ``vision_engine.describe``:
+
+    * ``supports_images``: Das Bild geht als Datenstrom mit (OpenAI).
+    * ``reads_local_files``: Der Anbieter bekommt den PFAD und oeffnet die
+      Datei selbst (Claude Code).
+
+    Einer von beiden muss zutreffen. Trifft keiner zu, landet der Orb beim
+    Rueckfall auf Texterkennung und meldet, er koenne keine Bilder ansehen.
+    """
+
+    from backend.ai.provider_factory import build_provider
     from backend.config import get_config
 
-    werkzeuge = str(get_config().get("ai.primary.tools", ""))
-    assert "Read" in werkzeuge, (
-        "der Anbieter darf keine Dateien lesen - dann kann er auch die "
-        "Bildschirmaufnahme nicht oeffnen"
+    einstellungen = dict(get_config().section("ai").get("primary") or {})
+    gebaut = build_provider(einstellungen)
+    provider = getattr(gebaut, "provider", gebaut)
+
+    kann_bilder = bool(getattr(provider, "supports_images", False))
+    liest_dateien = bool(getattr(provider, "reads_local_files", False))
+
+    assert kann_bilder or liest_dateien, (
+        f"Der Hauptprovider '{provider.name}' kann Bildschirmbilder weder "
+        "als Daten annehmen noch selbst von der Platte lesen."
     )

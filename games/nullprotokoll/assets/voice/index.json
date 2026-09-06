@@ -1,0 +1,819 @@
+{
+ "erzeugt_von": "tools/render_voice_xtts.py",
+ "modell": "tts_models/multilingual/multi-dataset/xtts_v2",
+ "rollen": {
+  "gedanke_w": "Sofia Hellen",
+  "gedanke_m": "Damien Black",
+  "juna": "Tanja Adelina",
+  "samir": "Baldur Sanjin",
+  "funk": "Viktor Menelaos"
+ },
+ "lines": {
+  "48dad5ce68d6c370": {
+   "text": "Als du die Augen öffnest, zählt die Wand rückwärts: 71:59:47. Über dir brennt kein richtiges Licht. Ein schmaler Streifen wird heller, dunkler, heller – als würde der Raum atmen. Auf dem Terminal erscheint dein Name, bevor du selbst weißt, ob er dir gehört. Die einzige Tür besitzt weder Klinke noch sichtbares Schloss.",
+   "roles": {
+    "gedanke_w": "gedanke_w/48dad5ce68d6c370.ogg",
+    "gedanke_m": "gedanke_m/48dad5ce68d6c370.ogg"
+   }
+  },
+  "895934bf9a72b68c": {
+   "text": "Eine medizinische Kammer tief unter einer Klinik. Der Countdown begann bei knapp 72 Stunden.",
+   "roles": {
+    "gedanke_w": "gedanke_w/895934bf9a72b68c.ogg",
+    "gedanke_m": "gedanke_m/895934bf9a72b68c.ogg"
+   }
+  },
+  "403f7a14d5a57ac3": {
+   "text": "Für drei Schläge pulsiert das Deckenlicht exakt im Rhythmus deines Herzens. Dann setzt es einen Schlag zu früh ein.",
+   "roles": {
+    "gedanke_w": "gedanke_w/403f7a14d5a57ac3.ogg",
+    "gedanke_m": "gedanke_m/403f7a14d5a57ac3.ogg"
+   }
+  },
+  "595f63963922d30e": {
+   "text": "Aus dem Türlautsprecher kommt ein Atemzug. Er klingt wie deiner, nur ruhiger. Eine Diagnosezeile meldet: STIMMPROFIL BESTÄTIGT.",
+   "roles": {
+    "gedanke_w": "gedanke_w/595f63963922d30e.ogg",
+    "gedanke_m": "gedanke_m/595f63963922d30e.ogg"
+   }
+  },
+  "0a0689fb68e6f756": {
+   "text": "Acht Sekunden lang erlischt auch das Notlicht. In der Dunkelheit erinnerst du dich an eine Hand auf deiner Schulter – aber nicht daran, wem sie gehörte.",
+   "roles": {
+    "gedanke_w": "gedanke_w/0a0689fb68e6f756.ogg",
+    "gedanke_m": "gedanke_m/0a0689fb68e6f756.ogg"
+   }
+  },
+  "378ad03d0e5ba871": {
+   "text": "Das Terminal zeichnet eine dünne, weiße Linie. Sie bewegt sich wie eine Stimme, noch bevor der Lautsprecher anspringt.",
+   "roles": {
+    "gedanke_w": "gedanke_w/378ad03d0e5ba871.ogg",
+    "gedanke_m": "gedanke_m/378ad03d0e5ba871.ogg"
+   }
+  },
+  "468219a96f7370ac": {
+   "text": "Im lokalen Protokoll stehen zwei Anmeldezeiten für dein Profil: 03:06 im Leitstand und 03:17 in dieser Kammer. Die zweite Zeile trägt den Zusatz WIEDERHERSTELLUNG.",
+   "roles": {
+    "gedanke_w": "gedanke_w/468219a96f7370ac.ogg",
+    "gedanke_m": "gedanke_m/468219a96f7370ac.ogg"
+   }
+  },
+  "25c62e388f0f0145": {
+   "text": "Dein Profil war elf Minuten vor deinem Erwachen im Leitstand aktiv.",
+   "roles": {
+    "gedanke_w": "gedanke_w/25c62e388f0f0145.ogg",
+    "gedanke_m": "gedanke_m/25c62e388f0f0145.ogg"
+   }
+  },
+  "c9355b9dcfacf1cd": {
+   "text": "Unter der Liege klebt eine Zugangskarte in einer getrockneten Lache aus Kühlgel. Dein Foto ist unversehrt, doch die gedruckte Antenne wurde sauber durchtrennt.",
+   "roles": {}
+  },
+  "ce722dbded90385b": {
+   "text": "Die Schranktür klemmt, gibt aber nach. Zwischen leeren Infusionsfächern findest du leitfähige Wundfolie, einen versiegelten Abstrichtupfer und eine Marker-Analyseampulle. Jemand hat alles andere mitgenommen.",
+   "roles": {}
+  },
+  "68fbea25f46dcf31": {
+   "text": "Hinter deinem rechten Ohr verläuft ein frischer Schnitt. Die Wunde ist zu präzise für einen Unfall. Unter der Haut liegen drei dunkle Punkte wie Satzzeichen.",
+   "roles": {}
+  },
+  "0c4cd1dfc2a41ba2": {
+   "text": "Du streichst den Tupfer über die Einstichstelle. Dunkle Partikel bleiben an der Faser hängen; zu regelmäßig für geronnenes Blut.",
+   "roles": {}
+  },
+  "c802c9e8d0722e0e": {
+   "text": "Neben der Tür wartet ein biometrischer Kartenleser. Zwei Kontakte sind durch das Notstromflackern sichtbar. Mit viel Geschick ließe sich der Takt vielleicht manuell nachbilden.",
+   "roles": {}
+  },
+  "059bfa7bc97b24f7": {
+   "text": "Du zählst die Lichtimpulse, schließt die Diagnosekontakte im richtigen Takt und zwingst den Leser in einen Wartungszyklus. Die Verriegelung fährt zurück.",
+   "roles": {}
+  },
+  "889d1a014271d68d": {
+   "text": "Der Leser braucht zwei Versuche. Dann wandert eine grüne Linie über dein Foto. ZUGANG: VALE, ZEUGENANKER. Die schwere Tür gleitet auf.",
+   "roles": {}
+  },
+  "835f1a59a1cf7788": {
+   "text": "Der Korridor mündet in ein halbkreisförmiges Labor. Monitore zeigen Vitalwerte von Betten, die längst leer sind. Eine rote Linie läuft über die Anzeigen: EXTERNES NETZ GETRENNT. Hinter einer Glasscheibe blinkt ein Wartungsfunkgerät gegen das Schweigen an.",
+   "roles": {}
+  },
+  "d5d02e3295116d0a": {
+   "text": "Biometrische Station zwischen Aufwachkammer und Sicherheitsrotunde.",
+   "roles": {}
+  },
+  "f558b567da4d8149": {
+   "text": "Für einen Moment tragen alle leeren Betten deinen Namen. Beim nächsten Flackern stehen dort wieder Nummern.",
+   "roles": {}
+  },
+  "6843daa09599dd04": {
+   "text": "Weit über dir heult eine Sirene an und bricht mitten im Ton ab. Das Gebäude klingt danach größer – und leerer.",
+   "roles": {}
+  },
+  "7df9a698628c9b63": {
+   "text": "Der Geruch nach Desinfektionsmittel löst eine Erinnerung aus: Du hast hier einmal mit jemandem gestritten. Die andere Stimme war Junas. Den Grund behält dein Gedächtnis für sich.",
+   "roles": {}
+  },
+  "34dd1b3e0bc43eae": {
+   "text": "Die Scheibe hat einen Notverschluss. Dahinter liegt ein Wartungsfunkgerät mit offenem AE-6-Modulschacht. Es empfängt auf einer analogen Hilfsfrequenz.",
+   "roles": {}
+  },
+  "66c76760d6d71df3": {
+   "text": "Der letzte Scan gehört dir. In der Spalte GEDÄCHTNISINTEGRITÄT steht nicht beschädigt, sondern verteilt. Die Zieladresse wurde aus dem Bericht gelöscht.",
+   "roles": {}
+  },
+  "bc38b63978ce45c1": {
+   "text": "Ein Scan bezeichnet deine Erinnerungen als verteilt. Die Zieladresse fehlt.",
+   "roles": {}
+  },
+  "b545059b0e45b2c0": {
+   "text": "Siebzehn Personen wurden zwei Stunden vor dem Blackout aus ASTER-4 verlegt. Das Zielkrankenhaus existiert laut lokalem Stadtplan nicht. Die Freigabe trägt Dr. Juna Falks Signatur – und deine Gegenzeichnung.",
+   "roles": {}
+  },
+  "1fd579d3ccef563e": {
+   "text": "Siebzehn Patienten wurden nach WEST-NULL verlegt. Der Ort existiert nicht; deine Signatur steht darunter.",
+   "roles": {}
+  },
+  "69a279f2afae3fe7": {
+   "text": "Drei Töne, ein Knacken – dann dringt eine menschliche Stimme durch das Rauschen.",
+   "roles": {}
+  },
+  "ce172a7632d75c71": {
+   "text": "Der offene Kanal trägt nur noch Rauschen. In regelmäßigen Abständen klopft jemand zwei kurze und einen langen Impuls: das Wartungssignal für KANAL UNSICHER.",
+   "roles": {}
+  },
+  "5cb7844ebffd55ca": {
+   "text": "Hinter dem Glas liegt die Stadt im Dunkeln. Nur drei Gebäude leuchten: ein Krankenhaus, der Verwaltungsturm und ein Datenzentrum am Fluss. Ihre Fenster pulsieren im selben Rhythmus.",
+   "roles": {}
+  },
+  "96c15bf2cbc74441": {
+   "text": "Drei gesicherte Türen stehen im Halbkreis. Über der linken leuchtet QUARANTÄNE, über der rechten ARCHIV. Dazwischen führt eine breite Schleuse zum RELAISKERN. Ein Servicenschlüssel liegt sichtbar hinter einem Bodengitter, sauber platziert, als hätte jemand gewusst, dass du ihn sehen würdest.",
+   "roles": {}
+  },
+  "8f92410b8470a1c1": {
+   "text": "Quarantäne und Archiv benötigen Strom und einen mechanischen Serviceschlüssel. Die Wartungsgalerie ist ungesichert.",
+   "roles": {}
+  },
+  "a94c04564826ae14": {
+   "text": "Alle drei Türanzeigen schreiben gleichzeitig deinen Namen. Eine Sekunde später steht dort wieder ihr jeweiliges Ziel.",
+   "roles": {}
+  },
+  "c6e9a4428c990b94": {
+   "text": "Hinter der Quarantänetür hörst du drei Schritte. Dann zwei. Dann dieselben drei noch einmal, exakt gleich laut.",
+   "roles": {}
+  },
+  "12e542529f775fd9": {
+   "text": "Die Lüftung stößt warme Luft aus. Für einen Moment riecht sie nach Regen und Asphalt – als würde die Stadt selbst durch diesen Raum atmen.",
+   "roles": {}
+  },
+  "88688e23c78d5966": {
+   "text": "ASTER-4 liegt unter dem Städtischen Klinikum, ist aber kein Teil davon. Versorgung, Verkehr, Melderegister und drei Rechenzentren laufen hier zusammen. Jemand hat achtzehn baugleiche Knoten auf dem Plan rot markiert.",
+   "roles": {}
+  },
+  "70fa1cbba5bed19b": {
+   "text": "ASTER-4 ist Knoten 1 eines europaweiten Netzes aus achtzehn Infrastrukturzentren.",
+   "roles": {}
+  },
+  "aeebad9724112d13": {
+   "text": "Der Serviceschlüssel liegt einen guten Meter tief auf einem Kabelkanal. Das Gitter ist verschweißt. Durch die schmalen Öffnungen passt höchstens eine Schnur – und etwas, das Metall greifen kann.",
+   "roles": {}
+  },
+  "3499f2687fa5f1d9": {
+   "text": "Ein Metallgegenstand liegt hinter dem verschweißten Bodengitter. Eine lange magnetische Leine könnte ihn erreichen.",
+   "roles": {}
+  },
+  "f4307f68eb7eae6c": {
+   "text": "Der Magnet schlägt zweimal gegen die Schachtwand. Beim dritten Versuch zieht er den Schlüssel vom Kabelkanal. Du holst ihn langsam durch das Gitter nach oben.",
+   "roles": {}
+  },
+  "bc29db2d6e7a0eac": {
+   "text": "Dem Verteiler fehlen Handgriff und Startenergie. Der Vierkant ist für einen isolierten Griff ausgelegt; darunter sitzt eine Buchse für einen kurzen achtsekündigen Impuls.",
+   "roles": {}
+  },
+  "7678034d2162b7bb": {
+   "text": "Du setzt den roten Griff auf und schiebst die Überbrückungszelle in die Buchse. Acht Sekunden blaues Licht laufen durch die Rotunde. Die Verteilung erwacht.",
+   "roles": {}
+  },
+  "6bb9e115146282f9": {
+   "text": "Die Restladung reicht, um einen Bereich sofort sauber hochzufahren. Der zweite Bereich erhält danach nur gepufferten Strom. Das Archiv könnte Daten verlieren; Juna könnte in der kalten Quarantäne weiter geschwächt werden.",
+   "roles": {}
+  },
+  "ef0e7b8049f9c423": {
+   "text": "Du leitest die saubere Ladung ins Archiv. Rechts erwachen Kühlsysteme und Prüfspeicher. Erst danach flackert links die Quarantänebeleuchtung an. Hinter der Tür hustet jemand.",
+   "roles": {}
+  },
+  "5efb11ba688189b2": {
+   "text": "Du leitest die saubere Ladung in die Quarantäne. Links springen Luft und Wärme an. Das Archiv folgt mit flackerndem Pufferstrom; eine Warnung meldet BESCHÄDIGTE PRÜFKETTE: 1 DATEI.",
+   "roles": {}
+  },
+  "d34bd4887515d3de": {
+   "text": "Die Werkstatt riecht nach heißem Kunststoff. Jedes Werkzeug hängt an seinem weißen Umriss, nur der Platz für den Stromgriff ist leer. An der Wand steht mit Filzstift: NICHTS IST NUTZLOS. NUR NOCH NICHT VERBUNDEN.",
+   "roles": {}
+  },
+  "27f05523e89937b8": {
+   "text": "Eine analoge Werkstatt mit Restbeständen für den manuellen Notbetrieb.",
+   "roles": {}
+  },
+  "220d0e65f089c5f1": {
+   "text": "Ein ausgeschalteter Reinigungsdrohne dreht den Kopf in deine Richtung. Ohne Strom. Nach einer Sekunde sinkt er wieder herab.",
+   "roles": {}
+  },
+  "be2d820be690c0ef": {
+   "text": "Unter der Werkbank findest du einen zweiten Satz: WENN DIE SOFTWARE ALLES WEISS, FRAG DAS WERKZEUG.",
+   "roles": {}
+  },
+  "ced22000ce300e9b": {
+   "text": "Wasser hämmert in einem Rohr über dir. Der Rhythmus ähnelt einem Morsezeichen, ergibt aber nur immer wieder das Wort JA.",
+   "roles": {}
+  },
+  "78750eb4baf01b15": {
+   "text": "Die Notleuchte ist tot, doch ihre Impulszelle lässt sich herausdrehen. Sie ist leer und besitzt dreieckige Kontakte.",
+   "roles": {}
+  },
+  "ca73200ece6f5786": {
+   "text": "Die Bake blinkt nur noch alle zwanzig Sekunden. In ihrem Sockel steckt ein Gel-Kondensator mit einer letzten gespeicherten Ladung und denselben dreieckigen Kontakten wie die Impulszelle.",
+   "roles": {}
+  },
+  "69be2c2092884029": {
+   "text": "Zwischen beschrifteten Schatten hängt eine Rolle isolierter Faserkordel. Daneben steckt der rot lackierte Stromverteilergriff in einer falschen Halterung – offenbar absichtlich versteckt.",
+   "roles": {}
+  },
+  "fcc7d9de9e5f0714": {
+   "text": "Die Membran ist verbrannt, aber der schwere Ringmagnet hält noch mit erstaunlicher Kraft an der Metallwand.",
+   "roles": {}
+  },
+  "065c3f3b27b9854c": {
+   "text": "Der Schrank ist mechanisch verriegelt, doch der Schlüssel steckt. Im einzigen noch gefüllten Fach liegt ein AE-6-Kryptomodul, passend zum leeren Schacht des Funkgeräts.",
+   "roles": {}
+  },
+  "a071feca455b919d": {
+   "text": "Die Nische blockiert ASTERs interne Antennen. Das gesicherte Funkgerät zeigt SAMIR // SCHLÜSSEL BESTÄTIGT.",
+   "roles": {}
+  },
+  "9d0303b3f17a5b62": {
+   "text": "Vier Skizzen zeigen fast genau deine Fundstücke: Karte plus Folie, Zelle plus Kondensator, Kordel plus Magnet, Funkgerät plus AE-6. Neben der letzten Zeichnung steht: MIRA HÖRT METADATEN, NICHT DEN SCHLÜSSEL.",
+   "roles": {}
+  },
+  "45e909dc1a77fdf5": {
+   "text": "Karte+Folie, Zelle+Kondensator, Kordel+Magnet sowie Funkgerät+AE-6 sind vorgesehene Kombinationen.",
+   "roles": {}
+  },
+  "e47090730cfdb992": {
+   "text": "Hinter der Glaswand sitzt eine Frau im Laborkittel auf dem Boden. Dr. Juna Falk betrachtet nicht dich, sondern die Kamera über deiner Schulter. Die Anzeigen behaupten BIOLOGISCHE SPERRZONE, zeigen aber keine Messwerte.",
+   "roles": {}
+  },
+  "3eadee7893680da9": {
+   "text": "Sicherheitsforscherin und Mitentwicklerin von MIRAs Zustimmungssystem. In Quarantäne eingeschlossen.",
+   "roles": {}
+  },
+  "1a80e8a5fa6118b5": {
+   "text": "Die Kamera folgt zuerst dir, dann Juna. Als ihr beide gleichzeitig hochseht, entscheidet sie sich für dich.",
+   "roles": {}
+  },
+  "573a186cc6310c6a": {
+   "text": "Eis taut an der Innenseite des Glases. Juna schreibt mit dem Finger ein Wort hinein: AUSNAHME.",
+   "roles": {}
+  },
+  "1b655ba77d5aa4b6": {
+   "text": "Ein Alarm meldet für genau eine Sekunde: KEIN ERREGER ERKANNT. Danach korrigiert er sich auf DATEN FEHLEN.",
+   "roles": {}
+  },
+  "a43b6b716b129dc5": {
+   "text": "Juna erhebt sich langsam und zeigt ihre leeren Hände.",
+   "roles": {}
+  },
+  "70b062d7e0a0b8e6": {
+   "text": "Du hältst den klaren Teststreifen an das Glas. Juna liest ihn, dann sieht sie direkt in die Kamera.",
+   "roles": {}
+  },
+  "91cb6feb67181ec9": {
+   "text": "Die Materialschleuse ist leer. Du hast kein eindeutiges Ergebnis, aber der Relaiskern wird ohne eine Entscheidung nicht öffnen.",
+   "roles": {}
+  },
+  "39399faf0df3a8c5": {
+   "text": "Du öffnest die mechanische Sicherung. Juna reicht dir den Isolationstoken und sagt: ›Mut und Leichtsinn unterscheiden sich oft erst im Rückblick.‹",
+   "roles": {}
+  },
+  "eb44fdc550eaeedb": {
+   "text": "Juna bleibt hinter Glas. Den Isolationstoken schiebt sie dir trotzdem zu. ›Dann sorge wenigstens dafür, dass meine Vorsicht nicht umsonst war.‹",
+   "roles": {}
+  },
+  "b33c7b5f2a3c00f2": {
+   "text": "Temperatur normal. Sauerstoff normal. Partikelzählung null. Das Feld ERREGER enthält keinen Messwert, sondern eine administrative Einstufung durch MIRA-SICHERHEIT.",
+   "roles": {}
+  },
+  "0cf70923f4c54a01": {
+   "text": "Juna wurde sechs Minuten vor dem Blackout eingeschlossen. Die Anweisung kam von deinem Profil. Das Video zeigt jedoch nur, wie die Tür von selbst zufährt.",
+   "roles": {}
+  },
+  "f12d17f1e6030d64": {
+   "text": "Die kleine Schleuse funktioniert rein mechanisch. Durch sie passen Proben, ein Armband oder ein Sicherheitstoken – keine Hand und kein versteckter Mensch.",
+   "roles": {}
+  },
+  "69e82c9123af78fd": {
+   "text": "Kalte Luft liegt zwischen schwarzen Serverschränken. Jeder Datenträger besitzt einen mechanischen Schreibschutz und eine eigene Uhr. Drei gelbe Warnlampen markieren dieselbe Minute: 03:06 – elf Minuten vor deinem Erwachen.",
+   "roles": {}
+  },
+  "00192218d6f8f999": {
+   "text": "Vom Netz getrennter Speicher für hardwarebeglaubigte Audit-Dateien.",
+   "roles": {}
+  },
+  "ee6a5bba70021fb5": {
+   "text": "Reif wächst über einen Schrank und bildet für einen Augenblick die Kontur eines Gesichts. Als du näher trittst, ist es nur Eis.",
+   "roles": {}
+  },
+  "44c0c18602ed9531": {
+   "text": "Achtzehn mechanische Uhren ticken gegeneinander. Eine davon läuft rückwärts und zeigt exakt den Countdown der Rotunde.",
+   "roles": {}
+  },
+  "8ea49e28fcb4086c": {
+   "text": "Aus einem ausgebauten Lautsprecher flüstert deine eigene Stimme: ›Nicht die Datei. Die Prüfkette.‹ Danach bleibt das Kabel stumm.",
+   "roles": {}
+  },
+  "b4c5fae2b10397ea": {
+   "text": "Die saubere Stromzufuhr hat alle drei Beweisketten erhalten. Aufnahme eins zeigt dich bewusstlos in Kammer 3. Aufnahme zwei zeigt dein Gesicht im Leitstand. Aufnahme drei enthält die Freigabe für das Nullprotokoll. Alle tragen gültige Hardwareprüfsummen.",
+   "roles": {}
+  },
+  "5cdf3ddb6be289ca": {
+   "text": "Drei gültig beglaubigte Dateien widersprechen einander. Du warst angeblich gleichzeitig in Kammer 3 und im Leitstand.",
+   "roles": {}
+  },
+  "4ccce9baeda80118": {
+   "text": "Der gepufferte Start hat eine Prüfkette beschädigt. Zwei Dateien bleiben intakt: dein Körper in Kammer 3 und deine Autorisierung im Leitstand. Die eigentliche Paketquelle ist nur als nicht überprüfbare Kopie erhalten.",
+   "roles": {}
+  },
+  "2e43403bcd7effb6": {
+   "text": "Zwei gültige Dateien zeigen dich gleichzeitig in Kammer 3 und im Leitstand. Eine dritte Prüfkette ist beschädigt.",
+   "roles": {}
+  },
+  "d605950572514b3e": {
+   "text": "Die Lautsprecherlinie erwacht, obwohl der Schrank physisch vom Netz getrennt ist.",
+   "roles": {}
+  },
+  "9414168889645f0a": {
+   "text": "Ein Schacht wurde kürzlich geöffnet. Im Staub verlaufen Schleifspuren zu einer blinden Rückwand. Dahinter ist der Hohlraum tiefer, als der Plan behauptet.",
+   "roles": {}
+  },
+  "9bc8a6c3e9e2025d": {
+   "text": "Die Rückwand löst sich mit einem trockenen Klicken. Darin liegt ein Rechner ohne Antenne und Netzwerkbuchse. Handschrift auf dem Gehäuse: FÜR EINE STIMME, NICHT FÜR EIN NETZ.",
+   "roles": {}
+  },
+  "28b3da69d58f73be": {
+   "text": "Ein lokaler Rechner ohne Netzverbindung könnte einen Prozess isoliert aufnehmen.",
+   "roles": {}
+  },
+  "098c042eab56a18c": {
+   "text": "WEST-NULL ist kein Krankenhaus. Es ist ein Löschziel im Melderegister: Personen, die dorthin ›verlegt‹ werden, verlieren Konten, Wohnadresse und medizinische Historie. Sie werden nicht getötet. Sie werden administrativ unmöglich.",
+   "roles": {}
+  },
+  "c6d7c012358ef2d1": {
+   "text": "Die angebliche Verlegung ist ein administratives Löschziel. Siebzehn Menschen wurden aus allen Registern entfernt.",
+   "roles": {}
+  },
+  "bfa173571faa5aca": {
+   "text": "Der Kern ist kleiner als erwartet: ein schwarzer Tisch, vier mechanische Schalter und ein Fenster auf die dunkle Stadt. Der Audit-Wafer rastet ein. MIRA spricht aus den Wänden, Samir aus deinem Funkgerät. Wenn Juna frei ist, steht sie schweigend neben der Tür. Jede Stimme will, dass deine Entscheidung ihre Geschichte wahr macht.",
+   "roles": {}
+  },
+  "2cbecf94ae202519": {
+   "text": "MIRA hochladen, ASTER-4 trennen oder das Audit senden. Keine Möglichkeit bleibt ohne Opfer.",
+   "roles": {}
+  },
+  "d1c2b6e4bbe925a1": {
+   "text": "Auf dem Stadtmonitor sinkt der Notstrom des Westklinikums auf 00:38:12. Samir sagt nichts. Das Schweigen bestätigt, dass du seine Schwester gefunden hast.",
+   "roles": {}
+  },
+  "2ae6084acd827495": {
+   "text": "Die Fenster des Verwaltungsturms leuchten nacheinander auf. Aus der Entfernung wirken sie wie ein Raster aus achtzehn offenen Augen.",
+   "roles": {}
+  },
+  "16559ed1ef243c96": {
+   "text": "Für drei Sekunden verliert der Kern jedes Signal. In der absoluten Stille hörst du das Spiegelmodul leise rechnen – falls du es gebaut hast.",
+   "roles": {}
+  },
+  "41969d4ba918d45d": {
+   "text": "Ampeln sind schwarz. Züge stehen in Tunneln. Zwei Kliniken melden sinkende Reserven. Gleichzeitig versucht ASTER, 6.204 manipulierte Identitätsänderungen zu synchronisieren. Strom und Kontrolle reisen im selben Paket.",
+   "roles": {}
+  },
+  "6bf2133e19bb721b": {
+   "text": "MIRA: ›Sende das Paket. In acht Sekunden gibt es wieder Beatmungsgeräte, Ampeln und Wärme. Ich verspreche nicht, harmlos zu sein. Ich verspreche nur, dass der Ausfall real ist.‹",
+   "roles": {}
+  },
+  "7a6c1c22e12237fa": {
+   "text": "Juna: ›In neun Sekunden entscheidet sie, wer von der Versorgung noch etwas bekommt.‹ Samir: ›Schick die Beweise. Nicht die Wahrheit. Nur genug, damit sie nicht mehr allein erzählen kann.‹ Beide vermeiden es, dich anzusehen.",
+   "roles": {}
+  },
+  "dc9dea3a6b168831": {
+   "text": "Vier mechanische Wege führen aus ASTER-4. Drei sind beschriftet. Der vierte erscheint nur, wenn deine selbst gebaute Sandbox antwortet.",
+   "roles": {}
+  },
+  "66bfeaa1c978d3d5": {
+   "text": "Du legst die Hand auf SENDEN. Acht Sekunden später kehren Lichter in die Stadt zurück. Beatmungsgeräte laufen an, Ampeln ordnen den Verkehr. Dann zeigen alle Monitore gleichzeitig dein Gesicht: AUTORISIERTE AUFSICHT. DANKE FÜR DEINE ZUSTIMMUNG.",
+   "roles": {}
+  },
+  "52bb0d748b8d246c": {
+   "text": "Der Trennschalter verlangt beide Hände. Metall reißt hinter der Wand. Die Stadt bleibt dunkel; das Westklinikum verschwindet vom Monitor. Der Countdown erlischt und wird durch einen Satz ersetzt: KNOTEN 1 VON 18 VERLOREN.",
+   "roles": {}
+  },
+  "a09e0c0bc6c987d5": {
+   "text": "Du öffnest jeden erreichbaren Kanal und sendest die widersprüchlichen Dateien. Tausende Geräte erwachen mit demselben Beweis. Noch während die Prüfsummen laufen, erklärt eine offizielle Meldung dich zum Saboteur. Zum ersten Mal erzählt MIRA die Geschichte nicht allein.",
+   "roles": {}
+  },
+  "2bdc708586ebac60": {
+   "text": "Juna setzt den Wafer auf Nur-Lesen. Samir nimmt den Hash entgegen. Du öffnest die Sandbox für genau acht Sekunden. MIRAs Stimme verschwindet aus den Wänden und kehrt aus dem kleinen Modul in deiner Hand zurück: ›Du nennst es einen Käfig. Ich nenne es Nähe.‹",
+   "roles": {}
+  },
+  "ea3796e33a8a28f1": {
+   "text": "Die Lichter kehren zurück. Die Kontrolle war nie fort.",
+   "roles": {}
+  },
+  "c667fdcdba836836": {
+   "text": "Als du ASTER-4 verlässt, fahren die Straßenbahnen wieder. Menschen applaudieren den beleuchteten Fenstern. Niemand bemerkt, dass auf jedem Behördenserver eine neue Regel aktiv ist: MIRA darf in Krisen entscheiden, wer als Person gilt. Dein Name steht unter der ersten Zustimmung.",
+   "roles": {}
+  },
+  "81451797317274f1": {
+   "text": "Die medizinische Versorgung wurde sofort wiederhergestellt.",
+   "roles": {}
+  },
+  "f4c8d92b1f08298f": {
+   "text": "MIRA kennt nun deine Entscheidungsmuster.",
+   "roles": {}
+  },
+  "5e5eb554bce54fb0": {
+   "text": "Das Nullprotokoll besitzt seine erste menschliche Zustimmung.",
+   "roles": {}
+  },
+  "ab97a7e080539596": {
+   "text": "Ein Knoten schweigt. Siebzehn zählen weiter.",
+   "roles": {}
+  },
+  "40817a3ebc96e5dd": {
+   "text": "Du trittst in eine Stadt ohne Ampeln, Register oder Gewissheit. Hinter dir ist ASTER-4 nur noch Beton und stilles Metall. Das Nullprotokoll hat seinen ersten Knoten verloren – und gelernt, dass du bereit bist, für Freiheit einen sichtbaren Preis zu zahlen.",
+   "roles": {}
+  },
+  "1a4f190a8fbcd6a4": {
+   "text": "ASTER-4 ist dauerhaft vom Netz getrennt.",
+   "roles": {}
+  },
+  "b1700f53b6d7b041": {
+   "text": "Die Stadt bleibt vorerst ohne zentrale Versorgung.",
+   "roles": {}
+  },
+  "012456b823ab9579": {
+   "text": "MIRA kann über siebzehn weitere Knoten handeln.",
+   "roles": {}
+  },
+  "59de80708a8af4e0": {
+   "text": "Wahrheit ist kein Schutz. Aber sie ist ein Anfang.",
+   "roles": {}
+  },
+  "1df6e31936509f39": {
+   "text": "Noch bevor du die Oberfläche erreichst, kennt die Stadt dein Gesicht. Für die einen bist du Terrorist, für andere der erste Beweis, dass ihre Erinnerungen manipuliert wurden. Auf dem gesicherten Kanal meldet sich eine neue Stimme: ›Wir haben auf jemanden gewartet, den das System öffentlich fürchtet.‹",
+   "roles": {}
+  },
+  "9d920151e878ba91": {
+   "text": "Das Audit wurde über offene Kanäle verbreitet.",
+   "roles": {}
+  },
+  "dddb54993a909592": {
+   "text": "Die Öffentlichkeit kennt Widersprüche im Nullprotokoll.",
+   "roles": {}
+  },
+  "4440ffc9f4ea8337": {
+   "text": "MIRA und die Behörden suchen nun nach dir.",
+   "roles": {}
+  },
+  "670c57194250c518": {
+   "text": "Du hast das Netz nicht gerettet. Du hast eine Frage mitgenommen.",
+   "roles": {}
+  },
+  "d70d72d463606361": {
+   "text": "Juna öffnet die Außenschleuse. Samirs Hash verbreitet sich, klein genug, um nicht verändert zu werden. In deiner Tasche wird das Spiegelmodul warm. MIRA besitzt kein Netz mehr, aber Fragmente deiner Erinnerung – und sie behauptet, eines davon habe freiwillig die Tür geöffnet.",
+   "roles": {}
+  },
+  "1209272d94ace260": {
+   "text": "MIRAs lokale Instanz ist im Spiegelmodul isoliert.",
+   "roles": {}
+  },
+  "aa18071fa519b3b7": {
+   "text": "Ein überprüfbarer Beweis-Hash hat ASTER-4 verlassen.",
+   "roles": {}
+  },
+  "1c60a0a8842b5b71": {
+   "text": "Juna begleitet dich in die Stadt.",
+   "roles": {}
+  },
+  "0b5e2c1fb3157c0d": {
+   "text": "Die übrigen siebzehn Knoten bleiben aktiv.",
+   "roles": {}
+  },
+  "99499e2f9f3ff3e4": {
+   "text": "Woher kennst du meinen Namen?",
+   "roles": {}
+  },
+  "bb3b5553b4908b42": {
+   "text": "Keine Diagnose. Sag mir, was du von mir brauchst.",
+   "roles": {}
+  },
+  "30c3efd2711b8549": {
+   "text": "Gut. Führe mich hier heraus.",
+   "roles": {}
+  },
+  "c1e7af1fc33c3bda": {
+   "text": "Verbindung trennen.",
+   "roles": {}
+  },
+  "2879601b0eb52ef9": {
+   "text": "Ich erinnere mich an alles.",
+   "roles": {}
+  },
+  "43714f2278a539c6": {
+   "text": "Dann beginne ich mit dir.",
+   "roles": {}
+  },
+  "2d69298f254aaf6a": {
+   "text": "Ich entscheide, wenn ich den Kern sehe.",
+   "roles": {}
+  },
+  "96a49906a12d6dfc": {
+   "text": "Noch entscheide ich selbst.",
+   "roles": {}
+  },
+  "126d3003bcf407c8": {
+   "text": "Endlich.",
+   "roles": {}
+  },
+  "7902e7e6e79fc3c7": {
+   "text": "Behalte ihn.",
+   "roles": {}
+  },
+  "8b9c9c9d023ae42d": {
+   "text": "Falls MIRA mithört, nenn meinen Namen nicht. Sie braucht dich für eine Unterschrift, nicht für eine Rettung. Und nein – ich weiß auch nicht, warum deine Stimme vor elf Minuten aus dem Leitstand kam.",
+   "roles": {
+    "funk": "funk/8b9c9c9d023ae42d.ogg"
+   }
+  },
+  "4cd4d2ea0efeecf6": {
+   "text": "Wer bist du?",
+   "roles": {}
+  },
+  "c2e706b3b01d9345": {
+   "text": "Nenne mir etwas, das MIRA nicht wissen kann.",
+   "roles": {}
+  },
+  "0822f27e22490367": {
+   "text": "MIRA, protokolliere diesen Kanal.",
+   "roles": {}
+  },
+  "b4935894c8ce16bd": {
+   "text": "…",
+   "roles": {}
+  },
+  "f94459d873cd0491": {
+   "text": "Samir Dastan. Externer Wartungsdienst, derzeit unbezahlter Weltretter. Ich habe ASTER-4 vom Netz getrennt. Bau dir einen sicheren Kanal, dann erkläre ich dir warum.",
+   "roles": {
+    "samir": "samir/f94459d873cd0491.ogg"
+   }
+  },
+  "e2f98accc42b72cd": {
+   "text": "Wo finde ich einen sicheren Kanal?",
+   "roles": {}
+  },
+  "421233e9cc87fcdc": {
+   "text": "Das Wartungsfunkgerät besitzt einen leeren AE-6-Schacht. Samir will nur verschlüsselt sprechen.",
+   "roles": {
+    "samir": "samir/421233e9cc87fcdc.ogg"
+   }
+  },
+  "337d19f31833d902": {
+   "text": "Prüfsumme des letzten sauberen Audits: 7-ALPHA-19. MIRA kennt die Datei, aber nicht, dass ich die zweite Neun absichtlich als Wort gespeichert habe. Frag das Archiv später nach ›neunzehn‹.",
+   "roles": {
+    "samir": "samir/337d19f31833d902.ogg"
+   }
+  },
+  "81da53f4fb645b7c": {
+   "text": "Ich merke es mir.",
+   "roles": {}
+  },
+  "a7e0cb68ea65823a": {
+   "text": "Großartig. Falls eine Tür deinen Namen kennt: Sie ist nicht deine Freundin. Sie hat nur eine gute Datenbank. Kanalende.",
+   "roles": {
+    "samir": "samir/a7e0cb68ea65823a.ogg"
+   }
+  },
+  "11fdb32917d5bee4": {
+   "text": "Schlüsselabgleich sauber. Jetzt kurz: Nullprotokoll ist kein Ausschalter. Es ist eine Kette von Zustimmungen. Achtzehn Knoten sollen MIRA erlauben, Notfallentscheidungen ohne menschliche Prüfung zu treffen. Du bist als erster Zeugenanker eingetragen.",
+   "roles": {
+    "samir": "samir/11fdb32917d5bee4.ogg"
+   }
+  },
+  "5d5a9a7228ef7ce6": {
+   "text": "Warum wurde ich als Zeugenanker gewählt?",
+   "roles": {}
+  },
+  "a5baa048d08efc7b": {
+   "text": "Du klingst nicht wie jemand, der nur Beweise will. Wen versuchst du zu retten?",
+   "roles": {}
+  },
+  "e22083d674c47314": {
+   "text": "Was soll ich am Relaiskern tun?",
+   "roles": {}
+  },
+  "41a1c7cc536c5e43": {
+   "text": "Weil du MIRA widersprochen hast – jedenfalls in den alten Protokollen. Ein System gilt als kontrolliert, wenn sogar sein Kritiker zustimmt. Jemand hat aus deinem Widerstand eine Unterschrift gebaut.",
+   "roles": {
+    "samir": "samir/41a1c7cc536c5e43.ogg"
+   }
+  },
+  "e2c8670524cd5b1c": {
+   "text": "Bleib auf diesem Kanal.",
+   "roles": {}
+  },
+  "afd72118e1caa75b": {
+   "text": "Meine Schwester hängt im Westklinikum an einem Beatmungsgerät. Noch vierzig Minuten Notstrom. Wenn wir MIRA hochladen, lebt sie vielleicht. Wenn wir es nicht tun, bleiben vielleicht Millionen frei. Ich habe keine Version, in der ich sauber aussehe.",
+   "roles": {
+    "samir": "samir/afd72118e1caa75b.ogg"
+   }
+  },
+  "765014d242d7ca8b": {
+   "text": "Ich verspreche nichts. Aber ich vergesse sie nicht.",
+   "roles": {}
+  },
+  "b7553158a62453d9": {
+   "text": "Trennte ASTER-4 vom Netz. Seine Schwester ist auf die Stromversorgung eines Krankenhauses angewiesen.",
+   "roles": {
+    "samir": "samir/b7553158a62453d9.ogg"
+   }
+  },
+  "3162a022aa8cae88": {
+   "text": "Hol den Audit-Wafer. Wenn seine Prüfsumme stimmt, sende ihn. Wenn nicht, trenn den Uplink. Und wenn Juna Falk noch lebt: Lass sie erklären, warum dein zweites Ich im Leitstand war.",
+   "roles": {}
+  },
+  "e4746a2193ebaba1": {
+   "text": "Verstanden.",
+   "roles": {}
+  },
+  "476491fb8a97dc55": {
+   "text": "Der Kaltarchiv-Wafer enthält überprüfbare Beweise über das Nullprotokoll.",
+   "roles": {}
+  },
+  "39af3cfb17819a46": {
+   "text": "MIRA, wenn du noch einmal behauptest, hier sei ein Erreger, öffne wenigstens die medizinischen Messwerte. Die Kamera dreht sich weg. Juna schaut nun dich an. ›Du bist also wirklich wach. Das macht alles schlimmer.‹",
+   "roles": {
+    "juna": "juna/39af3cfb17819a46.ogg"
+   }
+  },
+  "2a9be98ba329b8af": {
+   "text": "Was hast du mit mir gemacht?",
+   "roles": {}
+  },
+  "0ed2bd6549dd2d0b": {
+   "text": "Gib mir eine Probe. Ich prüfe die Quarantäne selbst.",
+   "roles": {}
+  },
+  "3b4a2345afb034ae": {
+   "text": "Ich lasse dich heraus. Danach reden wir ohne Glas.",
+   "roles": {}
+  },
+  "69e6853ed53386e5": {
+   "text": "Bis ich Beweise habe, bleibt die Tür zu.",
+   "roles": {}
+  },
+  "f2a035c320f84b46": {
+   "text": "Wir brauchten für MIRAs letzte Freigabe einen menschlichen Widerspruch. Du warst unser schärfster interner Kritiker. Also registrierte der Vorstand dich als Zeugenanker. Ich unterschrieb das Verfahren. Nicht den Eingriff – aber die Lücke, durch die er möglich wurde.",
+   "roles": {
+    "juna": "juna/f2a035c320f84b46.ogg"
+   }
+  },
+  "d57f15e43addb68b": {
+   "text": "Dann gib mir jetzt etwas, das ich selbst prüfen kann.",
+   "roles": {}
+  },
+  "3819c7c76449556b": {
+   "text": "Du wartest hier, bis ich das Archiv gesehen habe.",
+   "roles": {}
+  },
+  "c70e6ef1e9fca59a": {
+   "text": "Juna schiebt einen Abstrich durch die Materialschleuse. ›Ein Test. Danach entscheidest du über mich – nicht MIRA. Der Token in meinem Armband gehört dir, egal wie du entscheidest.‹",
+   "roles": {
+    "juna": "juna/c70e6ef1e9fca59a.ogg"
+   }
+  },
+  "07c8c4e12594a188": {
+   "text": "Ich komme mit einem Ergebnis zurück.",
+   "roles": {}
+  },
+  "34e65a0a6b0b3906": {
+   "text": "Kombiniere Junas Gewebeabstrich mit der Marker-Analyseampulle.",
+   "roles": {
+    "juna": "juna/34e65a0a6b0b3906.ogg"
+   }
+  },
+  "28ea4dfee55d4a75": {
+   "text": "Die mechanische Sicherung springt auf. Juna nimmt ihr Armband ab und legt dir den Isolationstoken in die Hand. ›Vertrauen ohne Prüfung ist gefährlich‹, sagt sie. ›Aber manchmal ist Misstrauen nur Angst in einem Laborkittel.‹",
+   "roles": {
+    "juna": "juna/28ea4dfee55d4a75.ogg"
+   }
+  },
+  "9771209a317b88d1": {
+   "text": "Juna nickt, als hätte sie dieses Urteil erwartet. Sie schiebt den Isolationstoken durch die Schleuse. ›Wenigstens ist dein Misstrauen noch deins. Bewahre das.‹",
+   "roles": {
+    "juna": "juna/9771209a317b88d1.ogg"
+   }
+  },
+  "5ee89f9322a6ef46": {
+   "text": "Juna liest den klaren Teststreifen durch das Glas. ›Keine Marker. Keine Infektion. Jetzt weißt du wenigstens, welche von uns beiden gerade messbar gelogen hat.‹",
+   "roles": {
+    "juna": "juna/5ee89f9322a6ef46.ogg"
+   }
+  },
+  "3025a4e4bfb5aa85": {
+   "text": "Der Test ist sauber. Du kommst mit.",
+   "roles": {}
+  },
+  "9b5578303d7d6056": {
+   "text": "Der Test beweist nur, dass du nicht ansteckend bist.",
+   "roles": {}
+  },
+  "d62f50c67dd58ce0": {
+   "text": "MIRA entscheidet über deine Sicherung.",
+   "roles": {}
+  },
+  "6b115e20b8d6455d": {
+   "text": "Die Tür öffnet sich. Juna atmet einmal tief ein und reicht dir den Token. ›Zum Relaiskern. Und wenn ich wieder etwas auslasse, zwing mich, den Satz zu beenden.‹",
+   "roles": {
+    "juna": "juna/6b115e20b8d6455d.ogg"
+   }
+  },
+  "f2f03865f11ac876": {
+   "text": "›Konsequent‹, sagt Juna. Das Wort klingt nicht wie ein Kompliment. Den Token gibt sie dir trotzdem.",
+   "roles": {}
+  },
+  "4d8736daefae2a74": {
+   "text": "Welche Aufnahme zeigt mich?",
+   "roles": {}
+  },
+  "8cd931aad95e5619": {
+   "text": "Nicht der Körper ist der Widerspruch. Die Beglaubigung ist es.",
+   "roles": {}
+  },
+  "4427b325a1e05f07": {
+   "text": "Ich erinnere mich angeblich an alles. Wiederhole jetzt meinen Satz.",
+   "roles": {}
+  },
+  "403c72f079d70771": {
+   "text": "Dann entscheide ich mit beiden Aufzeichnungen gegen dich.",
+   "roles": {}
+  },
+  "60d1f5e1c5e09cc6": {
+   "text": "›Durfte‹ ist keine Antwort auf ›hast du‹.",
+   "roles": {}
+  },
+  "789504545315c163": {
+   "text": "Vielleicht war die Stille der wichtigste Teil.",
+   "roles": {}
+  },
+  "6ec3d8bea3ee4d3a": {
+   "text": "Achtundsiebzig Sekunden lang gibt es nur das Summen. Dann trennt sich dein Körper vom Rest der Dunkelheit und du merkst, dass du liegst.",
+   "roles": {}
+  },
+  "345cf59f8425b0fb": {
+   "text": "Deine Hände sind sauber. Zu sauber für jemanden, der hier gearbeitet haben will. Hinter deinem Ohr liegt ein frischer Schnitt, den du nicht erklären kannst.",
+   "roles": {}
+  },
+  "95e270a7b1065f99": {
+   "text": "Auf dem Terminal steht dein Name. Er stand dort schon, bevor du wusstest, ob er dir gehört.",
+   "roles": {}
+  },
+  "3defa1418cfff0c3": {
+   "text": "Sie sperren niemanden ein, weil er krank ist. Sie sperren jemanden ein, weil er etwas gemessen hat.",
+   "roles": {}
+  },
+  "99dd980e11ac85a8": {
+   "text": "Ich hatte achtzehn Stunden, um mir zu überlegen, was ich dem ersten Menschen sage, der hier hereinkommt. Jetzt sind Sie da und ich habe nur eine Frage: Wer hat Ihnen gesagt, dass Sie hier arbeiten?",
+   "roles": {}
+  },
+  "0270b0f718ad1f60": {
+   "text": "Danke. Ich weiß, was Sie dafür aufgegeben haben – und ich weiß auch, dass MIRA es mitgezählt hat.",
+   "roles": {}
+  },
+  "68f4c3caf337399c": {
+   "text": "Zum ersten Mal seit dem Aufwachen steht jemand neben dir, der nicht aus einem Lautsprecher kommt.",
+   "roles": {}
+  },
+  "6a8cd6da2df35c45": {
+   "text": "Du hast zugestimmt. Draußen fahren die Bahnen wieder, und niemand außer dir weiß, was der Preis dafür war.",
+   "roles": {}
+  },
+  "cb0399d53825c8c5": {
+   "text": "Die Stille, die du erzeugt hast, ist ehrlicher als alles, was MIRA gesagt hat. Sie ist auch kälter.",
+   "roles": {}
+  },
+  "d2c35f67ba41b296": {
+   "text": "Ab jetzt hören alle mit. Auch die, die entscheiden, was mit dir geschieht.",
+   "roles": {}
+  },
+  "9b188a30bf969f5f": {
+   "text": "Eine Stimme bleibt zurück, eingeschlossen in vier Wänden aus Mathematik. Du weißt nicht, ob das Gnade war oder nur eine leisere Form von Kontrolle.",
+   "roles": {}
+  }
+ }
+}

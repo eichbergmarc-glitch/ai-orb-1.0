@@ -9,7 +9,7 @@ tragenden Woerter bleiben und ``site:`` erhalten bleibt.
 
 from __future__ import annotations
 
-from backend.tools.web_tools import suchbegriff_aus
+from backend.tools.web_tools import _relevante_treffer, _suchwoerter, suchbegriff_aus
 
 
 def test_der_redesatz_wird_zu_stichworten():
@@ -43,3 +43,38 @@ def test_leere_oder_reine_fuellfrage_faellt_nicht_auf_null():
     # Selbst wenn fast alles Fuellwort ist, kommt etwas Nutzbares zurueck.
     begriff = suchbegriff_aus("kannst du mir das mal sagen bitte")
     assert begriff  # nicht leer
+
+
+def test_whisper_neu_kai_modelle_wird_zu_ki_modellen():
+    begriff = suchbegriff_aus(
+        "Ja, ich bitte darum, suche nach einem Magazin nach Neuigkeiten "
+        "zu Neu-Kai-Modellen."
+    )
+    assert "ki" in begriff.split()
+    assert "modelle" in begriff.split()
+    assert "kai" not in begriff
+    assert "darum" not in begriff.split()
+    assert "neuigkeiten" not in begriff.split()
+    assert "ki" in _suchwoerter(begriff)
+
+
+def test_ki_relevanz_laesst_keine_beliebigen_magazinmeldungen_durch():
+    treffer = [
+        {
+            "titel": "Das Magazin Bravo im Wandel",
+            "url": "https://example.org/bravo",
+            "beschreibung": "Ein Rueckblick auf die Jugendzeitschrift.",
+        },
+        {
+            "titel": "Neue KI-Modelle im Vergleich",
+            "url": "https://example.org/ki",
+            "beschreibung": "Neue Modelle fuer kuenstliche Intelligenz.",
+        },
+        {
+            "titel": "Kinder lernen mit Modellen",
+            "url": "https://example.org/kinder",
+            "beschreibung": "Ein Schulprojekt.",
+        },
+    ]
+    relevant = _relevante_treffer("magazin ki modelle", treffer)
+    assert [item["url"] for item in relevant] == ["https://example.org/ki"]

@@ -52,7 +52,72 @@ _STOPWORDS: frozenset[str] = frozenset(
 )
 
 #: Dateitypen, die eingelesen werden können.
-SUPPORTED_SUFFIXES: frozenset[str] = frozenset({".txt", ".md", ".markdown", ".rst", ".csv", ".json"})
+#:
+#: PDF und Word standen hier lange nicht. Das war kein kleiner Mangel: Die
+#: Wissensbasis ist die EINZIGE Ablage mit Quellenangabe - was hier nicht
+#: hineinkommt, lässt sich später nicht belegen. Fachliteratur liegt aber
+#: praktisch immer als PDF vor. Der Orb konnte also alles zitieren ausser
+#: dem, worauf es ankommt.
+SUPPORTED_SUFFIXES: frozenset[str] = frozenset(
+    {".txt", ".md", ".markdown", ".rst", ".csv", ".json", ".pdf", ".docx"}
+)
+
+
+class DokumentFehler(RuntimeError):
+    """Der Text einer Datei liess sich nicht herausholen."""
+
+
+def text_aus_datei(path: Path) -> str:
+    """Holt den Text aus einer Datei - auch aus einem PDF oder einem Word-Dokument.
+
+    Die Pakete werden erst hier importiert und nicht oben: Wer nie ein PDF
+    einliest, soll ``pypdf`` nicht installieren müssen. Fehlt das Paket,
+    steht im Klartext, was zu tun ist - der Orb kann es sich auf Zuruf
+    selbst nachrüsten.
+
+    Raises:
+        DokumentFehler: Wenn das nötige Paket fehlt oder die Datei sich
+            nicht auswerten lässt.
+    """
+
+    endung = path.suffix.lower()
+
+    if endung == ".pdf":
+        try:
+            from pypdf import PdfReader  # type: ignore[import-not-found]
+        except ImportError:
+            try:
+                from PyPDF2 import PdfReader  # type: ignore[import-not-found,no-redef]
+            except ImportError as fehler:
+                raise DokumentFehler(
+                    "Für PDFs fehlt das Paket 'pypdf'. Sag mir "
+                    "'Rüste dir das Paket pypdf nach', dann hole ich es."
+                ) from fehler
+        try:
+            leser = PdfReader(str(path))
+            return "\n\n".join((seite.extract_text() or "") for seite in leser.pages)
+        except Exception as fehler:  # noqa: BLE001 - ein kaputtes PDF ist kein Absturz.
+            raise DokumentFehler(
+                f"Das PDF liess sich nicht auswerten: {fehler}"
+            ) from fehler
+
+    if endung == ".docx":
+        try:
+            import docx  # type: ignore[import-not-found]
+        except ImportError as fehler:
+            raise DokumentFehler(
+                "Für Word-Dateien fehlt das Paket 'python-docx'. Sag mir "
+                "'Rüste dir das Paket python-docx nach', dann hole ich es."
+            ) from fehler
+        try:
+            dokument = docx.Document(str(path))
+            return "\n\n".join(absatz.text for absatz in dokument.paragraphs)
+        except Exception as fehler:  # noqa: BLE001
+            raise DokumentFehler(
+                f"Das Word-Dokument liess sich nicht auswerten: {fehler}"
+            ) from fehler
+
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 @dataclass
@@ -353,9 +418,21 @@ class KnowledgeBase:
                     f"Die Datei ist mit {size_mb:.1f} MB größer als die erlaubten "
                     f"{self._max_document_mb:.0f} MB."
                 )
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = text_aus_datei(path)
+        except DokumentFehler as fehler:
+            return False, str(fehler)
         except OSError as error:
             return False, f"Die Datei ließ sich nicht lesen: {error}"
+
+        # Ein PDF, aus dem nichts herauskommt, ist fast immer ein
+        # eingescanntes: Bilder statt Text. Das ist kein Fehler des Orb,
+        # aber der Benutzer soll erfahren, woran es liegt.
+        if not text.strip():
+            return False, (
+                f"Aus '{path.name}' liess sich kein Text herausholen. Bei "
+                "einem PDF heisst das meistens: Es ist eingescannt und "
+                "enthält Bilder statt Text."
+            )
 
         return self.add_text(
             text, title=path.stem, source=str(path), citation=citation or path.name

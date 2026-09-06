@@ -95,6 +95,12 @@ class Urteil:
     grund: str = ""
     #: Ob überhaupt geprüft werden konnte.
     geprueft: bool = False
+    #: Wer erkannt wurde: "benutzer", "gast" oder "" (nicht geprüft).
+    #:
+    #: Der Unterschied trägt Rechte: Nur der Benutzer darf entscheiden,
+    #: auf wen der Orb hört – ein Gast darf sprechen, aber nichts an der
+    #: Stimmverwaltung ändern und den Sprechrhythmus nicht verschieben.
+    wer: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +109,7 @@ class Urteil:
             "schwelle": round(self.schwelle, 3),
             "grund": self.grund,
             "geprueft": self.geprueft,
+            "wer": self.wer,
         }
 
 
@@ -430,6 +437,11 @@ class Stimmerkennung:
         self._hoechst = max(mindestaehnlichkeit, hoechstschwelle)
         self._abstand = sicherheitsabstand
         self._aktiv = aktiv
+        #: Gaststimmen: Stimmen, auf die der Benutzer den Orb AUSDRÜCKLICH
+        #: hören lässt ("hör auf diese Stimme") – bis er es widerruft
+        #: ("hör nur auf mich"). Sie stehen neben dem Benutzerprofil,
+        #: nie an seiner Stelle: Der Benutzer bleibt immer erkannt.
+        self._gaeste: list[Stimmprofil] = []
         self._profil = self._laden()
         self._rhythmus_updates = 0
 
@@ -447,12 +459,19 @@ class Stimmerkennung:
 
         return self._aktiv and self._profil.gelernt
 
+    @property
+    def gaeste(self) -> int:
+        """Wie viele Gaststimmen zugelassen sind."""
+
+        return len(self._gaeste)
+
     def status(self) -> dict[str, Any]:
         return {
             "aktiv": self.aktiv,
             "gelernt": self.gelernt,
             "aufnahmen": self._profil.aufnahmen,
             "schwelle": round(self._profil.schwelle, 3),
+            "gaeste": len(self._gaeste),
             "sprechstil": {
                 "tempo": round(self._profil.sprechtempo, 3),
                 "pause_ms": self._profil.pause_ms,
@@ -556,15 +575,101 @@ class Stimmerkennung:
         )
 
     def vergessen(self) -> str:
-        """Löscht das Profil – danach hört der Orb wieder auf jeden."""
+        """Löscht das Profil – danach hört der Orb wieder auf jeden.
+
+        Die Gaststimmen fallen mit: Ein Gast ist nur im Verhältnis zum
+        Benutzer ein Gast. Ohne Benutzerprofil hört der Orb ohnehin auf
+        jeden, und ein zurückgelassenes Gastprofil würde beim nächsten
+        Einlernen als stiller Mithörer wieder aufwachen.
+        """
 
         self._profil = Stimmprofil()
+        self._gaeste = []
         try:
             self._pfad.unlink(missing_ok=True)
         except OSError as fehler:
             logger.warning("Das Stimmprofil ließ sich nicht löschen: %s", fehler)
         logger.info("Stimmprofil gelöscht.")
         return "Ich habe deine Stimme vergessen und höre wieder auf jeden."
+
+    # --- Gaststimmen ------------------------------------------------------------
+
+    def gast_lernen(self, aufnahmen: list[Path]) -> tuple[bool, str]:
+        """Lässt eine WEITERE Stimme zu, ohne die des Benutzers anzutasten.
+
+        Der Anlass: Der Benutzer will dem Orb sagen können "hör auf diese
+        Stimme" und ihm dann eine andere Person (oder eine Aufnahme)
+        vorspielen. Die Gaststimme wird wie die eigene aus mehreren Proben
+        gelernt, bekommt ihre eigene Schwelle und gilt, bis der Benutzer
+        "hör nur auf mich" sagt.
+
+        Das Benutzerprofil bleibt unberührt – auch der Sprechrhythmus,
+        denn der gehört dem Benutzer, nicht dem Gast.
+        """
+
+        if not self._profil.gelernt:
+            return False, (
+                "Dafür muss ich zuerst DEINE Stimme kennen, sonst kann ich "
+                "Gast und Hausherr nicht auseinanderhalten. Sag: lerne "
+                "meine Stimme."
+            )
+
+        neue: list[Any] = []
+        zu_kurz = 0
+        for pfad in aufnahmen:
+            try:
+                vektor = abdruck(pfad)
+            except Exception as fehler:  # noqa: BLE001 - siehe lernen()
+                logger.warning("Gastaufnahme %s nicht auswertbar: %s", pfad, fehler)
+                continue
+            if vektor is None:
+                zu_kurz += 1
+                continue
+            neue.append(vektor)
+
+        if len(neue) < 2:
+            fehlend = "zu kurz" if zu_kurz else "nicht auswertbar"
+            return False, (
+                f"Ich konnte mir die Gaststimme nicht merken – die Aufnahmen "
+                f"waren {fehlend}. Spiel mir bitte zwei bis drei ganze Sätze "
+                "vor, jeweils ein paar Sekunden lang."
+            )
+
+        self._gaeste.append(
+            Stimmprofil(
+                abdruecke=[list(map(float, vektor)) for vektor in neue],
+                schwelle=self._schwelle_aus(neue),
+                aufnahmen=len(neue),
+            )
+        )
+        self._speichern()
+        logger.info(
+            "Gaststimme gelernt: %d Aufnahmen, Schwelle %.3f (%d Gäste gesamt).",
+            len(neue),
+            self._gaeste[-1].schwelle,
+            len(self._gaeste),
+        )
+        return True, (
+            f"Ich habe mir die Stimme aus {len(neue)} Aufnahmen gemerkt und "
+            "höre jetzt auch auf sie. Sag 'hör nur auf mich', wenn das "
+            "wieder enden soll."
+        )
+
+    def gaeste_vergessen(self) -> str:
+        """Widerruft alle Gaststimmen – danach hört der Orb nur den Benutzer."""
+
+        if not self._gaeste:
+            return "Es war keine Gaststimme zugelassen. Ich höre nur auf dich."
+        anzahl = len(self._gaeste)
+        self._gaeste = []
+        self._speichern()
+        logger.info("%d Gaststimme(n) widerrufen.", anzahl)
+        return (
+            "Gut. Ich habe die Gaststimme vergessen und höre nur noch auf dich."
+            if anzahl == 1
+            else f"Gut. Ich habe alle {anzahl} Gaststimmen vergessen und höre "
+            "nur noch auf dich."
+        )
 
     def _schwelle_aus(self, vektoren: list[Any]) -> float:
         """Leitet die Schwelle daraus ab, wie ähnlich sich die Lernaufnahmen sind.
@@ -623,6 +728,11 @@ class Stimmerkennung:
             for bekannt in self._profil.abdruecke
         ]
         beste = max(werte) if werte else 0.0
+        # Der Benutzer wird ZUERST geprüft, die Gäste erst, wenn er es
+        # nicht ist. Die Reihenfolge ist keine Höflichkeit, sondern
+        # Rechtevergabe: Wo sich eine Stimme in der Grauzone zwischen
+        # beiden Profilen bewegt, gewinnt der Hausherr - und mit ihm die
+        # Befugnis, Gäste zuzulassen und zu widerrufen.
         # Die Obergrenze aus der Konfiguration gilt AUCH FUER EIN SCHON
         # GELERNTES Profil, nicht nur beim Lernen.
         #
@@ -640,7 +750,24 @@ class Stimmerkennung:
         schwelle = min(self._profil.schwelle, self._hoechst)
 
         if beste >= schwelle:
-            return Urteil(True, beste, schwelle, "Bekannte Stimme.", True)
+            return Urteil(True, beste, schwelle, "Bekannte Stimme.", True, "benutzer")
+
+        for gast in self._gaeste:
+            gast_werte = [
+                aehnlichkeit(vektor, np.asarray(bekannt, dtype=np.float64))
+                for bekannt in gast.abdruecke
+            ]
+            gast_beste = max(gast_werte) if gast_werte else 0.0
+            gast_schwelle = min(gast.schwelle, self._hoechst)
+            if gast_beste >= gast_schwelle:
+                return Urteil(
+                    True,
+                    gast_beste,
+                    gast_schwelle,
+                    "Zugelassene Gaststimme.",
+                    True,
+                    "gast",
+                )
 
         return Urteil(
             False,
@@ -660,13 +787,26 @@ class Stimmerkennung:
         except (OSError, json.JSONDecodeError) as fehler:
             logger.warning("Das Stimmprofil ließ sich nicht lesen: %s", fehler)
             return Stimmprofil()
+        # Alte Profildateien kennen den Schlüssel "gaeste" nicht - dann
+        # gibt es eben keine. Nichts daran ist ein Fehler.
+        try:
+            self._gaeste = [
+                Stimmprofil.from_dict(eintrag)
+                for eintrag in daten.get("gaeste", []) or []
+            ]
+        except (TypeError, ValueError) as fehler:
+            logger.warning("Die Gaststimmen ließen sich nicht lesen: %s", fehler)
+            self._gaeste = []
         return Stimmprofil.from_dict(daten)
 
     def _speichern(self) -> None:
         try:
             self._pfad.parent.mkdir(parents=True, exist_ok=True)
+            inhalt: dict[str, Any] = self._profil.to_dict()
+            if self._gaeste:
+                inhalt["gaeste"] = [gast.to_dict() for gast in self._gaeste]
             self._pfad.write_text(
-                json.dumps(self._profil.to_dict(), ensure_ascii=False, indent=2),
+                json.dumps(inhalt, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except OSError as fehler:

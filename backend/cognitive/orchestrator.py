@@ -25,6 +25,7 @@ from typing import Any
 
 from backend.orchestrator import intent_classifier as intents
 from backend.orchestrator.intent_classifier import IntentResult
+from backend.studium.vorlesungs_session import ist_vorlesungssegment
 from backend.system.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -115,6 +116,25 @@ class CognitiveOrchestrator:
             Die Verteilung inklusive Angabe, ob parallel gearbeitet werden
             kann.
         """
+
+        # Regieanweisungen eines laufenden Vortrags enthalten viele Bindewoerter
+        # und Imperative. Sie sind trotzdem genau EINE inhaltliche Aufgabe.
+        # Ohne diese Schranke wurden Teile wie "beende den Abschnitt" als
+        # Desktop-Auftrag verteilt und loesten statt des Vortrags eine
+        # Sicherheitsbestaetigung aus.
+        if ist_vorlesungssegment(text):
+            return Distribution(
+                subtasks=[
+                    SubTask(
+                        text=text.strip(),
+                        engine="conversation",
+                        order=0,
+                        parallel_safe=True,
+                    )
+                ],
+                engines=["conversation"],
+                parallel=False,
+            )
 
         parts = [part.strip() for part in _SPLIT_PATTERN.split(text) if part.strip()]
 

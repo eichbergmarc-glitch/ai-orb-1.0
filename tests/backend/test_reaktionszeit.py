@@ -26,6 +26,7 @@ import asyncio
 import time
 
 from backend.orchestrator.provider_health import ProviderHealth
+from backend.voice.voice_pipeline import VoicePipeline, VoiceState
 
 
 class _Anbieter:
@@ -39,6 +40,40 @@ class _Anbieter:
     async def is_available(self) -> bool:
         self.gefragt += 1
         return self.erreichbar
+
+    @property
+    def is_local(self) -> bool:
+        return False
+
+
+class _LokalerAnbieter(_Anbieter):
+    @property
+    def is_local(self) -> bool:
+        return True
+
+
+def _stimmzustand(state: VoiceState) -> VoicePipeline:
+    pipeline = VoicePipeline.__new__(VoicePipeline)
+    pipeline._state = state
+    pipeline._processing = False
+    pipeline._turn_claimed = False
+    pipeline._antwort_task = None
+    return pipeline
+
+
+def test_hintergrundarbeit_wartet_bis_das_gespraech_wirklich_ruht():
+    assert not _stimmzustand(VoiceState.LISTENING).background_idle
+    assert not _stimmzustand(VoiceState.THINKING).background_idle
+    assert not _stimmzustand(VoiceState.SPEAKING).background_idle
+    assert _stimmzustand(VoiceState.SLEEPING).background_idle
+
+
+def test_verarbeiteter_zug_gilt_auch_ohne_zustandswechsel_als_belegt():
+    pipeline = _stimmzustand(VoiceState.SLEEPING)
+    pipeline._turn_claimed = True
+
+    assert pipeline.is_busy
+    assert not pipeline.background_idle
 
 
 # --- Die Minutenpruefung ----------------------------------------------------------
@@ -134,6 +169,39 @@ def test_erzwungene_pruefung_bleibt_auch_waehrend_dialog_moeglich():
     asyncio.run(monitor.check_now(force=True))
 
     assert anbieter.gefragt == 1
+
+
+def test_ohne_internet_wird_cloud_nicht_mit_einem_prozess_geprueft():
+    cloud = _Anbieter(name="cloud")
+    lokal = _LokalerAnbieter(name="ollama")
+    monitor = ProviderHealth(
+        interval_seconds=60,
+        connectivity_check=lambda: False,
+    )
+    monitor.register(cloud)
+    monitor.register(lokal)
+
+    ergebnis = asyncio.run(monitor.check_now(force=True))
+
+    assert ergebnis == {"cloud": False, "ollama": True}
+    assert cloud.gefragt == 0
+    assert lokal.gefragt == 1
+
+
+def test_nach_netzwiederkehr_wird_cloud_ohne_fuenf_minuten_wartezeit_geprueft():
+    zustaende = iter((False, True))
+    cloud = _Anbieter(name="cloud")
+    monitor = ProviderHealth(
+        interval_seconds=60,
+        connectivity_check=lambda: next(zustaende),
+    )
+    monitor.register(cloud)
+
+    asyncio.run(monitor.check_now(force=True))
+    asyncio.run(monitor.check_now())
+
+    assert cloud.gefragt == 1
+    assert monitor.record("cloud").available is True
 
 
 def test_die_grenzen_sind_vernuenftig_gewaehlt():

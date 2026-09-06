@@ -109,11 +109,31 @@ _IDENTITAET = (
 )
 
 #: Meldungen, die auf eine fehlende Anmeldung hindeuten.
+#: Meldungen, die auf eine fehlende oder abgelaufene Anmeldung hindeuten.
+#:
+#: Dieselbe Luecke wie oben bei den Grenzmeldungen, nur eine Wortform
+#: weiter: Die Befehlszeile meldet woertlich
+#:
+#:     Failed to authenticate: OAuth session expired and could not be
+#:     refreshed
+#:
+#: "authenticate" ist nicht "authentication". Der Marker griff also nicht,
+#: die Meldung fiel durch bis in den Sammelzweig und erreichte den
+#: Benutzer als englischer Rohtext - im Protokoll vom 06.09. viermal
+#: hintereinander. Wer nur "authentication" abfaengt, faengt genau den
+#: haeufigsten Fall nicht ab.
 _AUTH_MARKERS: tuple[str, ...] = (
     "not logged in",
     "please log in",
+    "log in again",
+    "authenticate",
     "authentication",
     "unauthorized",
+    "http 401",
+    "oauth session expired",
+    "session expired",
+    "could not be refreshed",
+    "invalid api key",
     "/login",
 )
 
@@ -191,6 +211,22 @@ class ClaudeCodeProvider(BaseProvider):
         # Modell und probiert Claude erst nach Ablauf wieder.
         self._limit_cooldown = max(0.0, float(settings.get("limit_cooldown_minutes", 30))) * 60.0
         self._limit_until = 0.0
+
+        # Sperrfrist nach abgelaufener Anmeldung.
+        #
+        # Fuer die Nutzungsgrenze gab es diese Sperre laengst, fuer die
+        # Anmeldung nicht - obwohl der Fall schlimmer ist: Eine Grenze
+        # loest sich von selbst wieder auf, eine abgelaufene Anmeldung
+        # nie. Ohne Sperre stand claude_code weiter auf "verfuegbar",
+        # wurde bei JEDER Frage zuerst gefragt und scheiterte jedes Mal
+        # neu - und nach jedem Neustart begann das von vorn, weil der
+        # Fehlerzaehler bei null anfaengt.
+        #
+        # Die Frist ist bewusst kuerzer als die der Nutzungsgrenze: Wer
+        # sich neu anmeldet, soll nicht eine halbe Stunde warten, bis der
+        # Orb es merkt.
+        self._auth_cooldown = max(0.0, float(settings.get("auth_cooldown_minutes", 15))) * 60.0
+        self._auth_until = 0.0
 
         # Eigenes, leeres Arbeitsverzeichnis: So durchsucht Claude Code nicht
         # versehentlich deine Projektdateien, sondern beantwortet
@@ -342,6 +378,20 @@ class ClaudeCodeProvider(BaseProvider):
                 "Claude Code ist wegen erreichter Nutzungsgrenze noch ~%.0f min "
                 "gesperrt - es bleibt beim lokalen Modell.",
                 (self._limit_until - self._now()) / 60.0,
+            )
+            return False
+
+        # Eine abgelaufene Anmeldung sieht der Versionsaufruf weiter unten
+        # nicht: "claude --version" antwortet auch dann sauber, wenn keine
+        # gueltige Sitzung mehr besteht. Die einzige Stelle, an der es
+        # auffaellt, ist die gescheiterte Anfrage selbst - deshalb wird sie
+        # hier gemerkt statt jedes Mal neu erlitten.
+        if self._now() < self._auth_until:
+            logger.warning(
+                "Claude Code ist nicht angemeldet und bleibt noch ~%.0f min "
+                "aussen vor. Melde dich in einem Terminal mit 'claude' an; "
+                "bis dahin arbeitet der Orb mit dem lokalen Modell.",
+                (self._auth_until - self._now()) / 60.0,
             )
             return False
 
@@ -504,6 +554,16 @@ class ClaudeCodeProvider(BaseProvider):
             return
 
         etwas_gesagt = False
+        # Claude Code besitzt keinen verlaesslichen CLI-Schalter fuer eine
+        # Ausgabelaenge. ``max_tokens`` wurde deshalb bisher still ignoriert:
+        # Der erste Satz kam schnell, der Prozess schrieb aber noch 30 bis
+        # 80 Sekunden weiter und blockierte den naechsten Gespraechszug.
+        # Fuer bewusst begrenzte Sprachzuege gilt hier eine weiche Zeichen-
+        # grenze. Abgebrochen wird erst nach einem Satzende, nie mitten im
+        # Wort. Werkzeugzuege uebergeben keine Grenze und bleiben vollstaendig.
+        zeichen_grenze = max(96, int(max_tokens) * 4) if max_tokens else 0
+        gelieferte_zeichen = 0
+        begrenzt_beendet = False
 
         async with self._lock():
             prompt, weiter = await self._prepare_turn(messages)
@@ -512,14 +572,38 @@ class ClaudeCodeProvider(BaseProvider):
                 raise ProviderError(
                     "claude_code: kein vorgewaermter Antwortstrom verfuegbar."
                 )
+            antwortstrom = self._stream_from_warm(prompt)
             try:
-                async for art, inhalt in self._stream_from_warm(prompt):
+                async for art, inhalt in antwortstrom:
                     if art == "text":
                         etwas_gesagt = True
+                        gelieferte_zeichen += len(inhalt)
                         yield inhalt
+                        if (
+                            zeichen_grenze
+                            and gelieferte_zeichen >= zeichen_grenze
+                            and re.search(r"[.!?](?:[\"')\]]?\s*)$", inhalt)
+                        ):
+                            begrenzt_beendet = True
+                            break
                     elif art == "ende" and not etwas_gesagt and inhalt:
                         # Kam nichts stückweise an, wenigstens das Ganze.
                         yield inhalt
+                if begrenzt_beendet:
+                    # Der Prozess rechnet sonst trotz beendetem Verbraucher
+                    # weiter und behaelt die abgebrochene Antwort in seinem
+                    # eigenen Verlauf. Beides waere fuer den naechsten Zug
+                    # falsch. Sauber ersetzen; das Vorwaermen laeuft danach
+                    # im Hintergrund waehrend der Orb den kurzen Text spricht.
+                    await antwortstrom.aclose()
+                    await self._retire_warm()
+                    self._warm_gelungen()
+                    self._schedule_warm()
+                    logger.info(
+                        "Gesprochene Claude-Antwort nach %d Zeichen am Satzende begrenzt.",
+                        gelieferte_zeichen,
+                    )
+                    return
                 # Auch hier melden. Wuerde der Wachhund nur im gewoehnlichen
                 # Weg mitzaehlen, bliebe der haeufigste Weg - der
                 # gesprochene - fuer ihn unsichtbar.
@@ -563,7 +647,6 @@ class ClaudeCodeProvider(BaseProvider):
         arguments = self._process_command(
             executable,
             "-p",
-            prompt,
             "--output-format",
             "json",
         )
@@ -579,13 +662,14 @@ class ClaudeCodeProvider(BaseProvider):
         try:
             process = await asyncio.create_subprocess_exec(
                 *arguments,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._workdir),
                 env=self._build_environment(),
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=self._timeout
+                process.communicate(prompt.encode("utf-8")), timeout=self._timeout
             )
         except asyncio.TimeoutError as error:
             raise ProviderError(
@@ -1203,6 +1287,35 @@ class ClaudeCodeProvider(BaseProvider):
         lowered = output.lower()
 
         if any(marker in lowered for marker in _AUTH_MARKERS):
+            if self._auth_cooldown > 0:
+                self._auth_until = self._now() + self._auth_cooldown
+                logger.warning(
+                    "Claude Code ist nicht angemeldet. Ich fuehre es fuer %.0f "
+                    "Minuten als nicht verfuegbar und arbeite solange mit dem "
+                    "lokalen Modell weiter.",
+                    self._auth_cooldown / 60.0,
+                )
+            # Der Klartextsatz oben ist fuer den Benutzer. Diese Zeile ist
+            # fuer die Fehlersuche - und sie fehlte.
+            #
+            # Am 06.09. meldete die Befehlszeile im Orb "nicht angemeldet",
+            # waehrend derselbe Aufruf im Terminal desselben Rechners
+            # anstandslos antwortete. Um das zu klaeren, braucht man die
+            # ORIGINALMELDUNG (abgelaufene Sitzung? kein Zugriff auf den
+            # Anmeldespeicher?) und den Kontext, in dem der Unterprozess
+            # laeuft: unter welchem Benutzer, mit welchem Profilpfad, mit
+            # welcher Programmdatei. Genau das ging bisher verloren, weil
+            # diese Methode die Meldung ERSETZT statt sie zu ergaenzen.
+            logger.warning(
+                "Anmeldefehler im Klartext: %s | Benutzer=%s | HOME=%s | "
+                "USERPROFILE=%s | Programm=%s | Arbeitsverzeichnis=%s",
+                output.strip()[:300] or "(keine Ausgabe)",
+                os.environ.get("USERNAME") or os.environ.get("USER") or "?",
+                os.environ.get("HOME") or "(nicht gesetzt)",
+                os.environ.get("USERPROFILE") or "(nicht gesetzt)",
+                self._find_executable() or "(nicht gefunden)",
+                self._workdir,
+            )
             return (
                 "claude_code: Du bist in Claude Code nicht angemeldet. Öffne ein "
                 "Terminal, gib 'claude' ein und melde dich mit deinem Abo an."

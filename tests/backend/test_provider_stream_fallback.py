@@ -29,6 +29,15 @@ class _Provider(BaseProvider):
             raise ProviderError(f"{self.name}: Zeitlimit")
 
 
+class _UnexpectedProvider(_Provider):
+    async def chat(self, messages, **kwargs) -> ProviderResponse:
+        raise OSError("Prozess abgebrochen")
+
+    async def chat_stream(self, messages, **kwargs):
+        raise OSError("Verbindung abgebrochen")
+        yield  # pragma: no cover - macht die Methode zum Async-Generator.
+
+
 def _manager(primary: _Provider, fallback: _Provider) -> ProviderManager:
     manager = ProviderManager.__new__(ProviderManager)
     manager._providers = {primary.name: primary, fallback.name: fallback}
@@ -68,3 +77,29 @@ async def test_nach_dem_ersten_text_wird_nicht_mitten_im_satz_gewechselt():
             received.append(piece)
 
     assert received == ["Begonnen"]
+
+
+async def test_unerwarteter_prozessfehler_faellt_lokal_zurueck():
+    manager = _manager(
+        _UnexpectedProvider("cloud", []),
+        _Provider("ollama", ["Lokale Antwort"]),
+    )
+
+    response = await manager.chat([ChatMessage("user", "Hallo")])
+
+    assert response.text == "Lokale Antwort"
+    assert response.provider == "ollama"
+
+
+async def test_unerwarteter_streamfehler_faellt_vor_text_lokal_zurueck():
+    manager = _manager(
+        _UnexpectedProvider("cloud", []),
+        _Provider("ollama", ["Lokaler Stream"]),
+    )
+
+    pieces = [
+        piece
+        async for piece in manager.chat_stream([ChatMessage("user", "Hallo")])
+    ]
+
+    assert pieces == ["Lokaler Stream"]

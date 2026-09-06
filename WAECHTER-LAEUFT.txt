@@ -1,0 +1,10 @@
+﻿Der Neustart-Waechter laeuft.
+Letztes Lebenszeichen: 2026-09-06 15:42:23
+
+Neustart ausloesen:      Datei NEUSTART-BITTE.txt in diesen Ordner legen.
+Mikrofon nachsehen:      Datei MIKROFON-PRUEFEN-BITTE.txt hierher legen.
+Selbstverbesserung:      Datei SELBSTVERBESSERUNG-BITTE.txt hierher legen.
+Nachtlauf laeuft gerade: nein
+
+Was dabei passiert steht in logs\waechter-protokoll.txt
+Der Nachtlauf schreibt nach logs\selbstverbesserung.log

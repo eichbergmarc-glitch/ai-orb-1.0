@@ -73,6 +73,16 @@ def test_ein_gewoehnlicher_suchauftrag_bleibt_unversehrt():
     assert "nachrichten" in begriff
 
 
+def test_ausgabeanweisung_wird_nicht_zum_suchthema():
+    begriff = suchbegriff_aus(
+        "Suche nach Schweizer Privathaftpflichtversicherungen im Vergleich "
+        "und nenne mir zwei passende Quellen."
+    )
+    assert begriff.split() == [
+        "schweizer", "privathaftpflichtversicherungen", "vergleich"
+    ]
+
+
 # --- Die Frage nach dem eigenen Fehler -------------------------------------
 
 

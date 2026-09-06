@@ -32,6 +32,11 @@ faster-whisper>=1.0.0
 # AI-Orb beim ersten Sprechen selbst herunter.
 piper-tts>=1.2.0
 
+# --- Sprachausgabe: Microsoft Edge Neural (online, ohne API-Schluessel) ------
+# Natuerlicher und schneller Online-Rueckfall, wenn ElevenLabs nicht
+# erreichbar ist. Der Text wird dabei an Microsofts Vorlesedienst gesendet.
+edge-tts>=7.2.7
+
 # --- Sprachausgabe: Kokoro (optional) ----------------------------------------
 # Sehr natuerlich klingend, beherrscht aber KEIN Deutsch. Nur sinnvoll, wenn
 # du AI-Orb auf Englisch betreibst.
@@ -42,7 +47,11 @@ piper-tts>=1.2.0
 # kokoro>=0.9.0
 # soundfile>=0.12.1
 
-# --- Grundlage ----------------------------------------------------------------
-# Wird von faster-whisper und Piper ohnehin verlangt; hier nur, damit eine
-# passende Fassung sicher vorhanden ist.
+# --- Sprachausgabe: Supertonic 3 (lokale deutsche Primaerstimme) -------------
+# Kompaktes 99-M-Parameter-ONNX-Modell mit 44,1-kHz-Ausgabe, deutscher
+# Textverarbeitung und Erzeugung schneller als Echtzeit. Nach dem einmaligen
+# Modelldownload arbeitet die Ausgabe vollstaendig offline.
+supertonic==1.3.1
+
+# Wird von Supertonic, faster-whisper und Piper verwendet.
 numpy>=1.24.0

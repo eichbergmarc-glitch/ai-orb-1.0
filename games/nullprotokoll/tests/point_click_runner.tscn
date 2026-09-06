@@ -1,0 +1,7 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://tests/point_click_runner.gd" id="1_point_click_test"]
+
+[node name="PointClickRunner" type="Node"]
+script = ExtResource("1_point_click_test")
+

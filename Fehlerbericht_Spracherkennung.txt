@@ -1,0 +1,13 @@
+Wiederkehrender Fehler in der Sprachpipeline (voice_pipeline.py)
+
+Beschreibung:
+Wenn im Wach-Zustand weitergesprochen wird, ohne das Weckwort zu wiederholen, wird die Aussage manchmal als nicht an den Orb gerichtet verworfen, obwohl sie es war.
+
+Vermuteter Mechanismus:
+Betroffen ist vermutlich die Stimmerkennung, die vor jeder Verarbeitung prueft, ob die Aehnlichkeit zur hinterlegten Stimme ueber der Schwelle liegt. Im Schlafzustand kommt zusaetzlich die Vorpruefung durch das kleine Modell dazu, das prueft, ob ein Weckwort oder ein Anklang davon vorliegt.
+
+Bitte:
+Protokollieren, bei welchen Saetzen das passiert, und die gemessene Aehnlichkeit beziehungsweise Erkennungssicherheit dazu loggen - damit sich zeigt, ob die Schwelle zu hoch sitzt oder ob die Aufnahme selbst zu kurz oder zu leise war.
+
+Wichtig fuer die Analyse:
+Moeglichst mit Beispielsaetzen und der Uhrzeit des Auftretens, damit sich der Fall im Protokoll nachschlagen laesst.

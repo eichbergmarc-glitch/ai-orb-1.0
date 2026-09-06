@@ -64,7 +64,12 @@ class SpeechResult:
     def succeeded(self) -> bool:
         """Ob eine abspielbare Datei entstanden ist."""
 
-        return self.audio_path is not None and self.audio_path.exists()
+        # Streaming-Stimmen liefern den ersten PCM-Block, bevor die komplette
+        # WAV-Datei fertig geschrieben ist. Der Player kann diesen Strom
+        # bereits abspielen; die Datei entsteht parallel fuer den Cache.
+        return bool(self.context.get("pcm_stream")) or (
+            self.audio_path is not None and self.audio_path.exists()
+        )
 
 
 class TtsEngine(abc.ABC):

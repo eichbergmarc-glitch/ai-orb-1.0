@@ -32,10 +32,53 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta
+from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from backend.config import get_config
 
 
 class ZeitFehler(ValueError):
     """Die Zeitangabe war nicht eindeutig zu lesen."""
+
+
+_STANDARD_ZONE = "Europe/Berlin"
+
+
+@lru_cache(maxsize=8)
+def _zone(name: str) -> ZoneInfo:
+    """Liefert eine IANA-Zeitzone mit einer sicheren lokalen Vorgabe."""
+
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo(_STANDARD_ZONE)
+
+
+def kalender_zeitzone(name: str = "") -> ZoneInfo:
+    """Die Zeitzone, in der der Orb Kalenderzeiten versteht und anzeigt."""
+
+    konfiguriert = str(
+        name or get_config().get("kalender.zeitzone", _STANDARD_ZONE) or _STANDARD_ZONE
+    ).strip()
+    return _zone(konfiguriert or _STANDARD_ZONE)
+
+
+def ortszeit(jetzt: datetime | None = None, *, zeitzone: str = "") -> datetime:
+    """Normalisiert einen Zeitpunkt auf die konfigurierte Kalender-Ortszeit.
+
+    Naive Werte stammen bei Sprachbefehlen aus einer lokalen Uhrzeit. Sie
+    werden deshalb nicht als UTC interpretiert, sondern erhalten direkt die
+    Kalenderzone. Werte mit Offset (etwa aus Google) werden in diese Zone
+    umgerechnet. So wird aus ``13:00Z`` im Sommer korrekt ``15:00``.
+    """
+
+    zone = kalender_zeitzone(zeitzone)
+    if jetzt is None:
+        return datetime.now(zone)
+    if jetzt.tzinfo is None:
+        return jetzt.replace(tzinfo=zone)
+    return jetzt.astimezone(zone)
 
 
 _WOCHENTAGE = {
@@ -67,11 +110,7 @@ _ZAHLWOERTER = {
 def _ortszeit(jetzt: datetime | None) -> datetime:
     """Die Gegenwart mit Zeitzone. Ohne Zone rechnet Google falsch."""
 
-    if jetzt is None:
-        jetzt = datetime.now()
-    if jetzt.tzinfo is None:
-        jetzt = jetzt.astimezone()
-    return jetzt
+    return ortszeit(jetzt)
 
 
 def _menschliche_stunde(stunde: int) -> int:

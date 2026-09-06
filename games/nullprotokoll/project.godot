@@ -1,0 +1,62 @@
+; Engine configuration file.
+; NULLPROTOKOLL – Das Erwachen
+config_version=5
+
+[application]
+
+config/name="NULLPROTOKOLL – Das Erwachen"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[autoload]
+
+GameManager="*res://scripts/core/game_manager.gd"
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/size/window_width_override=1440
+window/size/window_height_override=810
+window/size/resizable=true
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.035, 0.047, 0.067, 1)
+
+[audio]
+
+default_bus_layout="res://default_bus_layout.tres"
+driver/enable_input=true
+
+[input]
+
+open_inventory={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":73,"unicode":105)]
+}
+open_journal={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":74,"unicode":106)]
+}
+show_hotspots={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":72,"unicode":104)]
+}
+push_to_talk={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":84,"unicode":116)]
+}
+toggle_hands_free={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":86,"unicode":118)]
+}
+repeat_line={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":82,"unicode":114)]
+}

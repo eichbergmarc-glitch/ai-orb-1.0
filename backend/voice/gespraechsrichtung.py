@@ -82,6 +82,34 @@ Anzeichen fehlten ausserdem und sind ergänzt: die zweite Person in
 Umkehrung ("sollst du einlesen") und die ausdrückliche Zuweisung
 ("Auftrag an dich").
 
+## Die vierte Lücke: die Antwort auf die eigene Frage (20.08.2026)
+
+Der Benutzer meldete wiederkehrend, dass Gesagtes im Wachfenster als
+"nicht an mich gerichtet" verworfen wird, obwohl es das war. Das
+Protokoll bestätigt es und benennt die Fälle::
+
+    20.08. 04:35:36  "Ja, bitte, tu das."             -> unklar, verworfen
+    20.08. 04:27:11  "Ja, wenn das reicht ... Danke." -> unklar, verworfen
+    20.08. 04:24:58  "Erzählen wir etwas über den neuen Realismus
+                      nach Markus Gabriel."           -> unklar, verworfen
+
+Die Stimmerkennung war es NICHT - die Stimme kam jedes Mal durch, die
+Erkennung lag bei 0.91. Es fehlten drei Dinge:
+
+* **Die offene Frage des Orb zählte nicht.** ``wurde_gefragt`` wurde nur
+  nach der Verstehens-Rückfrage gesetzt, nie wenn die eigene ANTWORT mit
+  einer Frage endete ("Soll ich das eintragen?"). Die Zustimmung darauf
+  ("Ja, bitte, tu das") galt als Zustimmung in einem fremden Gespräch.
+  Jetzt gilt: Hat der Orb gerade selbst gefragt, ist die nächste klar
+  verstandene Äusserung der zugelassenen Stimme die Antwort.
+* **Der Wir-Imperativ fehlte.** "Erzählen wir ...", "Machen wir weiter"
+  ist ein Auftrag in der Miteinander-Form - am Satzanfang, Verb vor
+  "wir". Die Aussagestellung ("wir machen", "wir haben") bleibt dagegen
+  ein Zeichen für ein Gespräch unter Menschen.
+* **"tu" fehlte in den Befehlsstämmen** - das kürzeste Imperativ des
+  Deutschen, und genau das, woran "Ja, bitte, tu das" auch ohne offene
+  Frage erkennbar gewesen wäre.
+
 ## Warum im Zweifel geschwiegen wird
 
 Ein übersehener Auftrag kostet eine Wiederholung. Eine Antwort auf ein
@@ -116,10 +144,14 @@ _BEFEHLSSTAEMME = frozenset((
     "trag", "merk", "speicher", "lösch", "loesch", "verschieb", "rechn",
     "übersetz", "uebersetz", "vergleich", "prüf", "pruef", "hilf",
     "wiederhol", "eign", "lern", "führ", "fuehr", "erweiter", "optimier",
-    "analysier", "versuch", "wechsel", "hol", "gib", "bring", "setz",
+    "analysier", "versuch", "wechsel", "hol", "gib", "bring", "setz", "fahr",
     "füg", "fueg", "zähl", "zaehl", "überleg", "ueberleg", "korrigier",
     "änder", "aender", "entfern", "beantwort", "berechn", "beschreib",
-    "nimm", "les", "spiel", "ruf", "leg", "stell", "streich",
+    "nimm", "les", "spiel", "ruf", "leg", "stell", "streich", "halt",
+    # Nachtraege vom 20.08.2026: "tu" ist das kuerzeste Imperativ des
+    # Deutschen ("Ja, bitte, tu das" fiel durch); die uebrigen tragen
+    # den Wir-Imperativ ("Fangen wir an", "Schauen wir uns das an").
+    "tu", "fang", "schau", "geh", "beginn", "send", "schick", "notier",
 ))
 
 #: Steuerworte, die als ganzer Teilsatz ein Befehl sind.
@@ -334,6 +366,17 @@ def _befehl_am_satzanfang(klein: str) -> str | None:
         if any(anfang.startswith(b) for b in _BEFEHLSANFAENGE):
             return anfang
 
+        # Der Wir-Imperativ (Hortativ): "Erzählen wir etwas über den
+        # neuen Realismus", "Machen wir weiter", "Fangen wir an". Das
+        # Verb steht VOR dem "wir" - genau daran unterscheidet er sich
+        # von der Aussage ("wir machen", "wir haben"), die weiter als
+        # Zeichen fuer ein Gespraech unter Menschen gilt. Im Studium
+        # ist diese Form die natuerlichste Auftragsform ueberhaupt.
+        if len(worte) >= 2 and worte[1] == "wir" and erstes.endswith("n"):
+            stamm = erstes[:-2] if erstes.endswith("en") else erstes[:-1]
+            if stamm in _BEFEHLSSTAEMME:
+                return f"{erstes} wir"
+
         # Der Stamm als Imperativ - mit und ohne das angehaengte "e".
         for endung in ("", "e"):
             if erstes.endswith(endung):
@@ -406,7 +449,29 @@ def einschaetzen(
     klein = " " + re.sub(r"[,.!?;:]+", " ", knapp.lower()) + " "
     klein = re.sub(r"\s+", " ", klein)
     satzweise = knapp.lower()
-    schlicht = knapp.lower().strip(" .,!?;:")
+    # Ohne Satzzeichen IM Innern: "Ja, bitte" und "ja bitte" sind
+    # dieselbe Antwort - vorher scheiterte der Vergleich mit der
+    # Anschlussliste am Komma, das Whisper mal setzt und mal nicht.
+    schlicht = " ".join(
+        re.sub(r"[,.!?;:]+", " ", knapp.lower()).split()
+    )
+
+    # "Tagebucheintrag" ist absichtlich ein vollstaendiger lokaler
+    # Sprachbefehl. Er braucht weder eine Frageform noch das Weckwort; der
+    # Orchestrator antwortet darauf mit der ausdruecklichen Diktierfreigabe.
+    if schlicht in {
+        "tagebucheintrag", "tagebuch eintrag", "tagebuchbild",
+        "bild ins tagebuch", "bild in den tagebucheintrag",
+        "bild zum tagebucheintrag",
+    }:
+        return Richtung("an_mich", "eindeutiger Tagebuchbefehl", 0.95)
+    if (
+        "tagebucheintrag" in schlicht
+        and any(stamm in schlicht for stamm in (
+            "erstell", "bestell", "starte", "beginne", "entfern", "lösch", "loesch",
+        ))
+    ):
+        return Richtung("an_mich", "eindeutiger Tagebuchauftrag", 0.95)
 
     # 1. Der eigene Name schlaegt fast alles. Wer "Orb" sagt, meint den
     #    Orb - auch mitten im Satz und auch bei maessiger Erkennung. Die
@@ -443,6 +508,18 @@ def einschaetzen(
             "kurze Zustimmung, aber es stand keine Rückfrage offen",
             0.8,
         )
+
+    # 4b. Der Orb hat gerade SELBST gefragt - dann ist die nächste klar
+    # verstandene Äusserung die Antwort, auch wenn sie länger ausfällt
+    # als die Anschlussliste: "Ja, bitte, tu das", "Ja, wenn das reicht,
+    # danke" (beide am 20.08. verworfen, beide waren Antworten). Wer
+    # fragt, hat das Rederecht vergeben; das Schweigen auf die eigene
+    # Frage zu erzwingen war der Fehler, nicht die Ausnahme. Die
+    # Stimmprüfung davor stellt sicher, dass es die zugelassene Stimme
+    # ist - und die Prüfungen 2 und 3 haben Wortschleifen und andere
+    # Adressaten schon aussortiert.
+    if wurde_gefragt and sicherheit >= schwelle:
+        return Richtung("an_mich", "Antwort auf die eigene Frage", 0.8)
 
     # 5. Reines Fuellsel ohne Auftrag und ohne Frage.
     if schlicht in _FUELLSEL:

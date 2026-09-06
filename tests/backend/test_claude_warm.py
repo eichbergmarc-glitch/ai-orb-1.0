@@ -58,8 +58,9 @@ if "--help" in sys.argv:
     sys.exit(0)
 
 if "--input-format" not in sys.argv:
-    # Der alte Weg: eine Frage als Argument, eine JSON-Antwort.
-    frage = sys.argv[sys.argv.index("-p") + 1]
+    # Der Einzelprozess liest ebenfalls von stdin. Das ist unter Windows
+    # wichtig, weil lange Gespraechskontexte nicht in die Befehlszeile passen.
+    frage = sys.stdin.read()
     raus({{"type": "result", "result": "einzeln: " + frage.splitlines()[-1]}})
     sys.exit(0)
 
@@ -226,6 +227,37 @@ def test_die_antwort_kommt_stueckweise(tmp_path: Path):
     assert "".join(stuecke) == "warm: Hallo Welt"
 
 
+def test_gesprochener_strom_endet_nach_der_laengengrenze_am_satzende(tmp_path: Path):
+    """Claude Code ignoriert max_tokens selbst; der Provider darf es nicht."""
+
+    anbieter = _provider(tmp_path)
+
+    async def ablauf():
+        await anbieter.prewarm()
+
+        async def _lang(prompt):  # noqa: ARG001
+            yield ("text", "Der erste Satz erklaert den Kern in aller Ruhe und bleibt verstaendlich. ")
+            yield ("text", "Der zweite Satz ergaenzt die wichtigste Einordnung und endet sauber.")
+            yield ("text", " Dieser dritte Satz darf nicht mehr erzeugt werden.")
+            yield ("ende", "fertig")
+
+        anbieter._stream_from_warm = _lang  # type: ignore[method-assign]
+        try:
+            return [
+                stueck
+                async for stueck in anbieter.chat_stream(
+                    _frage("Kurz erklaeren"), max_tokens=32
+                )
+            ]
+        finally:
+            await anbieter.shutdown()
+
+    stuecke = asyncio.run(ablauf())
+    text = "".join(stuecke)
+    assert "zweite Satz" in text
+    assert "dritte Satz" not in text
+
+
 def test_stream_startet_nach_warmfehler_nicht_noch_einen_claude_prozess(tmp_path: Path):
     """Sonst zahlt die Sprache erst die Warmfrist und dann den Einzelstart,
     bevor der Provider-Manager endlich lokal ausweichen kann."""
@@ -350,7 +382,7 @@ for eintrag in sys.argv[1:]:
         sys.stderr.write("error: unknown option '" + eintrag + "'\\\\n")
         sys.exit(1)
 
-frage = sys.argv[sys.argv.index("-p") + 1]
+frage = sys.stdin.read()
 print(json.dumps({{"type": "result", "result": "alt: " + frage.splitlines()[-1]}}))
 '''
 

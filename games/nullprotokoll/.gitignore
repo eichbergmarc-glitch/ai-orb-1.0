@@ -1,0 +1,11 @@
+.godot/
+.import/
+.tools/
+exports/
+export_credentials.cfg
+tests/artifacts/
+
+# Die AI-Orb-Wurzel ignoriert Laufzeitordner namens data/. Diese Storydaten
+# gehören jedoch zum Spiel und müssen mit dem Projekt versioniert werden.
+!data/
+!data/*.json

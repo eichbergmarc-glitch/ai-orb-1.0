@@ -35,15 +35,19 @@ logger = get_logger(__name__)
 
 
 class HistoryProfessorAgent(BaseAgent):
-    """Persönlicher akademischer Mentor für Geschichtswissenschaft."""
+    """Persönlicher akademischer Mentor für die Lehrfelder des Orb."""
 
     name = "history"
     description = (
-        "Geschichtsprofessor und Mentor: sokratisches Lehren, Quellenkritik, "
-        "Forschungsfragen, Arbeitsbetreuung, Debatte"
+        "Fachprofessor für Geschichte, Philosophie, Linguistik, Germanistik, "
+        "Geografie und Wirtschaft: Lehren, Forschungsfragen und Betreuung"
     )
     capabilities = (
         "geschichtswissenschaft",
+        "philosophie",
+        "linguistik",
+        "germanistik",
+        "wirtschaftswissenschaft",
         "quellenkritik",
         "methodik",
         "forschungskontroversen",
@@ -65,6 +69,7 @@ class HistoryProfessorAgent(BaseAgent):
         #: Der laufende Modus. Ohne ihn spränge der Professor bei jedem
         #: Satz in eine andere Rolle.
         self._mode = ""
+        self._fach = ""
 
         #: Zustände laufender Vorgänge.
         self._source: source_criticism.SourceAnalysis | None = None
@@ -93,6 +98,7 @@ class HistoryProfessorAgent(BaseAgent):
         self._last_question = text
 
         self._prepare_state(text)
+        self._fach = professor_engine.detect_fach(text, current=self._fach)
 
         turn = professor_engine.build_prompt(
             text,
@@ -104,6 +110,7 @@ class HistoryProfessorAgent(BaseAgent):
             attempts=self._attempts,
             presence=task.metadata.get("presence") if task.metadata else None,
             current_mode=self._mode,
+            fach=self._fach,
         )
 
         self._mode = turn.mode
@@ -191,6 +198,7 @@ class HistoryProfessorAgent(BaseAgent):
         self._debate = None
         self._workshop = {}
         self._mode = ""
+        self._fach = ""
         logger.info("Laufende Vorgänge beendet.")
 
     def _after_turn(self, text: str, turn: professor_engine.ProfessorTurn, answer: str) -> None:
@@ -228,6 +236,7 @@ class HistoryProfessorAgent(BaseAgent):
 
         return {
             "modus": self._mode or "—",
+            "fach": self._fach or "—",
             "profil": self.profile.summary(),
             "quellenanalyse": self._source.to_dict() if self._source else None,
             "projekt": self._project.name if self._project else None,

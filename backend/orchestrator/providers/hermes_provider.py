@@ -110,6 +110,16 @@ class HermesProvider(BaseProvider):
         first = choices[0]
         text = str((first.get("message") or {}).get("content", "")).strip()
 
+        # Eine leere Antwort ist keine Antwort.
+        #
+        # Zurueckgegeben wurde sie trotzdem, und zwar als Erfolg: Der
+        # Gesundheitswaechter bekam eine gelungene Anfrage vermerkt, der
+        # Ausweichprovider wurde nie gefragt, und der Benutzer bekam
+        # Stille. Das Schwestermodul openai_compatible_provider wirft an
+        # dieser Stelle seit jeher - hier fehlte es schlicht.
+        if not text:
+            raise ProviderError("hermes: leere Antwort.")
+
         return ProviderResponse(
             text=text,
             provider=self.name,

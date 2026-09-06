@@ -1,0 +1,197 @@
+{
+  "canvas": [1920, 1080],
+  "world_safe_rect": [0, 0, 1920, 844],
+  "locations": {
+    "krankenstation": {
+      "background": "res://assets/backgrounds/krankenstation.png",
+      "walk": [[100, 800], [160, 760], [880, 760], [1030, 700], [1660, 700], [1840, 780], [1840, 840], [100, 840]],
+      "baseline": [[100, 840], [1840, 840]],
+      "entries": {
+        "start": [820, 815],
+        "from_diagnostiklabor": [1515, 735]
+      },
+      "exits": {
+        "to_diagnostics": {"r": [1530, 175, 345, 610], "a": [1515, 735], "cursor": "exit"}
+      },
+      "spots": {
+        "mira_terminal": {"r": [645, 345, 210, 150], "a": [760, 800], "cursor": "talk"},
+        "mira_terminal_after": {"r": [645, 345, 210, 150], "a": [760, 800], "cursor": "look"},
+        "treatment_bed": {"r": [245, 470, 640, 325], "a": [900, 830], "cursor": "take"},
+        "medical_cabinet": {"r": [975, 250, 205, 470], "a": [1090, 735], "cursor": "take"},
+        "memory_mirror": {"r": [1200, 245, 175, 455], "a": [1285, 725], "cursor": "look"},
+        "sealed_door": {"r": [1530, 175, 345, 610], "a": [1515, 735], "cursor": "use"}
+      },
+      "pickup_visuals": [
+        {"items": ["badge_cracked"], "anchor": [760, 650], "hide_when": "completed:krankenstation:treatment_bed"},
+        {"items": ["film_conductive", "swab_sterile", "assay_ampoule"], "anchor": [1385, 440], "hide_when": "completed:krankenstation:medical_cabinet"}
+      ]
+    },
+    "diagnostiklabor": {
+      "background": "res://assets/backgrounds/diagnostiklabor.png",
+      "walk": [[70, 790], [80, 720], [520, 700], [970, 695], [1360, 690], [1680, 740], [1870, 790], [1870, 840], [70, 840]],
+      "baseline": [[70, 840], [1870, 840]],
+      "entries": {
+        "from_krankenstation": [570, 780],
+        "from_sicherheitsrotunde": [1790, 780]
+      },
+      "exits": {
+        "back_chamber": {"r": [180, 270, 380, 500], "a": [570, 780], "cursor": "exit"},
+        "to_rotunda": {"r": [1840, 230, 80, 560], "a": [1790, 780], "cursor": "exit"}
+      },
+      "spots": {
+        "radio_case": {"r": [1390, 420, 210, 350], "a": [1500, 790], "cursor": "take"},
+        "neural_scanner": {"r": [240, 330, 280, 340], "a": [540, 760], "cursor": "look"},
+        "patient_board": {"r": [1590, 260, 220, 450], "a": [1660, 740], "cursor": "look"},
+        "open_frequency": {"r": [800, 540, 160, 190], "a": [860, 740], "cursor": "talk"},
+        "frequency_after": {"r": [800, 540, 160, 190], "a": [860, 740], "cursor": "look"},
+        "observation_window": {"r": [1090, 185, 720, 515], "a": [1190, 720], "cursor": "look"}
+      },
+      "pickup_visuals": [
+        {"items": ["radio_broken"], "anchor": [355, 410], "hide_when": "completed:diagnostiklabor:radio_case"}
+      ]
+    },
+    "sicherheitsrotunde": {
+      "background": "res://assets/backgrounds/sicherheitsrotunde.png",
+      "walk": [[80, 780], [180, 700], [430, 650], [1350, 640], [1660, 700], [1840, 780], [1840, 840], [80, 840]],
+      "baseline": [[80, 840], [1840, 840]],
+      "entries": {
+        "from_diagnostiklabor": [920, 820],
+        "from_wartungsgalerie": [260, 710],
+        "from_quarantaene": [575, 700],
+        "from_kaltarchiv": [1360, 700],
+        "from_relaiskern": [960, 700]
+      },
+      "exits": {
+        "to_diagnostics": {"r": [700, 680, 450, 180], "a": [920, 820], "cursor": "exit"},
+        "to_maintenance": {"r": [0, 300, 300, 410], "a": [260, 700], "cursor": "exit"},
+        "to_quarantine": {"r": [400, 350, 300, 360], "a": [575, 700], "cursor": "exit"},
+        "to_archive": {"r": [1220, 345, 260, 365], "a": [1360, 700], "cursor": "exit"},
+        "to_uplink": {"r": [760, 320, 370, 390], "a": [960, 700], "cursor": "exit"}
+      },
+      "spots": {
+        "facility_map": {"r": [635, 440, 75, 135], "a": [680, 690], "cursor": "look"},
+        "floor_grate": {"r": [80, 830, 650, 170], "a": [760, 820], "cursor": "take"},
+        "manual_distributor": {"r": [1610, 390, 175, 200], "a": [1510, 690], "cursor": "use"},
+        "power_priority": {"r": [1410, 580, 320, 180], "a": [1340, 760], "cursor": "use"},
+        "relay_status": {"r": [875, 305, 170, 150], "a": [960, 690], "cursor": "look"}
+      },
+      "pickup_visuals": [
+        {"items": ["service_key"], "anchor": [650, 755], "hide_when": "flag:service_key_retrieved"}
+      ]
+    },
+    "wartungsgalerie": {
+      "background": "res://assets/backgrounds/wartungsgalerie.png",
+      "walk": [[70, 800], [200, 720], [520, 695], [1250, 690], [1460, 715], [1840, 790], [1840, 840], [70, 840]],
+      "baseline": [[70, 840], [1840, 840]],
+      "entries": {
+        "from_sicherheitsrotunde": [1450, 740]
+      },
+      "exits": {
+        "back_rotunda": {"r": [1300, 180, 320, 570], "a": [1450, 735], "cursor": "exit"}
+      },
+      "spots": {
+        "emergency_lamp": {"r": [1170, 375, 125, 150], "a": [1160, 720], "cursor": "take"},
+        "warning_beacon": {"r": [1120, 525, 220, 210], "a": [1120, 750], "cursor": "take"},
+        "tool_wall": {"r": [600, 155, 520, 380], "a": [850, 700], "cursor": "take"},
+        "broken_speaker": {"r": [1240, 620, 190, 125], "a": [1190, 755], "cursor": "take"},
+        "parts_cabinet": {"r": [1640, 135, 280, 625], "a": [1580, 750], "cursor": "take"},
+        "secure_frequency": {"r": [50, 170, 320, 410], "a": [360, 720], "cursor": "talk"},
+        "workbench_notes": {"r": [850, 470, 280, 190], "a": [920, 720], "cursor": "look"}
+      },
+      "pickup_visuals": [
+        {"items": ["cell_empty"], "anchor": [245, 360], "hide_when": "completed:wartungsgalerie:emergency_lamp"},
+        {"items": ["capacitor_charged"], "anchor": [480, 690], "hide_when": "completed:wartungsgalerie:warning_beacon"},
+        {"items": ["fiber_cord", "breaker_handle"], "anchor": [790, 330], "hide_when": "completed:wartungsgalerie:tool_wall"},
+        {"items": ["speaker_magnet"], "anchor": [1205, 345], "hide_when": "completed:wartungsgalerie:broken_speaker"},
+        {"items": ["crypto_module"], "anchor": [1510, 385], "hide_when": "completed:wartungsgalerie:parts_cabinet"}
+      ]
+    },
+    "quarantaene": {
+      "background": "res://assets/backgrounds/quarantaene.png",
+      "walk": [[60, 830], [170, 770], [600, 735], [1380, 735], [1760, 780], [1870, 830], [1870, 840], [60, 840]],
+      "baseline": [[60, 840], [1870, 840]],
+      "entries": {
+        "from_sicherheitsrotunde": [1250, 780]
+      },
+      "actors": [
+        {
+          "texture": "res://assets/characters/juna_falk.png",
+          "p": [710, 650],
+          "height": 440,
+          "flip_h": false,
+          "tint": [0.78, 0.92, 0.96, 0.86],
+          "visible_flags_none": ["juna_free"]
+        }
+      ],
+      "exits": {
+        "back_rotunda": {"r": [1160, 290, 250, 370], "a": [1250, 760], "cursor": "exit"}
+      },
+      "spots": {
+        "juna_glass": {"r": [440, 360, 520, 300], "a": [760, 750], "cursor": "talk"},
+        "juna_test_result": {"r": [440, 360, 520, 300], "a": [760, 750], "cursor": "talk"},
+        "juna_without_result": {"r": [440, 360, 520, 300], "a": [760, 750], "cursor": "talk"},
+        "medical_display": {"r": [70, 305, 210, 390], "a": [300, 760], "cursor": "look"},
+        "camera_log": {"r": [1590, 455, 260, 330], "a": [1500, 800], "cursor": "look"},
+        "material_hatch": {"r": [755, 600, 430, 195], "a": [970, 810], "cursor": "use"}
+      },
+      "pickup_visuals": [
+        {"items": ["swab_juna"], "anchor": [915, 600], "hide_when": "flag:juna_sampled", "mode": "transient_handover"},
+        {"items": ["isolation_token"], "anchor": [915, 610], "hide_when": "flag:juna_resolved", "mode": "transient_handover"}
+      ],
+      "state_swaps": [
+        {"when": "flag:juna_free", "change": "Juna hinter Glas ausblenden und Begleiterin rechts neben der Tür bei [1510,690] zeigen"},
+        {"when": "flag:juna_sealed", "change": "Juna bleibt hinter Glas, sitzt nun bei [1240,515]"}
+      ]
+    },
+    "kaltarchiv": {
+      "background": "res://assets/backgrounds/kaltarchiv.png",
+      "walk": [[70, 800], [260, 740], [600, 720], [1390, 720], [1690, 770], [1860, 820], [1860, 840], [70, 840]],
+      "baseline": [[70, 840], [1860, 840]],
+      "entries": {
+        "from_sicherheitsrotunde": [420, 760]
+      },
+      "exits": {
+        "back_rotunda": {"r": [55, 220, 345, 540], "a": [420, 760], "cursor": "exit"}
+      },
+      "spots": {
+        "audit_core_intact": {"r": [890, 235, 220, 500], "a": [960, 760], "cursor": "take"},
+        "audit_core_partial": {"r": [890, 235, 220, 500], "a": [960, 760], "cursor": "take"},
+        "mira_archive_voice": {"r": [390, 430, 155, 190], "a": [550, 750], "cursor": "talk"},
+        "rack_marks": {"r": [1310, 230, 250, 510], "a": [1320, 760], "cursor": "look"},
+        "mirror_compartment": {"r": [1335, 345, 200, 330], "a": [1320, 760], "cursor": "take"},
+        "evacuation_archive": {"r": [1650, 370, 180, 380], "a": [1580, 780], "cursor": "look"}
+      },
+      "pickup_visuals": [
+        {"items": ["audit_wafer"], "anchor": [960, 495], "hide_when": "flag:audit_secured"},
+        {"items": ["mirror_module"], "anchor": [1590, 500], "hide_when": "flag:mirror_found"}
+      ]
+    },
+    "relaiskern": {
+      "background": "res://assets/backgrounds/relaiskern.png",
+      "walk": [[80, 820], [180, 770], [520, 735], [1150, 720], [1600, 740], [1840, 810], [1840, 840], [80, 840]],
+      "baseline": [[80, 840], [1840, 840]],
+      "entries": {
+        "from_sicherheitsrotunde": [300, 780]
+      },
+      "actors": [
+        {
+          "texture": "res://assets/characters/juna_falk.png",
+          "p": [1630, 770],
+          "height": 350,
+          "flip_h": true,
+          "visible_flags_all": ["juna_free"]
+        }
+      ],
+      "exits": {
+        "back_rotunda": {"r": [0, 110, 290, 720], "a": [300, 780], "cursor": "exit"}
+      },
+      "spots": {
+        "city_monitor": {"r": [1100, 110, 620, 540], "a": [1230, 750], "cursor": "look"},
+        "mira_core": {"r": [620, 135, 430, 360], "a": [820, 740], "cursor": "talk"},
+        "human_voices": {"r": [1540, 510, 280, 280], "a": [1480, 790], "cursor": "talk"},
+        "final_console": {"r": [590, 500, 540, 280], "a": [850, 820], "cursor": "use"}
+      },
+      "pickup_visuals": []
+    }
+  }
+}

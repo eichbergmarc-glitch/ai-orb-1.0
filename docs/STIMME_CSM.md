@@ -1,54 +1,44 @@
-# Die CSM-1B-Stimme ("wie Miles") über einen GPU-Server
+# Deutsche Ausdrucksstimme über einen GPU-Server
 
-CSM-1B von Sesame ist die Stimme hinter „Miles" – natürlich, lebendig, kaum
-von einem Menschen zu unterscheiden. Der Haken, den du schon bemerkt hast:
-Auf einem gewöhnlichen Rechner ist sie zu langsam. Sie braucht eine
-Grafikkarte.
+Das frei verfügbare `sesame/csm-1b` ist ein englisches Modell. Es erzeugt
+ausdrucksstarke Gesprächssprache, spricht deutschen Text aber nicht
+zuverlässig deutsch aus. AI-Orb verwendet für Deutsch deshalb **Chatterbox
+Multilingual V3** von Resemble AI. Das Modell unterstützt Deutsch offiziell,
+bietet regelbare Ausdrucksstärke und kann eine erlaubte Referenzstimme
+übernehmen.
 
-Die Lösung ist eine Arbeitsteilung. Das Modell läuft dort, wo eine GPU ist;
-AI-Orb schickt ihm nur den Text und bekommt fertige Sprache zurück. Und weil
-AI-Orb Satz für Satz schickt und den nächsten Satz schon anfordert, während
-der aktuelle spricht, fühlt es sich flüssig an – vorausgesetzt, der Server
-hat eine GPU.
+Die Orb-Schnittstelle bleibt dieselbe: Der Text wird satzweise an einen
+geschützten GPU-Server geschickt, während die nächste Passage bereits
+vorbereitet wird. Der Orb übermittelt zusätzlich seinen Gefühlszustand, damit
+ruhige, freundliche, neugierige, fröhliche und warnende Sätze unterschiedlich
+klingen.
 
-## Zwei Wege, den Server zu betreiben
+## Google Colab
 
-### Zum Ausprobieren: Google Colab (kostenlos)
+1. Öffne `server/AI_Orb_CSM_1B_Colab.ipynb` in Google Colab.
+2. Aktiviere unter **Laufzeit → Laufzeittyp ändern** eine GPU.
+3. Führe die fünf Codezellen von oben nach unten aus.
+4. Die letzte Zelle zeigt eine `trycloudflare.com`-Adresse und einen
+   Zugangstoken. Sie muss aktiv bleiben.
+5. Trage die Adresse unter `voice.output.remote.endpoint` in `config.yaml`
+   und den Token als `REMOTE_TTS_TOKEN` in `.env` ein. `remote` gehört an die
+   erste Stelle von `voice.output.engines`.
 
-1. Öffne `server/csm_colab.py` und folge der Anleitung oben in der Datei:
-   neues Colab-Notebook, GPU als Laufzeit, den Code in eine Zelle, ausführen.
-2. Nach ein paar Minuten zeigt Colab eine Adresse
-   (`https://….trycloudflare.com`) und einen Zugangstoken.
-3. Trage in AI-Orb ein:
-   - `config.yaml` → `voice.output.remote.endpoint`: die Adresse
-   - `config.yaml` → `voice.output.engines`: `remote` an die erste Stelle
-   - `.env` → `REMOTE_TTS_TOKEN`: den Token aus Colab
-4. AI-Orb neu starten. Solange das Colab-Fenster offen ist, hörst du CSM.
+Eine deutsche Referenzaufnahme ist optional. Verwende ausschließlich deine
+eigene Stimme oder Material, für dessen Nachbildung du eine ausdrückliche
+Erlaubnis hast.
 
-Ehrlich zu den Grenzen: Gratis-Colab trennt die Sitzung nach einigen Stunden
-und bei Leerlauf, und manchmal ist keine GPU frei. Zum Ausprobieren ideal,
-für den Dauerbetrieb nicht.
+## Verhalten bei einer Trennung
 
-### Für den täglichen Gebrauch: eine gemietete GPU
+Kostenlose Colab-Laufzeiten und ihre Tunnel-Adressen sind nicht dauerhaft.
+Wenn der Server schläft oder getrennt wird, fällt AI-Orb automatisch auf
+ElevenLabs, Piper oder Windows-SAPI zurück. Der Orb verstummt dadurch nicht.
 
-Eine kleine GPU-Instanz (bei den üblichen Cloud-Anbietern wenige Euro, oft
-stundenweise abrechenbar) läuft stabil und ist wirklich flüssig. Dort:
+## Technischer Unterschied
 
-    pip install fastapi uvicorn torch transformers soundfile
-    REMOTE_TTS_TOKEN=deintoken python server/csm_tts_server.py
-
-Dann die feste Adresse dieser Instanz als `endpoint` eintragen.
-
-## Wenn der Server nicht läuft
-
-Nichts geht kaputt. Ist der `endpoint` leer oder der Server nicht
-erreichbar, spricht AI-Orb über die lokale Thorsten-Stimme weiter. Die
-CSM-Stimme ist eine Zugabe, kein Muss – der Orb verstummt nie, nur weil ein
-Server schläft.
-
-## Kurz: Flüssig ja, aber nur mit GPU
-
-Auf einer GPU (auch der T4 in Gratis-Colab) erzeugt CSM einen Satz in
-Sekundenbruchteilen, und die Satz-für-Satz-Vorbereitung von AI-Orb
-verbirgt selbst diese kurze Wartezeit. Ohne GPU ist es unbrauchbar langsam –
-dann bleib bei Thorsten.
+- CSM-1B: englisch, sehr gesprächsnah, für zuverlässiges Deutsch ungeeignet.
+- Chatterbox Multilingual V3: 23+ Sprachen einschließlich Deutsch,
+  Voice-Cloning und einstellbare Ausdrucksstärke.
+- Die deutsche Open-Source-Variante unterstützt nicht sämtliche nativen
+  englischen Regie-Tags wie `[laugh]`. Natürlichkeit entsteht hier über
+  Prosodie, Satzrhythmus, Orb-Emotionen und eine passende Referenzstimme.

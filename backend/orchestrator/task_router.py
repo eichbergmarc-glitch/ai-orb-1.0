@@ -16,15 +16,53 @@ from typing import Any, Awaitable, Callable
 
 from backend.orchestrator import intent_classifier as intents
 from backend.orchestrator.intent_classifier import IntentResult
+from backend.studium.vorlesungs_session import ist_vorlesungssegment
+from backend.config import get_config
 from backend.system.desktop_control import DesktopControl
+from backend.system.performance_trace import current_turn_trace
 from backend.system.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
 
+def _kennung() -> str:
+    """Die Korrelations-Kennung dieses Zuges, falls eine anliegt."""
+
+    trace = current_turn_trace()
+    return getattr(trace, "turn_id", "-") if trace is not None else "-"
+
+
+#: Die möglichen Ausgänge einer Weiterleitung.
+STATUS_LOKAL = "lokal_beantwortet"
+STATUS_AN_MODELL = "an_modell"
+STATUS_UNSICHER = "unsicher"
+
+
 @dataclass
 class RouteResult:
-    """Ergebnis einer Weiterleitung durch den Task Router."""
+    """Ergebnis einer Weiterleitung durch den Task Router.
+
+    ``handled_locally`` allein war zu wenig, und das war der teuerste
+    Konstruktionsfehler der Anfrageverarbeitung: Ein einziges Wahr beendete
+    den Zug endgültig - ohne Begründung, ohne Angabe, wie sicher die
+    Zuordnung war, und ohne Weg zurück. Am 31.08.2026 genügte deshalb das
+    Wort „Aufgabe" in „Ich wiederhole die Aufgabe, suche nach einer Wohnung
+    und zeige mir die Ergebnisse im Browser an", um die ganze Anfrage in
+    eine Aufgabenstatistik zu verwandeln.
+
+    Jetzt trägt das Ergebnis vier weitere Angaben:
+
+    * ``status``: wie es ausgegangen ist (siehe die STATUS_-Konstanten),
+    * ``begruendung``: im Klartext, fürs Protokoll,
+    * ``konfidenz``: wie sicher sich die zuständige Stelle ist (0.0-1.0),
+    * ``rueckfall_erlaubt``: ob die Anfrage bei Zweifeln an das Modell
+      weitergereicht werden darf. Handelnde Module (Programm starten,
+      Terminal) setzen das nicht - eine ausgeführte Aktion wiederholt man
+      nicht. Reine Auskünfte setzen es.
+
+    ``handled_locally`` bleibt als schmale Fassade erhalten, damit die
+    bestehenden Aufrufer und Tests unverändert weiterlaufen.
+    """
 
     handled_locally: bool
     response: str = ""
@@ -32,6 +70,24 @@ class RouteResult:
     requires_confirmation: bool = False
     module: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    #: Wie es ausgegangen ist.
+    status: str = ""
+    #: Warum - im Klartext.
+    begruendung: str = ""
+    #: Wie sicher sich die zuständige Stelle ist. 1.0 heisst: keine Zweifel.
+    konfidenz: float = 1.0
+    #: Ob bei Zweifeln an das Modell weitergereicht werden darf.
+    rueckfall_erlaubt: bool = False
+
+    @property
+    def ist_endgueltig(self) -> bool:
+        """Ob dieser Zug hier wirklich zu Ende ist.
+
+        Genau diese Frage stellte vorher niemand: ``handled_locally`` wurde
+        als Tatsache gelesen, nicht als Einschätzung.
+        """
+
+        return self.handled_locally and self.status != STATUS_UNSICHER
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +97,12 @@ class RouteResult:
             "requires_confirmation": self.requires_confirmation,
             "module": self.module,
             "data": self.data,
+            "status": self.status or (
+                STATUS_LOKAL if self.handled_locally else STATUS_AN_MODELL
+            ),
+            "begruendung": self.begruendung,
+            "konfidenz": round(self.konfidenz, 2),
+            "rueckfall_erlaubt": self.rueckfall_erlaubt,
         }
 
 
@@ -54,6 +116,10 @@ class TaskRouter:
     def __init__(self, desktop: DesktopControl | None = None) -> None:
         self._desktop = desktop or DesktopControl()
         self._handlers: dict[str, RouteHandler] = {}
+        #: Unter dieser Konfidenz beendet eine lokale Auskunft den Zug nicht.
+        self._min_konfidenz = float(
+            get_config().get("routing.min_konfidenz", 0.4) or 0.4
+        )
         self._register_defaults()
 
     def register(self, intent: str, handler: RouteHandler) -> None:
@@ -81,9 +147,27 @@ class TaskRouter:
             muss die Anfrage an einen KI-Provider weitergereicht werden.
         """
 
+        # Letzte Schutzschranke vor lokalen Systemaktionen. Selbst wenn ein
+        # vorgeschalteter oder ein Plugin-Klassifikator den internen Satz
+        # "beende den Abschnitt" als APP_CLOSE meldet, ist eine markierte
+        # Vorlesung immer eine Modellantwort und niemals Desktop-Steuerung.
+        if ist_vorlesungssegment(text):
+            return RouteResult(
+                handled_locally=False,
+                requires_llm=True,
+                module="ai_provider",
+            )
+
         handler = self._handlers.get(intent.intent)
         if handler is None:
-            return RouteResult(handled_locally=False, requires_llm=True, module="ai_provider")
+            return RouteResult(
+                handled_locally=False,
+                requires_llm=True,
+                module="ai_provider",
+                status=STATUS_AN_MODELL,
+                begruendung=f"fuer Intent '{intent.intent}' ist kein lokales Modul zustaendig",
+                konfidenz=float(getattr(intent, "score", 0.0) or 0.0),
+            )
 
         try:
             result = await handler(text, intent)
@@ -95,12 +179,74 @@ class TaskRouter:
                 module=intent.intent,
             )
 
+        result = self._bewerten(text, intent, result)
+
         logger.info(
-            "Intent '%s' an Modul '%s' geleitet (lokal=%s).",
+            "[%s] Tor 4 Router: Intent '%s' an Modul '%s' (lokal=%s, "
+            "status=%s, Konfidenz %.2f, Rueckfall=%s) - %s",
+            _kennung(),
             intent.intent,
             result.module,
             result.handled_locally,
+            result.status,
+            result.konfidenz,
+            result.rueckfall_erlaubt,
+            result.begruendung or "ohne weitere Begruendung",
         )
+        return result
+
+    def _bewerten(
+        self, text: str, intent: IntentResult, result: RouteResult
+    ) -> RouteResult:
+        """Ergänzt Status, Konfidenz und Begründung - und lässt zurückfallen.
+
+        Die Regel in einem Satz: Eine lokale Zuordnung, die sich selbst
+        nicht sicher ist und deren Modul nur Auskunft gibt, darf den Zug
+        nicht endgültig beenden.
+
+        Sie greift ausdrücklich NICHT bei Modulen, die etwas getan haben -
+        ein gestartetes Programm startet man nicht ein zweites Mal, nur
+        weil die Zuordnung knapp war. Solche Handler setzen
+        ``rueckfall_erlaubt`` nicht.
+        """
+
+        if not result.handled_locally:
+            result.status = result.status or STATUS_AN_MODELL
+            result.begruendung = result.begruendung or "kein lokales Modul zustaendig"
+            return result
+
+        if not result.rueckfall_erlaubt:
+            result.status = result.status or STATUS_LOKAL
+            result.begruendung = (
+                result.begruendung
+                or f"Modul '{result.module}' hat abschliessend geantwortet"
+            )
+            return result
+
+        schwelle = float(self._min_konfidenz)
+        if result.konfidenz >= schwelle:
+            result.status = STATUS_LOKAL
+            result.begruendung = (
+                result.begruendung
+                or f"lokale Auskunft, Konfidenz {result.konfidenz:.2f} >= {schwelle:.2f}"
+            )
+            return result
+
+        result.status = STATUS_UNSICHER
+        result.handled_locally = False
+        result.requires_llm = True
+        result.data = {
+            **(result.data or {}),
+            "verworfene_lokale_antwort": result.response,
+            "urspruengliches_modul": result.module,
+        }
+        result.begruendung = (
+            f"Konfidenz {result.konfidenz:.2f} unter {schwelle:.2f} - die "
+            f"lokale Auskunft aus '{result.module}' wird nicht als Antwort "
+            "genommen, der Hauptweg uebernimmt"
+        )
+        result.response = ""
+        result.module = "ai_provider"
         return result
 
     # --- Standard-Handler ---------------------------------------------------------

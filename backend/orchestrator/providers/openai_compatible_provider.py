@@ -1,4 +1,4 @@
-"""OpenAI-kompatible Provider (Master-Prompt Abschnitte 7, 8, 9).
+"""OpenAI- und OpenAI-kompatible Provider (Master-Prompt Abschnitte 7, 8, 9).
 
 Ein einziger Adapter für alles, was die OpenAI-``/chat/completions``-API
 spricht. Das ist mehr, als der Name vermuten lässt: OpenAI selbst, LM
@@ -29,8 +29,13 @@ läuft schlüssellos.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+from collections.abc import AsyncIterator
 from typing import Any
+
+import httpx
 
 from backend.orchestrator.providers.base_provider import (
     BaseProvider,
@@ -98,7 +103,7 @@ PRESETS: dict[str, dict[str, Any]] = {
 
 
 class OpenAICompatibleProvider(BaseProvider):
-    """Spricht jede OpenAI-kompatible ``/chat/completions``-API an.
+    """Spricht OpenAI Responses oder eine kompatible Chat-API an.
 
     Der konkrete Dienst wird über ``preset`` gewählt (``openai``,
     ``ollama_cloud``, ``lmstudio``, ``llamacpp``) oder vollständig von Hand
@@ -117,6 +122,7 @@ class OpenAICompatibleProvider(BaseProvider):
         # ueberschrieben sich OpenAI, OpenRouter und xAI im Health-Monitor.
         self.name = str(
             settings.get("provider_name")
+            or settings.get("instance_name")
             or settings.get("engine")
             or preset_name
             or type(self).name
@@ -135,6 +141,23 @@ class OpenAICompatibleProvider(BaseProvider):
         )
         self._is_local = bool(settings.get("local", preset.get("local", False)))
         self._preset_name = preset_name or "eigen"
+        # OpenAI selbst empfiehlt fuer neue agentische Anwendungen die
+        # Responses API. OpenRouter, xAI und lokale Server bleiben dagegen
+        # bei der breit unterstuetzten Chat-Completions-Schnittstelle.
+        self._api_style = str(
+            settings.get("api_style")
+            or ("responses" if preset_name == "openai" else "chat_completions")
+        ).strip().lower()
+        self._first_token_timeout = max(
+            1.0,
+            float(settings.get("first_token_timeout", min(self._timeout, 20.0))),
+        )
+        # Der offizielle OpenAI-Responses-Endpunkt nimmt Bilder direkt als
+        # Eingabe an. Kompatible Drittanbieter werden nicht pauschal als
+        # bildfaehig markiert, weil deren Schemas voneinander abweichen.
+        self.supports_images = (
+            self._preset_name == "openai" and self._api_style == "responses"
+        )
 
     # --- Schlüssel -------------------------------------------------------------
 
@@ -242,6 +265,11 @@ class OpenAICompatibleProvider(BaseProvider):
         if not self._base_url:
             raise ProviderError(f"{self._preset_name}: keine base_url konfiguriert.")
 
+        if self._api_style == "responses":
+            return await self._chat_responses(
+                messages, temperature=temperature, max_tokens=max_tokens
+            )
+
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [message.to_dict() for message in messages],
@@ -277,3 +305,325 @@ class OpenAICompatibleProvider(BaseProvider):
             finish_reason=first.get("finish_reason"),
             raw=data,
         )
+
+    async def _chat_responses(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ProviderResponse:
+        """Antwortet ueber OpenAIs aktuelle Responses API."""
+
+        payload = self._responses_payload(
+            [message.to_dict() for message in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        started = self._now()
+        data = await self._request_json(
+            f"{self._base_url}/responses",
+            payload=payload,
+            headers=self._headers(),
+        )
+        latency = self._now() - started
+
+        return self._response_from_responses_data(data, latency=latency)
+
+    def _responses_payload(
+        self,
+        input_items: list[dict[str, Any]],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        """Baut den gemeinsamen Request fuer Text, Bilder und Streaming."""
+
+        payload: dict[str, Any] = {"model": self._model, "input": input_items}
+        if max_tokens is not None:
+            payload["max_output_tokens"] = self._ausgabegrenze(max_tokens)
+
+        # Die aktuellen Reasoning-Modelle akzeptieren keine frei gesetzte
+        # Temperatur. Fuer aeltere OpenAI-Modelle bleibt sie verfuegbar.
+        if temperature is not None and not self._model.lower().startswith("gpt-5"):
+            payload["temperature"] = temperature
+        effort = str(self._settings.get("effort", "")).strip().lower()
+        if effort and self._model.lower().startswith("gpt-5"):
+            payload["reasoning"] = {"effort": effort}
+        if stream:
+            payload["stream"] = True
+        return payload
+
+    def _ist_denkmodell(self) -> bool:
+        """Ob dieses Modell vor dem Antworten nachdenkt."""
+
+        return self._model.lower().startswith("gpt-5")
+
+    def _ausgabegrenze(self, gewuenscht: int) -> int:
+        """Rechnet die Denk-Tokens zur gewünschten Antwortlänge dazu.
+
+        Das war der Grund für „Keine Modellantwort möglich" am 31.08.2026.
+        ``max_output_tokens`` begrenzt bei einem Reasoning-Modell nicht die
+        Antwort, sondern Denken UND Antwort zusammen. Eine gesprochene
+        Antwort gibt 40 Tokens mit - die verbrauchte das Modell im Denken,
+        und die Antwort kam als ``incomplete`` zurück, ohne ein einziges
+        sichtbares Wort. Für den Orb sah das aus wie ein Ausfall des
+        Anbieters; es war ein zu enger Rahmen.
+
+        Die Kürze der gesprochenen Antwort hängt ohnehin nicht an dieser
+        Zahl, sondern an der Anweisung im Systemtext. Diese Grenze ist ein
+        Sicherheitsnetz gegen Ausufern, kein Stilmittel.
+        """
+
+        gewuenscht = max(1, int(gewuenscht))
+        if not self._ist_denkmodell():
+            return gewuenscht
+        reserve = int(self._settings.get("reasoning_token_reserve", 512))
+        mindestens = int(self._settings.get("reasoning_token_minimum", 256))
+        return max(mindestens, gewuenscht + max(0, reserve))
+
+    @staticmethod
+    def _responses_text(data: dict[str, Any]) -> str:
+        """Extrahiert sichtbaren Text aus einer Responses-Antwort."""
+
+        text = str(data.get("output_text") or "").strip()
+        if not text:
+            pieces: list[str] = []
+            for item in data.get("output") or []:
+                if not isinstance(item, dict):
+                    continue
+                for content in item.get("content") or []:
+                    if not isinstance(content, dict):
+                        continue
+                    if content.get("type") == "output_text" and content.get("text"):
+                        pieces.append(str(content["text"]))
+            text = "".join(pieces).strip()
+        return text
+
+    def _response_from_responses_data(
+        self, data: dict[str, Any], *, latency: float
+    ) -> ProviderResponse:
+        text = self._responses_text(data)
+
+        if not text:
+            raise ProviderError(f"{self._preset_name}: leere Responses-Antwort.")
+
+        incomplete = data.get("incomplete_details") or {}
+        return ProviderResponse(
+            text=text,
+            provider=self.name,
+            model=self._model,
+            latency_seconds=latency,
+            finish_reason=(
+                str(incomplete.get("reason"))
+                if incomplete.get("reason")
+                else str(data.get("status") or "completed")
+            ),
+            raw=data,
+        )
+
+    async def complete_with_images(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str = "",
+        images: list[dict[str, str]],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> ProviderResponse:
+        """Sendet Bilddaten ueber die offizielle OpenAI Responses API."""
+
+        if not self.supports_images:
+            raise ProviderError(f"{self.name}: Bilddaten werden nicht unterstuetzt.")
+
+        content: list[dict[str, str]] = [{"type": "input_text", "text": prompt}]
+        for image in images:
+            media_type = str(image.get("media_type") or "image/png").strip().lower()
+            encoded = str(image.get("data") or "").strip()
+            if not media_type.startswith("image/") or not encoded:
+                raise ProviderError(f"{self.name}: ungueltige Bilddaten.")
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{media_type};base64,{encoded}",
+                }
+            )
+
+        input_items: list[dict[str, Any]] = []
+        if system_prompt:
+            input_items.append({"role": "system", "content": system_prompt})
+        input_items.append({"role": "user", "content": content})
+        payload = self._responses_payload(
+            input_items,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        started = self._now()
+        data = await self._request_json(
+            f"{self._base_url}/responses",
+            payload=payload,
+            headers=self._headers(),
+        )
+        return self._response_from_responses_data(
+            data, latency=self._now() - started
+        )
+
+    async def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str]:
+        """Streamt OpenAI-Responses-Deltas, damit der Orb frueh sprechen kann."""
+
+        if self._api_style != "responses":
+            async for piece in super().chat_stream(
+                messages, temperature=temperature, max_tokens=max_tokens
+            ):
+                yield piece
+            return
+
+        payload = self._responses_payload(
+            [message.to_dict() for message in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        timeout = httpx.Timeout(
+            timeout=self._timeout,
+            connect=min(self._timeout, 8.0),
+        )
+        received_text = False
+        completed_response: dict[str, Any] | None = None
+        loop = asyncio.get_running_loop()
+        first_deadline = loop.time() + self._first_token_timeout
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                request = client.build_request(
+                    "POST",
+                    f"{self._base_url}/responses",
+                    json=payload,
+                    headers=self._headers(),
+                )
+                try:
+                    response = await asyncio.wait_for(
+                        client.send(request, stream=True),
+                        timeout=self._first_token_timeout,
+                    )
+                except asyncio.TimeoutError as error:
+                    raise ProviderError(
+                        f"{self.name}: keine Antwortverbindung innerhalb von "
+                        f"{self._first_token_timeout:.0f} s."
+                    ) from error
+
+                try:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode(
+                            "utf-8", errors="replace"
+                        )
+                        raise ProviderError(
+                            f"{self.name}: HTTP {response.status_code} - {body[:500]}"
+                        )
+
+                    iterator = response.aiter_lines()
+                    event_name = ""
+                    while True:
+                        remaining = (
+                            max(0.01, first_deadline - loop.time())
+                            if not received_text
+                            else self._timeout
+                        )
+                        try:
+                            line = await asyncio.wait_for(
+                                anext(iterator), timeout=remaining
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError as error:
+                            message = (
+                                "kein erstes Textstueck rechtzeitig erhalten"
+                                if not received_text
+                                else "Antwortstrom ist stehen geblieben"
+                            )
+                            raise ProviderError(f"{self.name}: {message}.") from error
+
+                        stripped = line.strip()
+                        if not stripped:
+                            event_name = ""
+                            continue
+                        if stripped.startswith("event:"):
+                            event_name = stripped[6:].strip()
+                            continue
+                        if not stripped.startswith("data:"):
+                            continue
+                        raw = stripped[5:].strip()
+                        if not raw or raw == "[DONE]":
+                            continue
+                        try:
+                            event = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+
+                        event_type = str(event.get("type") or event_name)
+                        if event_type == "response.output_text.delta":
+                            delta = str(event.get("delta") or "")
+                            if delta:
+                                received_text = True
+                                yield delta
+                        elif event_type == "response.completed":
+                            candidate = event.get("response")
+                            if isinstance(candidate, dict):
+                                completed_response = candidate
+                        elif event_type in {
+                            "response.failed",
+                            "response.incomplete",
+                            "error",
+                        }:
+                            detail = event.get("error") or event.get("response") or event
+                            # Ein abgeschnittener Satz ist immer noch eine
+                            # Antwort. Wurde bereits Text gesprochen, endet
+                            # der Strom hier ruhig, statt den ganzen Zug als
+                            # Fehlschlag zu werfen - der Benutzer hat den
+                            # Anfang schliesslich schon gehoert.
+                            if received_text:
+                                logger.info(
+                                    "%s: Der Antwortstrom wurde abgeschnitten "
+                                    "(%s). Der bereits gesprochene Teil bleibt "
+                                    "stehen.",
+                                    self.name,
+                                    str(
+                                        (detail or {}).get("incomplete_details")
+                                        if isinstance(detail, dict)
+                                        else detail
+                                    )[:120],
+                                )
+                                break
+                            raise ProviderError(
+                                f"{self.name}: Responses-Stream fehlgeschlagen - "
+                                f"{str(detail)[:500]}"
+                            )
+                finally:
+                    await response.aclose()
+        except ProviderError:
+            raise
+        except (httpx.HTTPError, OSError) as error:
+            raise ProviderError(
+                f"{self.name}: Streaming abgebrochen - {error}"
+            ) from error
+
+        if not received_text and completed_response is not None:
+            final_text = self._responses_text(completed_response)
+            if final_text:
+                received_text = True
+                yield final_text
+        if not received_text:
+            raise ProviderError(
+                f"{self.name}: der Antwortstrom endete ohne sichtbaren Text."
+            )

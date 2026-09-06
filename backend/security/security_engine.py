@@ -94,19 +94,60 @@ class SecurityEngine:
 
         #: Berechtigungen, die ohne Frage gelten, weil der Benutzer sie in
         #: der Konfiguration vorab erteilt hat.
-        self._preapproved: set[str] = {
+        #:
+        #: Kritische Berechtigungen sind hiervon ausgenommen, und zwar
+        #: bewusst. Eine Zeile in der config.yaml darf nicht aufheben, was
+        #: die Selbstverbesserung dem Benutzer zusagt: uebernommen wird nur,
+        #: was er antippt. ``permissions.py`` verbietet fuer kritische Rechte
+        #: bereits das Merken einer Zustimmung; eine Vorabfreigabe waere
+        #: dasselbe in dauerhaft. Was hier abgelehnt wird, steht im
+        #: Protokoll und in ``status()`` - stillschweigend verschwindet
+        #: nichts.
+        gewuenscht_vorab = {
             str(name).strip().lower()
             for name in (config.get("security.pre_approved", []) or [])
         }
+        self._preapproved: set[str] = set()
+        #: Vorabfreigaben, die wegen ihrer Einstufung nicht gelten.
+        self._preapproved_rejected: set[str] = set()
+        for _name in sorted(gewuenscht_vorab):
+            _permission = get_permission(_name)
+            if _permission is not None and _permission.risk is RiskLevel.CRITICAL:
+                self._preapproved_rejected.add(_name)
+                continue
+            self._preapproved.add(_name)
+
+        if self._preapproved_rejected:
+            logger.warning(
+                "Vorabfreigabe fuer kritische Berechtigungen ignoriert: %s. "
+                "Kritische Aktionen werden weiterhin jedes Mal einzeln "
+                "erfragt. Wer sie wirklich ohne Rueckfrage will, muss dafuer "
+                "'security.mode: offen' setzen - und weiss dann, was er tut.",
+                ", ".join(sorted(self._preapproved_rejected)),
+            )
 
         if self.is_open:
-            logger.warning(
-                "Sicherheitsschicht im OFFENEN Modus: alle %d Berechtigungen gelten "
-                "ohne Rückfrage, es gibt keine Pfadsperren. Umgestellt wird das mit "
-                "'security.mode: geschuetzt' in config.yaml. Was geschieht, steht "
-                "weiterhin im Prüfprotokoll.",
-                len(KNOWN_PERMISSIONS),
-            )
+            # Unübersehbar, und zwar mit Absicht.
+            #
+            # Der offene Modus hebt ALLES auf: Rückfragen, Pfadsperren, die
+            # Liste des Unerlaubten - auch für kritische Rechte wie
+            # modify_own_code. Er ist eine legitime Entscheidung des
+            # Benutzers und wird deshalb nicht heimlich geändert. Aber er
+            # darf nicht wie eine Nebensächlichkeit im Protokoll stehen,
+            # sonst weiss nach zwei Wochen niemand mehr, dass er gilt.
+            for zeile in (
+                "=" * 72,
+                "ACHTUNG: Die Sicherheitsschicht laeuft im OFFENEN Modus.",
+                f"  Alle {len(KNOWN_PERMISSIONS)} Berechtigungen gelten ohne "
+                "Rueckfrage - auch die kritischen",
+                "  (system_commands, delete_files, send_email, modify_own_code).",
+                "  Es gibt keine Pfadsperren und keine Liste des Unerlaubten.",
+                "  Geaendert wird das mit 'security.mode: geschuetzt' in der "
+                "config.yaml.",
+                "  Was geschieht, steht weiterhin im Pruefprotokoll.",
+                "=" * 72,
+            ):
+                logger.error("%s", zeile)
         else:
             logger.info(
                 "Sicherheitsschicht bereit: %d Berechtigungen bekannt, %d gesperrt, "
@@ -185,7 +226,14 @@ class SecurityEngine:
                 context,
             )
 
-        if permission.risk is RiskLevel.SAFE or permission.name in self._preapproved:
+        # Die zweite Haelfte dieser Bedingung schliesst kritische Rechte
+        # noch einmal ausdruecklich aus. Die Liste ist beim Aufbau schon
+        # bereinigt; hier steht die Pruefung trotzdem, weil diese Zeile
+        # darueber entscheidet, ob ueberhaupt gefragt wird.
+        if permission.risk is RiskLevel.SAFE or (
+            permission.name in self._preapproved
+            and permission.risk is not RiskLevel.CRITICAL
+        ):
             self.audit.record(
                 AuditEntry(
                     event="permission.granted",
@@ -365,9 +413,12 @@ class SecurityEngine:
         """Gesamtstatus der Sicherheitsschicht."""
 
         return {
+            "modus": self.mode,
+            "offener_modus": self.is_open,
             "known_permissions": len(KNOWN_PERMISSIONS),
             "never_allow": sorted(self._blocked),
             "pre_approved": sorted(self._preapproved),
+            "pre_approved_rejected": sorted(self._preapproved_rejected),
             "consent": self.consent.status(),
             "audit": self.audit.summary(),
             "paths": self.paths.status(),

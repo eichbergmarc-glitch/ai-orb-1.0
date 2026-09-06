@@ -8,15 +8,62 @@ welcher Provider aktiv ist und wann automatisch umgeschaltet wird.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass, field
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from backend.orchestrator.providers.base_provider import BaseProvider
 from backend.system.logging_setup import get_logger
 
 logger = get_logger(__name__)
+
+
+DEFAULT_CONNECTIVITY_HOSTS = (
+    "api.anthropic.com",
+    "api.openai.com",
+    "speech.platform.bing.com",
+)
+
+
+async def internet_reachable(
+    *,
+    hosts: Sequence[str] = DEFAULT_CONNECTIVITY_HOSTS,
+    timeout_seconds: float = 1.5,
+) -> bool:
+    """Prueft das Netz kurz, ohne einen Cloud-Modellaufruf zu verbrauchen.
+
+    ``claude --version`` beweist nur, dass das Programm installiert ist. Es
+    funktioniert auch bei gezogenem Netzwerkkabel. Ein kurzer TCP-Aufbau zu
+    mehreren tatsaechlich verwendeten Cloud-Diensten unterscheidet diesen
+    Fall, ohne Text oder Zugangsdaten zu uebertragen. Ein einzelner
+    erreichbarer Host genuegt; gesperrte Hersteller-Domains werden dadurch
+    nicht faelschlich als kompletter Internetausfall gewertet.
+    """
+
+    timeout = max(0.2, float(timeout_seconds))
+
+    async def _probe(host: str) -> bool:
+        writer: asyncio.StreamWriter | None = None
+        try:
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(str(host), 443),
+                timeout=timeout,
+            )
+            return True
+        except (OSError, asyncio.TimeoutError):
+            return False
+        finally:
+            if writer is not None:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
+
+    if not hosts:
+        return True
+    results = await asyncio.gather(*(_probe(host) for host in hosts))
+    return any(results)
 
 
 @dataclass
@@ -84,7 +131,12 @@ class ProviderHealth:
     #: automatische Rueckkehr kurz genug, ohne lokale Antworten zu stoeren.
     UNAVAILABLE_RETRY_INTERVAL = 300.0
 
-    def __init__(self, interval_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        interval_seconds: float = 60.0,
+        *,
+        connectivity_check: Callable[[], bool | Awaitable[bool]] | None = None,
+    ) -> None:
         self._interval = max(10.0, interval_seconds)
         self._vertrauensdauer = self.VERTRAUENSDAUER
         self._max_interval = max(self._interval, self.MAX_INTERVAL)
@@ -94,6 +146,8 @@ class ProviderHealth:
         self._on_change: Any | None = None
         self._allowed_names: set[str] | None = None
         self._busy_check: Callable[[], bool] | None = None
+        self._connectivity_check = connectivity_check
+        self._network_available: bool | None = None
 
     def register(self, provider: BaseProvider) -> None:
         """Nimmt einen Provider in die Überwachung auf."""
@@ -148,8 +202,26 @@ class ProviderHealth:
         if len(entry.latencies) > 50:
             entry.latencies.pop(0)
 
-    def note_error(self, name: str, *, timeout: bool = False) -> None:
-        """Vermerkt eine fehlgeschlagene Anfrage."""
+    def note_error(
+        self, name: str, *, timeout: bool = False, fatal: bool = False
+    ) -> None:
+        """Vermerkt eine fehlgeschlagene Anfrage.
+
+        Args:
+            timeout: Der Fehlschlag war ein Zeitlimit.
+            fatal: Der Fehlschlag wiederholt sich mit Sicherheit. Eine
+                abgelaufene Anmeldung oder ein ungueltiger Schluessel
+                heilen nicht dadurch, dass man es gleich noch einmal
+                versucht - anders als ein Aussetzer im Netz. Solche
+                Fehler zaehlen deshalb sofort und nicht erst beim
+                zweiten Mal.
+
+        Die Regel "zwei Fehlschlaege" ist fuer Aussetzer richtig: ein
+        einzelner Abbruch soll keinen funktionierenden Anbieter aus der
+        Reihe werfen. Fuer einen belegten Dauerfehler ist sie falsch - sie
+        kostet dem Benutzer einen zweiten vollen Fehlversuch, dessen
+        Ausgang schon feststeht.
+        """
 
         entry = self.record(name)
         entry.total_requests += 1
@@ -157,8 +229,33 @@ class ProviderHealth:
         entry.consecutive_failures += 1
         if timeout:
             entry.total_timeouts += 1
+        if fatal:
+            entry.available = False
+            # Ein belegter Befund, keine Vermutung: ``_ist_bekannt_gestoert``
+            # darf sich darauf stuetzen, ohne auf einen zweiten Fehlschlag
+            # zu warten.
+            entry.last_check = time.time()
+            return
         if entry.consecutive_failures >= 2:
             entry.available = False
+
+    def note_network_unavailable(self) -> None:
+        """Markiert alle Cloud-Provider nach einem zentralen Netzausfall.
+
+        Das ist kein einzelner Modellfehler und braucht deshalb nicht erst
+        zwei Fehlschlaege. Lokale Provider bleiben unveraendert. Die naechste
+        periodische Pruefung erkennt die Rueckkehr des Netzes und prueft die
+        Cloud-Anbieter dann trotz ihrer normalen Sperrfrist sofort erneut.
+        """
+
+        self._network_available = False
+        checked_at = time.time()
+        for name, provider in self._providers.items():
+            if provider.is_local:
+                continue
+            entry = self.record(name)
+            entry.available = False
+            entry.last_check = checked_at
 
     async def check_now(self, *, force: bool = False) -> dict[str, bool]:
         """Prüft alle registrierten Provider einmalig.
@@ -183,14 +280,53 @@ class ProviderHealth:
                 if self._allowed_names is None or name in self._allowed_names
             }
 
+        # Cloud-CLIs koennen lokal voll funktionsfaehig aussehen, obwohl das
+        # Netz fehlt. Vor deren teuren Prozess-/API-Pruefungen wird deshalb
+        # einmal zentral und mit kurzer Frist die Verbindung geprueft.
+        # Lokale Provider werden in jedem Fall normal geprueft.
+        allowed_providers = [
+            provider
+            for name, provider in self._providers.items()
+            if self._allowed_names is None or name in self._allowed_names
+        ]
+        network_available: bool | None = None
+        network_recovered = False
+        if (
+            self._connectivity_check is not None
+            and any(not provider.is_local for provider in allowed_providers)
+        ):
+            previous_network = self._network_available
+            try:
+                checked = self._connectivity_check()
+                if asyncio.iscoroutine(checked):
+                    checked = await checked
+                network_available = bool(checked)
+                self._network_available = network_available
+                network_recovered = previous_network is False and network_available
+            except Exception:  # noqa: BLE001 - Probe darf den Orb nie blockieren.
+                logger.debug(
+                    "Zentrale Internetpruefung fehlgeschlagen; "
+                    "Provider werden einzeln geprueft.",
+                    exc_info=True,
+                )
+
         for name, provider in self._providers.items():
             if self._allowed_names is not None and name not in self._allowed_names:
                 continue
             entry = self.record(name)
             previous = entry.available
 
+            if network_available is False and not provider.is_local:
+                entry.available = False
+                entry.last_check = time.time()
+                results[name] = False
+                if previous and self._on_change is not None:
+                    await self._notify_change(name, False)
+                continue
+
             if (
                 not force
+                and not (network_recovered and not provider.is_local)
                 and not entry.available
                 and entry.last_check > 0
                 and (jetzt - entry.last_check) < self.UNAVAILABLE_RETRY_INTERVAL
@@ -209,7 +345,21 @@ class ProviderHealth:
             # Rechenzeit ist der Zufall: Faellt so eine Pruefung mit einer
             # Frage zusammen, wartet der Benutzer laenger, ohne dass es
             # dafuer einen Grund gibt.
-            if not force and (jetzt - entry.last_success) < self._vertrauensdauer:
+            # ... aber nur, solange seither nichts schiefgegangen ist.
+            #
+            # Ohne die Fehlerbedingung war diese Abkuerzung eine
+            # Wiederbelebung: ``note_error`` hatte den Anbieter nach zwei
+            # Fehlschlaegen gerade auf nicht verfuegbar gesetzt, und die
+            # naechste Runde setzte ihn ungeprueft wieder auf verfuegbar,
+            # weil die letzte gelungene Antwort noch keine fuenf Minuten
+            # zurueckliegt. Der Orb schaltete daraufhin auf den soeben
+            # gescheiterten Anbieter zurueck und flatterte zwischen beiden.
+            # Wer Fehler gemeldet hat, wird jetzt wirklich gefragt.
+            if (
+                not force
+                and entry.consecutive_failures == 0
+                and (jetzt - entry.last_success) < self._vertrauensdauer
+            ):
                 entry.available = True
                 results[name] = True
                 continue

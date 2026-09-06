@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tagebuch</title>
+<style>
+  :root {
+    --papier: #f7f2e8;
+    --karte: #fffdf7;
+    --tinte: #2e2a24;
+    --nebentinte: #8a7f6e;
+    --linie: #e0d6c3;
+    --akzent: #8c1d18;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--papier);
+    color: var(--tinte);
+    font-family: Georgia, "Times New Roman", serif;
+    line-height: 1.65;
+  }
+  .buch {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 3rem 1.5rem 4rem;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 3px double var(--linie);
+  }
+  header h1 {
+    font-size: 2.4rem;
+    letter-spacing: 0.08em;
+    margin: 0 0 0.4rem;
+    font-weight: normal;
+  }
+  header .untertitel {
+    color: var(--nebentinte);
+    font-style: italic;
+  }
+  .uebersicht {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin: 1.75rem 0 0;
+  }
+  .kennzahl {
+    padding: 0.8rem 0.5rem;
+    border: 1px solid var(--linie);
+    border-radius: 8px;
+    background: rgba(255, 253, 247, 0.7);
+  }
+  .kennzahl strong { display: block; font-size: 1.35rem; font-weight: normal; }
+  .kennzahl span { color: var(--nebentinte); font-size: 0.78rem; text-transform: uppercase; letter-spacing: .08em; }
+  nav { text-align: center; margin: -1rem 0 2.5rem; }
+  nav a {
+    display: inline-block;
+    color: var(--akzent);
+    text-decoration: none;
+    border-bottom: 1px solid var(--linie);
+    margin: 0 .4rem;
+    padding: .15rem .35rem;
+  }
+  .jahr {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    color: var(--nebentinte);
+    margin: 2.8rem 0 1.5rem;
+    font-size: 1.35rem;
+    letter-spacing: .12em;
+  }
+  .jahr::before, .jahr::after { content: ""; height: 1px; background: var(--linie); flex: 1; }
+  .tag { margin: 2.2rem 0; }
+  .tag h2 {
+    font-size: 1.15rem;
+    font-weight: normal;
+    font-variant: small-caps;
+    letter-spacing: 0.06em;
+    color: var(--akzent);
+    border-bottom: 1px solid var(--linie);
+    padding-bottom: 0.3rem;
+    margin: 0 0 1rem;
+  }
+  .eintrag {
+    background: var(--karte);
+    border: 1px solid var(--linie);
+    border-radius: 6px;
+    padding: 1.1rem 1.4rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 1px 3px rgba(60, 45, 20, 0.08);
+  }
+  .eintrag .uhrzeit {
+    float: right;
+    color: var(--nebentinte);
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+  .eintrag h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.05rem;
+  }
+  .eintrag p { margin: 0.5rem 0; text-align: justify; hyphens: auto; }
+  .eintrag p:first-letter { }
+  .tagebuchbild { margin: 1.2rem 0 .25rem; }
+  .tagebuchbild img {
+    display: block;
+    width: 100%;
+    max-height: 34rem;
+    object-fit: contain;
+    border-radius: 5px;
+    box-shadow: 0 2px 10px rgba(45, 34, 19, .16);
+  }
+  .tagebuchbild figcaption {
+    margin-top: .45rem;
+    color: var(--nebentinte);
+    font-size: .78rem;
+    text-align: center;
+  }
+  .leer {
+    text-align: center;
+    color: var(--nebentinte);
+    font-style: italic;
+    margin-top: 3rem;
+  }
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 3px double var(--linie);
+    text-align: center;
+    color: var(--nebentinte);
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+  @media print {
+    .eintrag { box-shadow: none; break-inside: avoid; }
+    body { background: white; }
+  }
+  @media (max-width: 34rem) {
+    .buch { padding: 2rem 1rem 3rem; }
+    .eintrag .uhrzeit { float: none; margin-bottom: .35rem; }
+  }
+</style>
+</head>
+<body>
+<div class="buch">
+  <header>
+    <h1>Tagebuch</h1>
+    <div class="untertitel">aufgeschrieben vom Orb, Wort f&uuml;r Wort</div>
+    <div class="uebersicht"><div class="kennzahl"><strong>4</strong><span>Einträge</span></div><div class="kennzahl"><strong>3</strong><span>Tage</span></div><div class="kennzahl"><strong>1</strong><span>Jahre</span></div></div>
+  </header>
+  <nav aria-label="Jahre"><a href="#jahr-2026">2026</a></nav>
+  <div class="jahr" id="jahr-2026"><span>2026</span></div><section class="tag"><h2>Mittwoch, 26. August 2026</h2><article class="eintrag"><div class="uhrzeit">12:00 Uhr</div><p>Heute habe ich das MTi26 Triage-System neu gebaut. Zudem habe ich eine Strategie entwickelt, wie ich es im Spital langen Tal testen konnte. Tatiana ist nach Bern gegangen. Ich hoffe, sie wird nicht erst sehr spät nach Hause gekommen. Ich bin mit Mio alleine jetzt. Wir gehen jetzt nach draußen und machen einen kleinen Spaziergang. Des Weiteren bin ich am Tradingbot am Arbeiten. Er hat eine Backtestfunktion und so rechnet er vorher aus, ob er Gewinn erzielen wird, bevor er mit dem Echtgeld arbeitet. Auch dieses Projekt ist sehr vielversprechend und ich werde er weiter dran leiden.</p></article></section><section class="tag"><h2>Dienstag, 25. August 2026</h2><article class="eintrag"><div class="uhrzeit">14:06 Uhr</div><p>Heute habe ich ein neues DJ Set zusammengestellt. Mit meinem AI-Orbassistenten bin ich dabei, ihn weiterzuentwickeln. Offline mit Olamah läuft er noch nicht so mit. Also eigentlich gar nicht. Ich bin noch mehr rausfinden, weil anders liegen könnte. Natürlich braucht er viel Rechenleistung und ohne Internet ist das wohl schwierig umzusetzen. Mit der Stimme bin ich aber schon relativ zufrieden. Auch offline funktioniert diese recht gut.</p></article></section><section class="tag"><h2>Montag, 24. August 2026</h2><article class="eintrag"><div class="uhrzeit">23:09 Uhr</div><p>Ich bin nun seit etwa einem Monat daran, meinen Orbassistenten auszubauen. Er hat mittlerweile schon sehr viele Fehligkeiten. Unter anderem kann er ganze Vorlesungen in verschiedenen Fächern abhalten, inklusive Präsentationen. Er kann den Internet brauchen. Er muss er öffnen, er kann Internet suchen durchführen und er kann ... Mit einer guten Sprachausgabe sprechen. Aktuell nutze ich dazu Klood und Antropik sowie eine Eleven-Labs-Stimme. Für den Offline-Betrieb werde ich Olama verwenden und versuche die Stimme zu klonen, also das Stimm bei... Ein Beispiel, das ich von 11 Labs verwende, auf ein lokales zu übertragen. Das habe ich aber noch nicht fertig gebracht bis jetzt. Auch ein Problem ist es, dass wenn der lokal läuft mit Olamah, er noch viel zu langsam ist. Dann werde ich nun noch arbeiten.</p></article><article class="eintrag"><div class="uhrzeit">23:07 Uhr</div><p>Ich bin nun etwa seit einem Monat an meinem Orb-Assistenten am Arbeiten. Er hat bereits sehr viele Funktionen, wie zum Beispiel er kann ganze Vorlesungen in verschiedenen Fächern abhalten, inklusive Präsentation, er kann ein Windows-Browser öffnen, er kann Programme öffnen und steuern und er kann selbstständig Tagebuch Einträge, Schreiben, Unterstellen. Es hat mich bisher viel Zeit gebraucht und ich habe auch viel Zeit damit verschwendet, weil ich die richtige Stimme lange nicht gefunden habe. Aktuell verwende ich eine Stimme von 11 Labs und diese werde ich klonen da. Im Offline-Modus läuft er mit Olamah und einem Modell von Olamah präspektive mit zwei Modellen. Einem kleineren, damit er sofort Antwort geben kann und einem größeren, damit er recherchieren kann für komplexere Themen.</p></article></section>
+  <footer>4 Eintr&auml;ge &middot; Stand: Mittwoch, 26. August 2026</footer>
+</div>
+</body>
+</html>

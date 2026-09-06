@@ -32,6 +32,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 
 from backend.integrations.kalender.client import KalenderClient, KalenderFehler, Termin
+from backend.integrations.kalender.zeit import ortszeit
 from backend.system.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -46,6 +47,12 @@ def _satz(termin: Termin, minuten: int, jetzt: datetime) -> str:
 
     wovon = termin.titel or "Ein Termin"
     ort = f" - {termin.ort}" if termin.ort else ""
+    beginn = (
+        ortszeit(termin.beginn, zeitzone=termin.zeitzone)
+        if termin.beginn is not None
+        else None
+    )
+    jetzt = ortszeit(jetzt, zeitzone=termin.zeitzone)
 
     if minuten <= 0:
         return f"{wovon} beginnt jetzt{ort}."
@@ -57,11 +64,11 @@ def _satz(termin: Termin, minuten: int, jetzt: datetime) -> str:
         stunden = round(minuten / 60)
         return f"In {stunden} Stunden: {wovon}{ort}."
 
-    if termin.beginn is not None and (termin.beginn.date() - jetzt.date()).days == 1:
+    if beginn is not None and (beginn.date() - jetzt.date()).days == 1:
         if termin.ganztags:
             return f"Morgen: {wovon}{ort}."
-        uhr = termin.beginn.minute
-        zeit = f"{termin.beginn.hour} Uhr" + (f" {uhr}" if uhr else "")
+        uhr = beginn.minute
+        zeit = f"{beginn.hour} Uhr" + (f" {uhr}" if uhr else "")
         return f"Morgen um {zeit}: {wovon}{ort}."
     return f"Bald: {wovon}{ort}."
 
@@ -150,7 +157,7 @@ class Terminerinnerung:
         if not self._client.ist_bereit:
             return []
 
-        jetzt = datetime.now().astimezone()
+        jetzt = ortszeit()
         try:
             termine = await asyncio.to_thread(
                 self._client.termine,

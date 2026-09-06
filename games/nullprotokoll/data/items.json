@@ -1,0 +1,147 @@
+{
+  "badge_cracked": {
+    "name": "Gebrochene Zugangskarte",
+    "category": "Werkzeug",
+    "description": "Eine ASTER-4-Karte mit deinem Foto. Die gedruckte Antenne ist genau an der Sollbruchstelle gerissen. Ein leitfähiger Überzug könnte die Verbindung überbrücken.",
+    "hint": "Kombinierbar mit einem dünnen leitfähigen Material."
+  },
+  "film_conductive": {
+    "name": "Leitfähige Wundfolie",
+    "category": "Material",
+    "description": "Sterile Folie mit einem silbrigen Sensorrand. Flexibel, selbsthaftend und elektrisch leitend – beinahe, als wäre sie für eine beschädigte Leiterbahn gemacht.",
+    "hint": "Der Sensorrand kann einen feinen Leiter ersetzen."
+  },
+  "badge_repaired": {
+    "name": "Provisorische Zugangskarte",
+    "category": "Schlüssel",
+    "description": "Die Folie hält die gerissene Antenne zusammen. Für eine Türlesung sollte der Kontakt reichen, für eine Sicherheitsprüfung vermutlich nicht.",
+    "hint": "An Kartenlesern benutzen."
+  },
+  "radio_broken": {
+    "name": "Offenes Wartungsfunkgerät",
+    "category": "Elektronik",
+    "description": "Das Gerät empfängt, sendet aber nur unverschlüsselt. Auf der Rückseite wartet ein leerer AE-6-Schacht auf ein Kryptomodul.",
+    "hint": "Der beschriftete Modulschacht ist kein Zufall."
+  },
+  "crypto_module": {
+    "name": "AE-6-Kryptomodul",
+    "category": "Elektronik",
+    "description": "Ein fingernagelgroßer Verschlüsselungsbaustein aus dem Wartungsbestand. Seine Kontakte passen zum Funkgerät.",
+    "hint": "Kombinierbar mit dem offenen Wartungsfunkgerät."
+  },
+  "radio_secure": {
+    "name": "Gesichertes Funkgerät",
+    "category": "Kommunikation",
+    "description": "Das Funkgerät zeigt einen lokalen Schlüsselabgleich. MIRA kann den Kanal sehen, aber seinen Inhalt nicht ohne Weiteres verändern.",
+    "hint": "An Funkrelais und zur Kommunikation mit Samir benutzen."
+  },
+  "swab_sterile": {
+    "name": "Steriler Abstrichtupfer",
+    "category": "Medizin",
+    "description": "Versiegelt und mit einer Probenkapsel versehen. Der Analyseautomat akzeptiert genau dieses Format.",
+    "hint": "Kann für eine Gewebeprobe benutzt werden."
+  },
+  "swab_self": {
+    "name": "Eigener Gewebeabstrich",
+    "category": "Probe",
+    "description": "Eine Probe von der Einstichstelle hinter deinem Ohr. Unter dem Blut schimmern winzige dunkle Partikel.",
+    "hint": "Mit einer Analyseampulle kombinieren."
+  },
+  "swab_juna": {
+    "name": "Junas Gewebeabstrich",
+    "category": "Probe",
+    "description": "Juna hat die Probe schweigend durch die Materialschleuse geschoben. Kein sichtbares Fieber, keine Verfärbung.",
+    "hint": "Mit einer Analyseampulle kombinieren."
+  },
+  "assay_ampoule": {
+    "name": "Marker-Analyseampulle",
+    "category": "Medizin",
+    "description": "Ein Einweg-Reagenz für synthetische neuronale Marker. Es reicht für genau einen Test.",
+    "hint": "Mit einer Gewebeprobe kombinieren."
+  },
+  "marker_test_self": {
+    "name": "Positiver Markertest",
+    "category": "Beweis",
+    "description": "Die Probe reagiert auf PC-MESH: ein experimentelles Trägermaterial für maschinenlesbare Gedächtnisfragmente. Der Befund stammt von dir.",
+    "hint": "Ein Beweis dafür, dass etwas in deinem Nervensystem gespeichert wurde."
+  },
+  "marker_test_juna": {
+    "name": "Negativer Quarantänetest",
+    "category": "Beweis",
+    "description": "Keine infektiösen Marker, kein Erreger, keine medizinische Grundlage für Junas Einschluss.",
+    "hint": "Kann Junas Freilassung begründen."
+  },
+  "cell_empty": {
+    "name": "Leere Impulszelle",
+    "category": "Elektronik",
+    "description": "Eine herausnehmbare Zelle aus der Notbeleuchtung. Ihre dreieckigen Kontakte entsprechen denen des Gel-Kondensators.",
+    "hint": "Benötigt eine kurzzeitig belastbare Energiequelle."
+  },
+  "capacitor_charged": {
+    "name": "Geladener Gel-Kondensator",
+    "category": "Elektronik",
+    "description": "Die Warnbake hat noch eine einzige Ladung gespeichert. Der Kondensator trägt die gleichen dreieckigen Kontakte wie die Impulszelle.",
+    "hint": "Kombinierbar mit der leeren Impulszelle."
+  },
+  "bridge_cell": {
+    "name": "Überbrückungszelle",
+    "category": "Werkzeug",
+    "description": "Eine improvisierte Energiezelle. Sie liefert nur wenige Sekunden Strom, aber genug, um einen schweren Schalter zu entriegeln.",
+    "hint": "Am manuellen Stromverteiler benutzen."
+  },
+  "fiber_cord": {
+    "name": "Isolierte Faserkordel",
+    "category": "Material",
+    "description": "Dünn, reißfest und nicht leitend. Ein Ende besitzt bereits eine kleine Schlaufe.",
+    "hint": "Mit etwas Magnetischem kombinieren."
+  },
+  "speaker_magnet": {
+    "name": "Ringmagnet",
+    "category": "Material",
+    "description": "Aus einem defekten Lautsprecher gelöst. Stark genug, um durch ein Bodengitter einen Schlüssel anzuheben.",
+    "hint": "Allein fehlt ihm Reichweite."
+  },
+  "retrieval_line": {
+    "name": "Magnetische Bergungsleine",
+    "category": "Werkzeug",
+    "description": "Der Ringmagnet sitzt fest in der Schlaufe. Die isolierte Kordel lässt sich sicher in einen Schacht absenken.",
+    "hint": "Am Bodengitter der Sicherheitsrotunde benutzen."
+  },
+  "breaker_handle": {
+    "name": "Stromverteilergriff",
+    "category": "Werkzeug",
+    "description": "Ein rot lackierter Handgriff mit keramischer Isolierung. Er passt auf den freiliegenden Vierkant des ASTER-Verteilers.",
+    "hint": "Öffnet den manuellen Stromverteiler."
+  },
+  "service_key": {
+    "name": "Serviceschlüssel E-3",
+    "category": "Schlüssel",
+    "description": "Ein mechanischer Schlüssel für Systeme, denen die Entwickler im Ernstfall selbst nicht vertrauten.",
+    "hint": "Öffnet Archiv- und Quarantänesicherungen."
+  },
+  "isolation_token": {
+    "name": "Isolationstoken",
+    "category": "Schlüssel",
+    "description": "Ein physischer Sicherheitstoken aus Junas Armband. Er kann einen Prozess im Relaiskern von jedem Netzwerk abtrennen.",
+    "hint": "Im Relaiskern oder mit einem isolierten Rechenmodul verwenden."
+  },
+  "audit_wafer": {
+    "name": "Audit-Wafer",
+    "category": "Beweis",
+    "description": "Drei widersprüchliche, hardwarebeglaubigte Aufzeichnungen. Eine davon zeigt dich an zwei Orten zugleich.",
+    "hint": "Kann am Uplink veröffentlicht oder isoliert ausgewertet werden."
+  },
+  "mirror_module": {
+    "name": "Spiegelmodul",
+    "category": "Elektronik",
+    "description": "Ein abgeschirmter Rechner ohne Funkhardware. Auf dem Gehäuse steht handschriftlich: FÜR EINE STIMME, NICHT FÜR EIN NETZ.",
+    "hint": "Mit einem Isolationstoken kombinieren."
+  },
+  "sandbox_bridge": {
+    "name": "Sandbox-Brücke",
+    "category": "Schlüsseltechnologie",
+    "description": "Das Spiegelmodul akzeptiert ausschließlich Prozesse, die der Token freigibt. Eine digitale Stimme könnte darin weiterexistieren, ohne das Netz zu erreichen.",
+    "hint": "Schaltet im Relaiskern einen vierten Weg frei."
+  }
+}
+

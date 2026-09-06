@@ -24,6 +24,8 @@ darf.
 from __future__ import annotations
 
 import asyncio
+import uuid
+from collections import OrderedDict
 import concurrent.futures
 import contextlib
 import threading
@@ -93,8 +95,15 @@ class Runtime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
+        #: Ob ``_boot`` durchgelaufen ist - nicht nur der Faden steht.
+        self._boot_fertig = False
+        #: Startschritte, die nicht geklappt haben: Name -> Grund.
+        self.startfehler: dict[str, str] = {}
         self._started_at = 0.0
         self.background_tasks = BackgroundTaskManager()
+        #: Laufende Sprechauftraege fuer Geraete ohne eigenen Orb.
+        #: Aelteste fliegen zuerst hinaus - siehe AUFTRAEGE_MERKEN.
+        self._sprechauftraege: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 
         # --- Schicht 0: Sicherheit -------------------------------------------
         # Kommt vor allem anderen. Jedes Modul, das mehr tut als antworten,
@@ -201,6 +210,27 @@ class Runtime:
             neustart=self.neustarter,
         )
         self.tools.register_many(build_development_tools(self.live_development))
+        # Abgewiesene Werkzeuge sind ein Startfehler, keine Randnotiz.
+        #
+        # Achtzehn Tage lang wies das Register 'internet_suchen' bei jedem
+        # Start ab, weil dort die Berechtigung "internet" stand statt
+        # "network". Der Orb lief, meldete sich gesund und hatte keine
+        # Websuche. Genau das soll ab jetzt auffallen: Der Eintrag steht in
+        # startfehler, geht in SYSTEM_READY mit und laesst die
+        # Startpruefung rot werden.
+        abgewiesen = self.tools.abgewiesene()
+        if abgewiesen:
+            beschreibung = "; ".join(
+                f"{eintrag['name']} ({eintrag['grund']})" for eintrag in abgewiesen
+            )
+            self.startfehler["Werkzeuge"] = beschreibung
+            logger.error(
+                "%d Werkzeug(e) konnten nicht angemeldet werden: %s. Der Orb "
+                "ist unvollstaendig.",
+                len(abgewiesen),
+                beschreibung,
+            )
+
         self.tool_engine = ToolEngine(
             registry=self.tools,
             security=self.security,
@@ -293,6 +323,78 @@ class Runtime:
                 security=self.security,
             )
         )
+
+        # Das Studium: Studienplan, Einstufung, Vorlesung mit Präsentation.
+        #
+        # Der Anschluss steht HIER und nicht irgendwo - denn genau daran ist
+        # der Vorgänger gestorben. Der alte Professor-Apparat unter
+        # ``backend/agents/history_agent`` hatte 3.500 Zeilen und keinen
+        # Werkzeugnamen, den ein Sprachmodell hätte aufrufen können. Er hat
+        # seit dem 09.08.2026 dreimal gefeuert. Was ein Modell nicht
+        # aufrufen kann, gibt es für den Benutzer nicht.
+        from backend.studium.lernstand import Lernstand
+        from backend.tools.studium_tools import build_studium_tools
+
+        self.lernstand = Lernstand()
+
+        # Das Aktuellhalten: Der Benutzer hat es woertlich verlangt - "Der
+        # Orb muss sich regelmaessig auf dem aktuellen Wissensstand aller
+        # Themenbereiche halten, aktuelle Publikationen kennen und
+        # ebenfalls in sein Gedaechtnis aufnehmen." Der Kreislauf selbst
+        # startet in _boot; hier entsteht nur das Geraet, damit die
+        # Werkzeuge seine Funde zeigen koennen.
+        from backend.studium.aktualisierung import Aktualisierung
+
+        self.aktualisierung = Aktualisierung(
+            abstand_tage=float(
+                self.config.get("studium.aktualisierung_abstand_tage", 7)
+            ),
+            # kind="publikation": Das Vergessen laesst diese Eintraege
+            # stehen. Als "knowledge" verschwanden sie nach der
+            # Halbwertszeit wieder - der Kreislauf trug ein, was er
+            # anschliessend selbst wieder verlor.
+            merken=lambda text, quelle: self.memory.remember(
+                text,
+                kind="publikation",
+                tags=["fachliteratur"],
+                source=quelle,
+                force=True,
+            ),
+        )
+        self.tools.register_many(
+            build_studium_tools(self.lernstand, self.aktualisierung)
+        )
+
+        # Die Karteikarten - endlich auch als Werkzeug.
+        #
+        # Der Stapel wurde beim Start immer angelegt (self.flashcards),
+        # aber nie angemeldet. Was nicht in der Werkzeugliste steht,
+        # existiert fuer das Sprachmodell nicht: Der Orb konnte abgestufte
+        # Wiederholungen fuehren und kam nicht an sie heran. Genau hier lag
+        # die Luecke zwischen "Lernstand und Karteikarten existieren" und
+        # der Vorgabe "Mentor und Professor".
+        from backend.tools.karteikarten_tools import build_karteikarten_tools
+
+        self.tools.register_many(build_karteikarten_tools(self.flashcards))
+
+        # Das Tagebuch: diktierte Eintraege, wortgetreu aufbewahrt und als
+        # gestaltete Seite jederzeit nachlesbar (Wunsch vom 20.08.2026).
+        # Die Ablage steht auf der Schutzliste, und data/ verlaesst den
+        # Rechner nie - ein Tagebuch ist Privatsache.
+        from backend.tagebuch import Tagebuch, _dokumente_ordner
+        from backend.tools.tagebuch_tools import build_tagebuch_tools
+        from backend.utils.paths import get_data_dir as _daten
+
+        # Die Ablage (Wahrheit) liegt geschuetzt in den Anwendungsdaten,
+        # das LESBARE Buch bei den Dokumenten des Benutzers - ein echtes
+        # Tagebuch muss sich ohne den Orb aufschlagen lassen.
+        self.tagebuch = Tagebuch(ordner=_daten(), lese_ordner=_dokumente_ordner())
+        self.tools.register_many(build_tagebuch_tools(self.tagebuch))
+
+        # Und das Mitlesen: Der Orchestrator sieht jede Aeusserung, und
+        # dort wird abgelesen, wo der Benutzer steht - im Gespraech, nicht
+        # in einem Test.
+        self.orchestrator.attach_lernstand(self.lernstand)
         # Der Lehrplan: die Gebiete, die sich der Benutzer gewuenscht hat.
         #
         # Eingetragen werden FRAGEN, keine Stichworte. Ein Thema wie
@@ -352,21 +454,34 @@ class Runtime:
         # beim ersten Gebrauch geladen; fehlt es, meldet das Werkzeug es
         # ruhig, statt den Start zu gefaehrden.
         if bool(self.config.get("browser.enabled", True)):
-            from backend.browser.steuerung import Browsersteuerung
-            from backend.tools.browser_tools import build_browser_tools
-            from backend.utils.paths import get_project_root
+            # Gekapselt, weil die Browsersteuerung an etwas haengt, das
+            # ausserhalb des Orb liegt: Playwright und ein installierter
+            # Chrome. Fehlt eines davon oder ist das Profil beschaedigt,
+            # scheiterte bisher der GANZE Aufbau - kein Gedaechtnis, keine
+            # Stimme, kein Orb, wegen einer Browsererweiterung.
+            try:
+                from backend.browser.steuerung import Browsersteuerung
+                from backend.tools.browser_tools import build_browser_tools
+                from backend.utils.paths import get_project_root
 
-            standard_profil = get_project_root() / "models" / "browser-profil"
-            self.browsersteuerung = Browsersteuerung(
-                profil_pfad=Path(
-                    self.config.get("browser.profil_pfad", str(standard_profil))
-                ),
-                sichtbar=bool(self.config.get("browser.sichtbar", True)),
-                cdp_url=str(self.config.get("browser.cdp_url", "") or ""),
-                kanal=str(self.config.get("browser.kanal", "chrome") or "chrome"),
-                zeitlimit_ms=int(self.config.get("browser.zeitlimit_ms", 15000)),
-            )
-            self.tools.register_many(build_browser_tools(self.browsersteuerung))
+                standard_profil = get_project_root() / "models" / "browser-profil"
+                self.browsersteuerung = Browsersteuerung(
+                    profil_pfad=Path(
+                        self.config.get("browser.profil_pfad", str(standard_profil))
+                    ),
+                    sichtbar=bool(self.config.get("browser.sichtbar", True)),
+                    cdp_url=str(self.config.get("browser.cdp_url", "") or ""),
+                    kanal=str(self.config.get("browser.kanal", "chrome") or "chrome"),
+                    zeitlimit_ms=int(self.config.get("browser.zeitlimit_ms", 15000)),
+                )
+                self.tools.register_many(build_browser_tools(self.browsersteuerung))
+            except Exception:  # noqa: BLE001 - ohne Browser laeuft der Rest weiter.
+                self.browsersteuerung = None
+                logger.exception(
+                    "Die Browsersteuerung liess sich nicht aufbauen. AI-Orb "
+                    "laeuft ohne sie weiter; Internetsuche und Seitenlesen "
+                    "gehen unabhaengig davon."
+                )
 
         # Sich etwas ueber den Benutzer merken - und es spaeter benutzen.
         # Die zweite Haelfte davon steckt im Cognitive Core, der das
@@ -377,6 +492,7 @@ class Runtime:
         # beauftragt. Zugangsdaten eingerichtet, alles fertig - und der Orb
         # konnte trotzdem keine einzige Mail lesen. Hier bekommt er den
         # kurzen Weg, ohne den Umweg ueber das Team.
+        self.gmail = None
         try:
             from backend.agents.gmail_agent import GmailAgent
             from backend.tools.gmail_tools import build_gmail_tools
@@ -423,7 +539,6 @@ class Runtime:
                     )
             except Exception:  # noqa: BLE001 - ohne Kalender laeuft der Rest weiter.
                 logger.exception("Die Kalender-Werkzeuge liessen sich nicht anmelden.")
-            self.gmail = None
 
         from backend.tools.memory_tools import build_memory_tools
 
@@ -516,10 +631,14 @@ class Runtime:
                 yield response.response
             return
 
-        system = (
-            "Du bist AI-Orb, ein gesprochener Assistent. Antworte natuerlich "
-            "und knapp, in ganzen Saetzen, ohne Aufzaehlungen oder "
-            "Formatierung - deine Antwort wird vorgelesen. Erfinde nichts."
+        # Auch dieser schnelle Weg bekommt dieselbe Persona wie der
+        # gewoehnliche Denkweg. Ein eigener Kurzprompt liess den Orb bisher
+        # je nach Route ploetzlich anders sprechen.
+        base_prompt = str(self.config.get("conversation.system_prompt", ""))
+        system = self.presence.system_prompt(base=base_prompt)
+        system += (
+            "\n\nDiese Antwort wird unmittelbar vorgelesen. Fasse dich bei einer "
+            "einfachen Frage kurz und benutze keine sichtbare Formatierung."
         )
         messages = [
             ChatMessage(role="system", content=system),
@@ -644,29 +763,92 @@ class Runtime:
         """Haelt Modell- und Sprach-Offlinebetrieb synchron."""
 
         payload = getattr(event, "payload", {}) or {}
-        self.voice.set_offline_mode(bool(payload.get("offline", False)))
+        # Auch der automatische Ollama-Ersatz muss sofort die lokale Stimme
+        # verwenden. Zuvor galt das nur nach dem ausdruecklichen Sprachbefehl
+        # "Offlinebetrieb"; bei echtem Netzausfall wartete die Stimme weiter
+        # nacheinander auf Cloud-Dienste.
+        self.voice.set_offline_mode(
+            bool(
+                payload.get("offline", False)
+                or payload.get("temporary_local_fallback", False)
+            )
+        )
+
+    async def _schritt(self, name: str, arbeit: Coroutine[Any, Any, Any]) -> bool:
+        """Führt einen Startschritt aus und überlebt sein Scheitern.
+
+        Vorher standen die Startschritte ungeschützt hintereinander. Riss
+        einer - ein Anbieter ohne Schlüssel, ein Plugin mit Tippfehler -,
+        endete ``_boot`` mitten im Ablauf: kein SYSTEM_READY, keine
+        Wartungsschleife, keine Sprachsteuerung. Der Faden aber lebte, und
+        ``is_running()`` sagte weiterhin ja. Der Wächter sah einen gesunden
+        Kern, der Benutzer einen tauben Orb.
+
+        Jetzt scheitert ein Schritt für sich allein. Was er hätte
+        beitragen sollen, fehlt - der Rest fährt hoch, und was fehlt,
+        steht im Protokoll und in ``self.startfehler``.
+        """
+
+        try:
+            await arbeit
+            return True
+        except Exception as fehler:  # noqa: BLE001 - ein Schritt darf nichts mitreissen.
+            self.startfehler[name] = f"{type(fehler).__name__}: {fehler}"
+            logger.exception(
+                "Der Startschritt '%s' ist fehlgeschlagen. AI-Orb fährt ohne "
+                "ihn hoch.",
+                name,
+            )
+            return False
 
     async def _boot(self) -> None:
         """Führt alle asynchronen Startschritte aus."""
 
-        await self.providers.start()
-        await self.agents.test_all()
-        await self.skills.load_active()
-        await self.plugins.load_enabled()
+        # Nur die Schritte dieses Laufs zuruecksetzen. Was schon beim
+        # Aufbau schiefging (etwa abgewiesene Werkzeuge), bleibt stehen -
+        # sonst loescht der Start genau die Meldung, die er tragen soll.
+        for _schrittname in ("Anbieter", "Agenten", "Fertigkeiten", "Erweiterungen"):
+            self.startfehler.pop(_schrittname, None)
 
-        await self.event_bus.publish(
-            event_types.SYSTEM_READY,
-            {
-                "version": __version__,
-                "provider": self.providers.active_name,
-                "agents": self.agents.registry.names(),
-                "tools": self.tools.names(),
-            },
-        )
+        await self._schritt("Anbieter", self.providers.start())
+        await self._schritt("Agenten", self.agents.test_all())
+        await self._schritt("Fertigkeiten", self.skills.load_active())
+        await self._schritt("Erweiterungen", self.plugins.load_enabled())
+
+        if self.startfehler:
+            logger.warning(
+                "AI-Orb ist mit %d unvollständigen Startschritten oben: %s",
+                len(self.startfehler),
+                ", ".join(sorted(self.startfehler)),
+            )
+
+        with contextlib.suppress(Exception):
+            await self.event_bus.publish(
+                event_types.SYSTEM_READY,
+                {
+                    "version": __version__,
+                    "provider": self.providers.active_name,
+                    "agents": self.agents.registry.names(),
+                    "tools": self.tools.names(),
+                    # Ehrlich statt beruhigend: Wer hier nachsieht, erfährt,
+                    # was beim Start nicht geklappt hat.
+                    "startfehler": dict(self.startfehler),
+                },
+            )
+
+        self._boot_fertig = True
 
         self.background_tasks.create("ai-orb-maintenance", self._maintenance_loop())
         if bool(self.config.get("learning.autonomous", True)):
             self.background_tasks.create("ai-orb-lernen", self._lernschleife())
+        if bool(self.config.get("studium.aktualisierung", True)):
+            self.background_tasks.create(
+                "ai-orb-aktuell", self._aktualisierungsschleife()
+            )
+        if bool(self.config.get("nachrichten.taeglich", True)):
+            self.background_tasks.create(
+                "ai-orb-nachrichten", self._nachrichtenschleife()
+            )
 
         # Der Blick in den Kalender. Erst hier und nicht im Aufbau: Dort gibt
         # es noch keine laufende Schleife, in die sich eine Daueraufgabe
@@ -741,6 +923,77 @@ class Runtime:
             except Exception:  # noqa: BLE001 - Lernen darf den Kern nicht stoppen.
                 logger.exception("Fehler beim selbststaendigen Weiterlernen.")
 
+    async def _nachrichtenschleife(self) -> None:
+        """Der tägliche Blick in die Welt.
+
+        Die Vorgabe verlangt ihn, die Quellen gab es, der Aufrufer fehlte:
+        GDELT und die RSS-Feeds waren ausschliesslich über eine Frage des
+        Benutzers erreichbar. Politik, Wirtschaft und Weltlage wurden nie
+        von selbst geholt - die Vorgabe war damit nicht halb erfüllt,
+        sondern gar nicht.
+
+        Der Lauf startet nichts beim Hochfahren: Er wartet, bis die
+        eingestellte Uhrzeit erreicht ist. Nur der erste Lauf darf, wenn
+        gewünscht, kurz nach dem Start kommen - damit ein frisch
+        eingerichteter Orb nicht bis zum nächsten Morgen so aussieht, als
+        täte er nichts.
+        """
+
+        from backend.research.nachrichtenlauf import Nachrichtenlauf
+
+        themen = self.config.get("nachrichten.themen", None)
+        self.nachrichten = Nachrichtenlauf(
+            memory=self.memory,
+            event_bus=self.event_bus,
+            themen=list(themen) if isinstance(themen, list) else None,
+            uhrzeit=str(self.config.get("nachrichten.uhrzeit", "07:30")),
+            hoechstens=int(self.config.get("nachrichten.hoechstens", 8)),
+        )
+
+        if bool(self.config.get("nachrichten.beim_start", True)):
+            # Nicht sofort: Der Start hat Wichtigeres zu tun, als
+            # Zeitungen zu lesen.
+            await asyncio.sleep(
+                max(30.0, float(self.config.get("nachrichten.start_verzoegerung", 180)))
+            )
+            try:
+                await self.nachrichten.einmal_laufen()
+            except Exception:  # noqa: BLE001 - der erste Lauf darf scheitern.
+                logger.exception("Der erste Nachrichtenlauf ist gescheitert.")
+
+        await self.nachrichten.schleife()
+
+    async def _aktualisierungsschleife(self) -> None:
+        """Hält die Themen der Landkarte auf dem Stand der Forschung.
+
+        Ein Thema je Takt, die beruehrten zuerst. Bewusst ein EIGENER
+        Takt, getrennt von Wartung und Lernschleife: Zwei Anfragen an
+        offene Wissenschaftskataloge alle halbe Stunde sind hoeflich;
+        alles auf einmal waere Stossbetrieb - und genau der hat dem Orb
+        bei Wikimedia schon einmal 429er eingebracht.
+        """
+
+        takt = max(
+            120.0,
+            float(self.config.get("studium.aktualisierung_takt_sekunden", 1800)),
+        )
+        while True:
+            await asyncio.sleep(takt)
+            try:
+                beruehrte = {
+                    feld: self.lernstand.beruehrt(feld)
+                    for feld in self.lernstand.uebersicht()
+                }
+                ziel = self.aktualisierung.naechstes(beruehrte)
+                if ziel is None:
+                    continue
+                # Blockierendes urllib gehoert nicht in die Ereignisschleife.
+                await asyncio.to_thread(
+                    self.aktualisierung.auffrischen, ziel[0], ziel[1]
+                )
+            except Exception:  # noqa: BLE001 - Pflege darf den Kern nicht stoppen.
+                logger.exception("Fehler beim Aktuellhalten der Landkarte.")
+
     async def _offene_frage_bearbeiten(self) -> None:
         """Geht einer offenen Frage nach, wenn gerade niemand etwas will.
 
@@ -765,7 +1018,12 @@ class Runtime:
 
         if not bool(self.config.get("learning.autonomous", True)):
             return
-        if getattr(self.voice, "is_busy", False):
+        # Hintergrundlernen darf nie mit einem Gespraech um denselben
+        # Provider konkurrieren. Frueher wurde hier ``is_busy`` abgefragt,
+        # diese Eigenschaft existierte an der VoicePipeline aber nicht. Das
+        # defensive getattr lieferte dadurch immer False und alle sieben
+        # Minuten konnte ein Lernlauf die Benutzerantwort ausbremsen.
+        if not getattr(self.voice, "background_idle", False):
             return
 
         naechste = self.themenlerner.naechste_luecke()
@@ -796,6 +1054,43 @@ class Runtime:
         if self._loop is None or self._thread is None:
             return False
         return self._thread.is_alive() and self._loop.is_running()
+
+    def kern_gesund(self) -> bool:
+        """Ob der Kern lebt UND fertig hochgefahren ist.
+
+        Das ist die Frage, die der Wächter eigentlich stellen wollte.
+        ``is_running()`` beantwortet nur, ob sich die Schleife dreht - ein
+        Kern, der beim Hochfahren steckengeblieben ist, dreht sich fröhlich
+        weiter und meldete deshalb „gesund".
+
+        Mit Schonfrist, und die ist wichtig: Der Wächter schaut alle fünf
+        Sekunden nach. Ohne Frist würde er jeden normalen Start für einen
+        Ausfall halten und einen laufenden Startvorgang abschiessen. Erst
+        ein Start, der nach Minuten nicht fertig ist, IST ein Ausfall.
+        """
+
+        if not self.is_running():
+            return False
+        if self._boot_fertig:
+            return True
+        frist = float(self.config.get("system.boot_timeout_seconds", 300))
+        return (time.time() - self._started_at) < max(30.0, frist)
+
+    def gesundheit(self) -> dict[str, Any]:
+        """Der ehrliche Zustand des Kerns, für Wächter und Anzeige.
+
+        ``is_running()`` beantwortet nur die halbe Frage - dreht sich die
+        Schleife noch? Ein Kern, der beim Hochfahren mitten im Ablauf
+        stehengeblieben ist, dreht sich fröhlich weiter und kann trotzdem
+        nichts. Deshalb steht hier beides.
+        """
+
+        return {
+            "laeuft": self.is_running(),
+            "hochgefahren": self._boot_fertig,
+            "startfehler": dict(self.startfehler),
+            "seit": self._started_at,
+        }
 
     def stop(self) -> None:
         """Fährt AI-Orb geordnet herunter."""
@@ -839,6 +1134,20 @@ class Runtime:
         self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+
+        # Aufräumen, sonst ist der Neustart eine Attrappe.
+        #
+        # ``start()`` kehrt sofort zurück, solange ``_thread`` gesetzt ist,
+        # und ``get_runtime()`` gibt dieselbe Instanz zurück. Ohne diese
+        # drei Zeilen tat der Neustart des Wächters also nichts: Er rief
+        # stop(), rief start(), bekam ein wortloses Nichts - und meldete
+        # danach zu Recht, der Kern laufe nicht. Nach drei solchen
+        # Versuchen galt der Kern als endgültig ausgefallen, obwohl ihn nie
+        # jemand wirklich neu gestartet hatte.
+        self._loop = None
+        self._thread = None
+        self._ready.clear()
+        self._boot_fertig = False
         logger.info("AI-Orb Kern beendet.")
 
     # --- Ausführung aus anderen Threads ----------------------------------------
@@ -885,6 +1194,320 @@ class Runtime:
         """Verarbeitet eine Benutzereingabe über das Cognitive Core."""
 
         return await self.cognitive.process(text)
+
+    #: Wieviel Text hoechstens gesprochen wird.
+    #:
+    #: Frueher standen hier 1500 Zeichen, und der Rest wurde nur
+    #: geschrieben. Das war eine Notbremse gegen Wartezeit: Damals
+    #: entstand die gesamte Antwort, bevor das erste Wort kam. Seit die
+    #: Stuecke einzeln und auf Abruf entstehen, gibt es diesen Grund
+    #: nicht mehr - wer eine Vorlesung hoeren will, soll eine Vorlesung
+    #: hoeren. Die Zahl bleibt als Schutz vor Ausreissern stehen, aber
+    #: so hoch, dass sie im Alltag nie greift.
+    SPRECH_GRENZE = 50000
+
+    #: Wieviele Auftraege aufgehoben werden.
+    AUFTRAEGE_MERKEN = 4
+
+    #: Laenge des ersten Stuecks. Bewusst sehr kurz: Auf dieses eine
+    #: Stueck wartet der Mensch, alle weiteren entstehen waehrend er
+    #: zuhoert. Die Stimme braucht etwa 0,8 Sekunden je Sekunde Ton -
+    #: neunzig Zeichen sind rund vier Sekunden Arbeit, dreihundert waeren
+    #: vierzehn. Genau das war der Unterschied zwischen "antwortet" und
+    #: "haengt".
+    ERSTES_STUECK = 90
+
+    #: Laenge der folgenden Stuecke. Groesser, weil jeder Aufruf der
+    #: Stimme einen festen Aufschlag hat und hier niemand mehr wartet.
+    WEITERE_STUECKE = 220
+
+    #: Was den Chat oeffnet. Bewusst mehrere Formulierungen: Niemand
+    #: merkt sich einen Wortlaut, und Whisper hoert selten zweimal
+    #: dasselbe.
+    CHAT_AUF = (
+        "chat aktivieren", "chat oeffnen", "chat öffnen", "chat einschalten",
+        "chat anzeigen", "chat an", "chat sichtbar", "zeig den chat",
+        "zeige den chat", "zeig mir den chat", "chatfenster aktivieren",
+        "chatfenster oeffnen", "chatfenster öffnen", "chatfenster anzeigen",
+    )
+
+    #: Und was ihn wieder schliesst.
+    CHAT_ZU = (
+        "chat schliessen", "chat schließen", "chat ausschalten", "chat aus",
+        "chat zu", "chat verbergen", "chat ausblenden", "chatfenster schliessen",
+        "chatfenster schließen", "chatfenster zu",
+    )
+
+    @staticmethod
+    def _befehl_erkennen(text: str) -> str:
+        """Erkennt einen Bedienbefehl - oder gibt eine leere Zeichenkette.
+
+        Wird hier etwas erkannt, geht die Frage **nicht** an das Modell.
+        Ein Befehl soll sofort wirken; ihn erst überlegen zu lassen wäre
+        eine Denkpause für etwas, das keine Frage ist.
+        """
+
+        knapp = text.strip().lower().strip(".!?,;: ")
+        # Ohne diese Zeile scheitert "Chat aktivieren." an dem Punkt, den
+        # Whisper ans Ende setzt, und "chat  aktivieren" an dem doppelten
+        # Leerzeichen, das beim Zoegern entsteht.
+        knapp = " ".join(knapp.split())
+
+        if knapp in Runtime.CHAT_AUF:
+            return "chat_auf"
+        if knapp in Runtime.CHAT_ZU:
+            return "chat_zu"
+        return ""
+
+    @staticmethod
+    def _fuers_sprechen(text: str, grenze: int) -> tuple[str, bool]:
+        """Kuerzt einen Text auf ein hoerbares Mass."""
+
+        if len(text) <= grenze:
+            return text, False
+
+        ausschnitt = text[:grenze]
+        ende = max(ausschnitt.rfind(". "), ausschnitt.rfind("! "), ausschnitt.rfind("? "))
+        if ende > grenze // 3:
+            return ausschnitt[: ende + 1], True
+        return ausschnitt.rstrip() + " …", True
+
+    def _stuecke_bilden(self, text: str) -> list[str]:
+        """Zerlegt die Antwort - das erste Stück kurz, die übrigen länger."""
+
+        tts = self.voice.tts
+        aufbereitet = tts.prepare_text(text)
+        erste = tts.split_into_chunks(aufbereitet, max_characters=self.ERSTES_STUECK)
+        if not erste:
+            return [aufbereitet] if aufbereitet else []
+        if len(erste) == 1:
+            return erste
+
+        rest = " ".join(erste[1:]).strip()
+        weitere = tts.split_into_chunks(rest, max_characters=self.WEITERE_STUECKE)
+        return [erste[0]] + (weitere or [rest])
+
+    async def _teil_sprechen(self, auftrag: str, nummer: int) -> None:
+        """Erzeugt ein einzelnes Sprechstück."""
+
+        eintrag = self._sprechauftraege.get(auftrag)
+        if eintrag is None:
+            return
+
+        # Der Vermerk "wird gerade gemacht" wird beim Anstossen gesetzt.
+        # Er muss auf **jedem** Weg wieder verschwinden, auch auf den
+        # kurzen: Bliebe er stehen, gaelte das Stueck fuer immer als in
+        # Arbeit, und niemand wuerde es je erzeugen.
+        try:
+            if eintrag.get("abgebrochen"):
+                return
+            if nummer in eintrag["dateien"] or nummer in eintrag["fehler"]:
+                return
+
+            try:
+                ergebnis = await self.voice.tts.speak(
+                    eintrag["teile"][nummer], emotion="freundlich"
+                )
+            except Exception as fehler:  # noqa: BLE001 - ein Stück reißt den Rest nicht mit.
+                logger.warning(
+                    "Sprechstück %d von %s scheiterte: %s", nummer, auftrag, fehler
+                )
+                eintrag["fehler"][nummer] = str(fehler)
+                return
+        finally:
+            eintrag["laeuft"].discard(nummer)
+
+        if eintrag.get("abgebrochen"):
+            return
+
+        if ergebnis.succeeded and ergebnis.audio_path is not None:
+            eintrag["dateien"][nummer] = ergebnis.audio_path.name
+        else:
+            eintrag["fehler"][nummer] = ergebnis.error or "keine Datei"
+            logger.warning(
+                "Sprechstück %d von %s ergab nichts: %s", nummer, auftrag, ergebnis.error
+            )
+
+    def _stueck_anstossen(self, auftrag: str, nummer: int) -> None:
+        """Lässt ein Stück erzeugen - höchstens eines im Voraus.
+
+        Vorher wurden alle Stücke sofort und so schnell wie möglich
+        erzeugt. Das klang nach einer guten Idee und war der schwerste
+        Fehler im ganzen Sprachweg: Die Stimme belegt sechs Rechenkerne,
+        und während sie acht Stücke am Stück herstellte, musste die
+        Spracherkennung der *nächsten* Frage sich den Rest teilen. Eine
+        Erkennung, die sonst zehn Sekunden dauert, brauchte so
+        sechsunddreißig.
+
+        Gehört wird ohnehin in Echtzeit. Ein Stück Vorsprung genügt -
+        alles darüber ist Arbeit, die niemandem nützt und der nächsten
+        Frage im Weg steht.
+        """
+
+        eintrag = self._sprechauftraege.get(auftrag)
+        if eintrag is None or eintrag.get("abgebrochen"):
+            return
+        if nummer < 0 or nummer >= len(eintrag["teile"]):
+            return
+        if nummer in eintrag["dateien"] or nummer in eintrag["fehler"]:
+            return
+        if nummer in eintrag["laeuft"]:
+            return
+
+        if self._loop is None:
+            return
+
+        # Von einem fremden Faden aus auf die Kern-Loop legen.
+        #
+        # `sprechstueck` wird vom HTTP-Server aufgerufen, und der
+        # bearbeitet jede Anfrage in einem eigenen Faden. Dort gibt es
+        # keine laufende Ereignisschleife - `create_task` scheitert
+        # zwangslaeufig mit "There is no current event loop in thread".
+        # `run_coroutine_threadsafe` ist genau dafuer da: Es reicht die
+        # Arbeit an die Loop des Kerns weiter, egal von wo aus gefragt
+        # wurde, und wartet dabei nicht.
+        eintrag["laeuft"].add(nummer)
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._teil_sprechen(auftrag, nummer), self._loop
+            )
+        except RuntimeError as fehler:
+            # Die Loop ist gerade gegangen - der Orb faehrt herunter.
+            eintrag["laeuft"].discard(nummer)
+            logger.debug("Sprechstück nicht mehr angestoßen: %s", fehler)
+
+    def sprechstueck(self, auftrag: str, nummer: int) -> tuple[str, str]:
+        """Fragt nach einem Stück und stößt das nächste an.
+
+        ``("da", name)``, ``("kommt", "")``, ``("weg", "")`` oder
+        ``("nichts", grund)``.
+        """
+
+        eintrag = self._sprechauftraege.get(auftrag)
+        if eintrag is None or eintrag.get("abgebrochen"):
+            return "weg", ""
+        if nummer < 0 or nummer >= len(eintrag["teile"]):
+            return "weg", ""
+
+        if nummer in eintrag["dateien"]:
+            # Das übernächste vorbereiten, während dieses abgespielt wird.
+            self._stueck_anstossen(auftrag, nummer + 1)
+            return "da", eintrag["dateien"][nummer]
+
+        if nummer in eintrag["fehler"]:
+            return "nichts", eintrag["fehler"][nummer]
+
+        # Noch nicht da und niemand arbeitet daran: jetzt anfangen.
+        self._stueck_anstossen(auftrag, nummer)
+        return "kommt", ""
+
+    async def _auftrag_anlegen(self, stuecke: "str | list[str]") -> str:
+        """Legt einen Sprechauftrag an und erzeugt sein erstes Stück.
+
+        Auf dieses eine Stück wartet der Mensch; alle weiteren entstehen
+        später und nur auf Abruf.
+        """
+
+        if isinstance(stuecke, str):
+            stuecke = self._stuecke_bilden(stuecke) or [stuecke]
+
+        auftrag = uuid.uuid4().hex[:12]
+        self._sprechauftraege[auftrag] = {
+            "teile": stuecke,
+            "dateien": {},
+            "fehler": {},
+            "laeuft": set(),
+            "abgebrochen": False,
+        }
+        while len(self._sprechauftraege) > self.AUFTRAEGE_MERKEN:
+            self._sprechauftraege.popitem(last=False)
+
+        await self._teil_sprechen(auftrag, 0)
+        return auftrag
+
+    def _alte_auftraege_abbrechen(self) -> None:
+        """Beendet das Sprechen der vorigen Antwort.
+
+        Wer eine neue Frage stellt, hat die alte Antwort abgehakt. Ihre
+        restlichen Stücke weiter zu erzeugen kostet genau die Rechenzeit,
+        die die neue Frage braucht.
+        """
+
+        for eintrag in self._sprechauftraege.values():
+            eintrag["abgebrochen"] = True
+
+    async def stimme_vom_geraet(self, aufnahme: Path) -> dict[str, Any]:
+        """Eine Aufnahme von einem anderen Gerät: erkennen, antworten, sprechen.
+
+        Das Mikrofon sitzt im iPad, und die Antwort soll dort zu hören
+        sein, nicht aus Lautsprechern, vor denen niemand steht.
+
+        Gesprochen wird stückweise und auf Abruf: Das erste, bewusst
+        kurze Stück entsteht sofort, jedes weitere erst, wenn das
+        vorherige abgeholt wird.
+
+        Args:
+            aufnahme: Eine WAV-Datei, 16 kHz, einkanalig.
+
+        Returns:
+            Was verstanden wurde, was geantwortet wird, und woher die
+            Sprechstücke zu holen sind.
+        """
+
+        # Zuerst die alte Antwort verstummen lassen - sonst rechnet die
+        # Stimme noch, während die Erkennung schon anfängt.
+        self._alte_auftraege_abbrechen()
+
+        transcript = await self.voice.transcriber.transcribe(aufnahme)
+        frage = transcript.text.strip()
+
+        if not frage:
+            logger.info("Aufnahme vom Gerät enthielt keine erkennbare Sprache.")
+            return {"frage": "", "antwort": "", "auftrag": "", "teile": 0,
+                    "grund": "nichts_erkannt"}
+
+        befehl = self._befehl_erkennen(frage)
+        if befehl:
+            logger.info("Bedienbefehl vom Gerät: %s (%s)", frage, befehl)
+            bestaetigung = "Chat ist offen." if befehl == "chat_auf" else "Chat ist zu."
+            auftrag = await self._auftrag_anlegen(bestaetigung)
+            return {
+                "frage": frage,
+                "antwort": bestaetigung,
+                "befehl": befehl,
+                "auftrag": auftrag,
+                "teile": 1,
+                "sicherheit": round(transcript.confidence, 3),
+            }
+
+        logger.info("Frage vom Gerät: %s", frage)
+
+        antwort = await self.cognitive.process(frage, spoken=True)
+        text = str(getattr(antwort, "response", "") or "").strip()
+
+        if not text:
+            return {"frage": frage, "antwort": "", "auftrag": "", "teile": 0}
+
+        gesprochen, gekuerzt = self._fuers_sprechen(text, self.SPRECH_GRENZE)
+        stuecke = self._stuecke_bilden(gesprochen) or [gesprochen]
+        auftrag = await self._auftrag_anlegen(stuecke)
+
+        logger.info(
+            "Antwort für das Gerät: %d Zeichen in %d Stück(en), erstes %d Zeichen%s",
+            len(text),
+            len(stuecke),
+            len(stuecke[0]),
+            " (gekürzt gesprochen)" if gekuerzt else "",
+        )
+
+        return {
+            "frage": frage,
+            "antwort": text,
+            "auftrag": auftrag,
+            "teile": len(stuecke),
+            "gekuerzt": gekuerzt,
+            "sicherheit": round(transcript.confidence, 3),
+        }
 
     def status(self) -> dict[str, Any]:
         """Gesamtstatus von AI-Orb für die Transparenzansicht."""

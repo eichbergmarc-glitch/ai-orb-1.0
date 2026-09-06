@@ -17,7 +17,7 @@ deshalb nicht nur ein Ja oder Nein, sondern bei einem Nein auch den Grund
 und den nächsten Schritt.
 
 Unterschieden wird zwischen **notwendig** und **entbehrlich**. Ohne das
-Backend läuft nichts – ohne Kokoro schon. Ein entbehrlicher Ausfall führt zu
+Backend läuft nichts – ohne Sprachausgabe schon. Ein entbehrlicher Ausfall führt zu
 einer Warnung, nicht zum Abbruch. Das ist dieselbe Haltung wie in Phase 58:
 Nicht sofort den ganzen Orb beenden, wenn nur ein optionales Modul
 ausgefallen ist.
@@ -531,18 +531,43 @@ class HealthCheck:
 
         from backend.events.event_bus import EventBus
         from backend.security.security_engine import SecurityEngine
+        from backend.tools.registry import ToolRegistry
         from backend.tools.standard_tools import build_standard_tools
 
-        namen: set[str] = set()
+        # Gebaut UND angemeldet.
+        #
+        # Vorher wurde hier nur die Liste gebaut und nach Namen gesehen.
+        # Das ging achtzehn Tage lang gut und war trotzdem blind: Ein
+        # Werkzeug kann vorhanden sein und vom Register abgewiesen werden -
+        # 'internet_suchen' verlangte die Berechtigung "internet", die es
+        # nicht gibt. Gebaut war es, angemeldet nie, und diese Pruefung war
+        # gruen. Deshalb wird jetzt wirklich registriert.
+        register = ToolRegistry()
         try:
-            for werkzeug in build_standard_tools(security=SecurityEngine(EventBus())):
-                namen.add(getattr(werkzeug, "name", ""))
+            register.register_many(
+                build_standard_tools(security=SecurityEngine(EventBus()))
+            )
         except Exception as error:  # noqa: BLE001
             return (
                 CheckState.WARNING,
                 "nicht aufbaubar",
                 f"Die Werkzeugliste liess sich nicht aufbauen ({error}). "
                 "Der Orb antwortet, kann aber vielleicht nicht handeln.",
+            )
+
+        namen: set[str] = set(register.names())
+        abgewiesen = register.abgewiesene()
+        if abgewiesen:
+            beschreibung = "; ".join(
+                f"{eintrag['name']}: {eintrag['grund']}" for eintrag in abgewiesen
+            )
+            return (
+                CheckState.FAILED,
+                "abgewiesen",
+                f"{len(abgewiesen)} Werkzeug(e) wurden vom Register "
+                f"abgewiesen und fehlen dem Orb vollstaendig - {beschreibung}. "
+                "Das ist kein Schoenheitsfehler: Ein abgewiesenes Werkzeug "
+                "existiert fuer das Sprachmodell nicht.",
             )
 
         # bildschirm_ansehen und browser_bedienen werden erst mit ihren
@@ -598,14 +623,39 @@ class HealthCheck:
         der Benutzer es erst im Gespräch merkt.
         """
 
+        import concurrent.futures
+
+        from backend.config import get_config
         from backend.tools.web_tools import _Suchfehler, search_web
 
+        # Mit Frist. Der Prüflauf hängt an fremden Diensten, und ein
+        # Suchdienst, der heute langsam ist, darf den Start des Orb nicht
+        # aufhalten. Läuft die Frist ab, gilt die Suche als ungeklärt - die
+        # Antwort kommt dann eben im Betrieb, bei einer echten Frage.
+        frist = float(get_config().get("launcher.suchpruefung_frist", 12.0))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        auftrag = pool.submit(search_web, "Testabfrage Bundesregierung", limit=2)
+        pool.shutdown(wait=False)
+
         try:
-            treffer = search_web("Testabfrage Bundesregierung", limit=2)
+            treffer = auftrag.result(timeout=max(2.0, frist))
+        except concurrent.futures.TimeoutError:
+            return (
+                CheckState.WARNING,
+                "zu langsam",
+                f"Die Testsuche war nach {max(2.0, frist):.0f} Sekunden noch "
+                "nicht durch. Der Start wartet nicht länger; ob die Suche "
+                "geht, zeigt die erste echte Frage.",
+            )
         except _Suchfehler as fehler:
             auskunft = {
                 "kein_netz": "kein Internet - die Suche ist offline nicht möglich.",
                 "abgewiesen": "die Suchmaschine hält die Anfrage für automatisiert.",
+                "themenfremd": (
+                    "die Suchmaschinen antworteten, aber kein Treffer passte "
+                    "zur Anfrage – das deutet auf den Suchbegriff, nicht auf "
+                    "eine Sperre."
+                ),
                 "unlesbar": "die Suchmaschine hat geantwortet, war aber nicht lesbar.",
             }.get(fehler.art, str(fehler))
             return (
@@ -674,6 +724,11 @@ class HealthCheck:
 
         config = get_config()
         host = str(config.get("backend.host", "127.0.0.1"))
+        # "0.0.0.0" heisst: auf allen Netzwerkkarten lauschen. Als Ziel
+        # einer Verbindung ist es keine Adresse. Wer dorthin verbindet,
+        # prueft nicht den eigenen Kern, sondern das Nichts.
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
         port = int(config.get("backend.port", 8756))
 
         self._run("Port", lambda: self.check_port(host, port))
@@ -691,7 +746,7 @@ class HealthCheck:
             self._run("Ollama", self.check_ollama, required=False)
             self._run("Audio", self.check_audio_devices, required=False)
             self._run("Whisper", self.check_whisper, required=False)
-            self._run("Kokoro", self.check_speech_output, required=False)
+            self._run("Sprachausgabe", self.check_speech_output, required=False)
             self._run("Memory", self.check_memory, required=False)
             self._run("Desktop", self.check_desktop, required=False)
             self._run("Human Experience", self.check_presence, required=False)

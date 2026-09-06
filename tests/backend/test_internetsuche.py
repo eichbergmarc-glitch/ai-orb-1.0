@@ -23,6 +23,7 @@ HAENGT und dass sie die drei Fehlerarten auseinanderhaelt.
 from __future__ import annotations
 
 import urllib.error
+import urllib.parse
 
 from backend.tools import web_tools
 
@@ -193,7 +194,10 @@ def test_der_zweite_zugang_rettet_die_suche(monkeypatch):
         return _MIT_KLASSEN.encode("utf-8")
 
     monkeypatch.setattr(web_tools, "_fetch", _hol)
-    treffer = web_tools.search_web("irgendwas")
+    # Die Produktionssuche verwirft inzwischen bewusst themenfremde Treffer.
+    # Deshalb muss auch dieser Infrastrukturtest nach dem Thema fragen, das
+    # seine feste HTML-Antwort tatsaechlich enthaelt.
+    treffer = web_tools.search_web("Lage im Nahen Osten")
     assert len(versuche) == 2, "Nach dem ersten Fehlschlag wurde nichts mehr versucht."
     assert treffer, "Der zweite Zugang lieferte Treffer, sie kamen aber nicht an."
 
@@ -232,7 +236,7 @@ def test_eine_abgewiesene_maschine_reicht_die_suche_weiter(monkeypatch):
         return _OHNE_KLASSEN.encode("utf-8")
 
     monkeypatch.setattr(web_tools, "_fetch", _hol)
-    treffer = web_tools.search_web("irgendwas")
+    treffer = web_tools.search_web("Lage im Nahen Osten")
     assert len(versuche) == 2, "Nach der Abweisung wurde keine zweite Maschine versucht."
     assert treffer, "Die zweite Maschine lieferte Treffer, sie kamen aber nicht an."
 
@@ -253,11 +257,20 @@ def test_werkzeugeinsaetze_stehen_im_protokoll():
     quelle = (get_project_root() / "backend" / "tools" / "tool_engine.py").read_text(
         encoding="utf-8"
     )
-    assert "logger.info(\n                \"Werkzeug '%s' ausgefuehrt" in quelle, (
+    # Geprueft wird die Eigenschaft, nicht der Wortlaut.
+    #
+    # Vorher stand hier die Log-Zeile Zeichen fuer Zeichen. Sie wurde am
+    # 01.09.2026 um die Korrelations-Kennung ergaenzt, und der Test wurde
+    # rot, obwohl genau das MEHR Protokoll ist, nicht weniger.
+    assert "logger.info(" in quelle and "Werkzeug '%s' ausgefuehrt" in quelle, (
         "Erfolgreiche Werkzeugeinsaetze stehen nicht im Protokoll."
     )
-    assert "logger.warning(\n                \"Werkzeug '%s' fehlgeschlagen" in quelle, (
+    assert "logger.warning(" in quelle and "Werkzeug '%s' fehlgeschlagen" in quelle, (
         "Fehlgeschlagene Werkzeugeinsaetze stehen nicht im Protokoll."
+    )
+    assert "_kennung()" in quelle, (
+        "Die Werkzeugzeilen tragen die Korrelations-Kennung nicht mit; "
+        "ein Zug laesst sich dann im Protokoll nicht verfolgen."
     )
 
 
@@ -416,6 +429,45 @@ def test_bing_steht_als_erste_maschine():
     assert web_tools._SUCHMASCHINEN[0].name == "Bing"
 
 
+def test_yahoo_weiterleitung_wird_aufgeloest():
+    ziel = "https://www.comparis.ch/hausrat-versicherung/privathaftpflicht"
+    kodiert = urllib.parse.quote(ziel, safe="")
+    umleitung = (
+        "https://r.search.yahoo.com/_ylt=abc/RV=2/RE=123/RO=10/"
+        f"RU={kodiert}/RK=2/RS=abc"
+    )
+    assert web_tools._resolve_yahoo_url(umleitung) == ziel
+
+
+def test_bing_rss_wird_ohne_html_heuristik_gelesen():
+    seite = """<?xml version="1.0" encoding="utf-8"?>
+    <rss version="2.0"><channel><item>
+      <title>Haftpflichtversicherung Schweiz im Vergleich</title>
+      <link>https://example.ch/versicherung</link>
+      <description>Angebote, Preise und Leistungen vergleichen.</description>
+      <pubDate>Tue, 25 Aug 2026 12:00:00 GMT</pubDate>
+    </item></channel></rss>"""
+
+    treffer = web_tools._rss_treffer(seite, 3)
+    assert treffer == [{
+        "titel": "Haftpflichtversicherung Schweiz im Vergleich",
+        "url": "https://example.ch/versicherung",
+        "beschreibung": (
+            "Angebote, Preise und Leistungen vergleichen. "
+            "[Tue, 25 Aug 2026 12:00:00 GMT]"
+        ),
+    }]
+
+
+def test_deutsche_beugung_passt_auch_zu_englischem_suchtreffer():
+    treffer = [{
+        "titel": "OpenAI models",
+        "url": "https://openai.com/models",
+        "beschreibung": "Current model overview",
+    }]
+    assert web_tools._relevante_treffer("OpenAI aktuelle Modelle", treffer)
+
+
 # =============================================================================
 #  webseite_erkunden: scrollen und Links folgen
 # =============================================================================
@@ -490,3 +542,247 @@ def test_erkunden_ohne_offene_seite_meldet_das(monkeypatch):
     r = asyncio.run(t.execute({"aktion": "weiter"}))
     assert not r.ok
     assert "keine seite" in r.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Die Suche meldete jede Anfrage als "Bot erkannt" (26.08.2026)
+# ---------------------------------------------------------------------------
+#
+# Das Protokoll des Benutzers zeigte bei JEDER Suche dieselbe Meldung:
+# "Die Suchmaschine hat meine Anfrage abgewiesen; sie haelt sie fuer
+# automatisiert." Danebenstand aber, dass Bing und Yahoo geantwortet und
+# Treffer geliefert hatten. Zwei Fehler wirkten zusammen, und die folgenden
+# Tests halten beide fest.
+
+
+def test_relevanzfilter_verlangt_hoechstens_zwei_uebereinstimmungen():
+    """Der Filter darf eine lange Anfrage nicht selbst erwuergen.
+
+    Vorher verlangte er die HAELFTE aller tragenden Woerter. Bei dem echten
+    Suchbegriff aus dem Protokoll waren das vier Woerter in EINER
+    Trefferzeile - das schafft kein Treffer, und deshalb meldeten Bing und
+    Yahoo gleichermassen "nur themenfremde Treffer".
+    """
+
+    frage = "markus gabriel nicht modellen gesprochen aktuell alle erhaelt"
+    treffer = [
+        {
+            "titel": "Markus Gabriel im Gespraech",
+            "url": "https://example.org/gabriel",
+            "beschreibung": "Der Bonner Philosoph Markus Gabriel ueber den Neuen Realismus.",
+        }
+    ]
+    assert web_tools._relevante_treffer(frage, treffer) == treffer
+
+
+def test_relevanzfilter_siebt_voellig_fremde_treffer_weiterhin_aus():
+    """Die Lockerung darf den Filter nicht wirkungslos machen."""
+
+    frage = "markus gabriel neuer realismus philosophie"
+    treffer = [
+        {
+            "titel": "VW Golf guenstig kaufen",
+            "url": "https://example.org/auto",
+            "beschreibung": "Jahreswagen und Neuwagen im Vergleich.",
+        }
+    ]
+    assert web_tools._relevante_treffer(frage, treffer) == []
+
+
+def test_die_echte_duckduckgo_sperrseite_wird_als_sperre_erkannt():
+    """Die Sperrseite aus dem Protokoll muss weiterhin als Sperre gelten."""
+
+    seite = (
+        "<html><head><title>DuckDuckGo</title></head><body>"
+        '<div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>'
+        '<div class="anomaly-modal__description">Please complete the following '
+        "challenge to confirm this search was made by a human.</div>"
+        "</body></html>"
+    ).lower()
+    assert any(wort in seite for wort in web_tools._ABWEISUNGEN)
+
+
+def test_ein_klassenname_allein_ist_keine_sperre():
+    """Ein CSS-Name wie ``anomaly-modal`` darf keine Sperre bedeuten.
+
+    Genau daran hing die falsche Meldung: Das blosse Wort "anomaly" stand
+    in der Abweisungsliste und kommt auf jeder DuckDuckGo-Seite vor.
+    """
+
+    seite = (
+        '<html><body><div class="anomaly-modal__mask"></div>'
+        '<a href="https://example.org">Ein ganz normaler Treffer</a>'
+        "<p>Werbung wurde adblocked.</p></body></html>"
+    ).lower()
+    assert not any(wort in seite for wort in web_tools._ABWEISUNGEN)
+
+
+def test_eine_antwortende_maschine_schlaegt_die_gesperrte_letzte():
+    """Nicht die zuletzt versuchte Maschine bestimmt die Diagnose.
+
+    Bing und Yahoo antworten, DuckDuckGo Lite ist gesperrt und steht
+    zuletzt. Gemeldet werden muss die weiteste erreichte Stelle - sonst
+    hoert der Benutzer "Bot erkannt", obwohl zwei Maschinen geliefert haben.
+    """
+
+    fehler = [
+        web_tools._Suchfehler("themenfremd", "Bing lieferte nur themenfremde Treffer."),
+        web_tools._Suchfehler("themenfremd", "Yahoo lieferte nur themenfremde Treffer."),
+        web_tools._Suchfehler("abgewiesen", "DuckDuckGo Lite hat die Anfrage abgewiesen."),
+    ]
+    assert web_tools._hauptursache(fehler) == "themenfremd"
+
+
+def test_ohne_jede_leitung_bleibt_es_bei_kein_netz():
+    fehler = [
+        web_tools._Suchfehler("kein_netz", "Bing war nicht erreichbar."),
+        web_tools._Suchfehler("kein_netz", "Yahoo war nicht erreichbar."),
+    ]
+    assert web_tools._hauptursache(fehler) == "kein_netz"
+
+
+def test_nur_sperren_bleiben_eine_sperre():
+    fehler = [
+        web_tools._Suchfehler("abgewiesen", "Bing antwortete mit 403."),
+        web_tools._Suchfehler("abgewiesen", "DuckDuckGo Lite hat abgewiesen."),
+    ]
+    assert web_tools._hauptursache(fehler) == "abgewiesen"
+
+
+def test_verworfene_treffer_werden_als_notweg_zurueckgegeben(monkeypatch):
+    """Lieber lose passende Treffer als eine gescheiterte Suche."""
+
+    fremde = [
+        {
+            "titel": "Etwas ganz anderes",
+            "url": "https://example.org/anderes",
+            "beschreibung": "Passt nicht zur Anfrage.",
+        }
+    ]
+
+    def nur_fremdes(maschine, query, limit):
+        return list(fremde)
+
+    monkeypatch.setattr(web_tools, "_einmal_suchen", nur_fremdes)
+    monkeypatch.setattr(
+        web_tools, "offene_suche", lambda *a, **k: ([], []), raising=False
+    )
+
+    ergebnis = web_tools.search_web("markus gabriel neuer realismus", limit=3)
+    assert ergebnis == fremde
+
+
+# ---------------------------------------------------------------------------
+# Der Suchbegriff: aus einem gesprochenen Satz wurde Wortsalat (26.08.2026)
+# ---------------------------------------------------------------------------
+
+
+def test_wer_ist_ein_fragewort_und_kein_suchbegriff():
+    """"Wer war Bismarck" darf nicht als "wer bismarck" gesucht werden."""
+
+    assert web_tools.suchbegriff_aus("Wer war Bismarck") == "bismarck"
+
+
+def test_fuellwoerter_verduennen_den_namen_nicht_mehr():
+    """Aus dem Protokoll: "nicht", "alle" zaehlten als volle Suchwoerter."""
+
+    frage = "Was hat Markus Gabriel nicht zu allen neuen Modellen gesagt?"
+    begriff = web_tools.suchbegriff_aus(frage)
+    assert "markus" in begriff and "gabriel" in begriff
+    for fuellwort in ("nicht", "allen", "gesagt"):
+        assert fuellwort not in begriff.split()
+
+
+def test_die_anfrage_bleibt_kurz_genug_um_treffer_zu_haben():
+    """Ein langer Satz darf keine zwoelfwoertrige Anfrage ergeben.
+
+    Jedes zusaetzliche Wort verlangt eine Suchmaschine mit; ab etwa einem
+    Dutzend findet sie nichts mehr, was alle erfuellt.
+    """
+
+    frage = (
+        "Hallo Orb, kannst du mir bitte sagen, wann diese Zeit ist, wo ich "
+        "die Frage mit Urkunden abgleichen kann, Startpunkt und Endpunkt "
+        "und am besten auch noch die Jahreszahlen dazu"
+    )
+    begriff = web_tools.suchbegriff_aus(frage)
+    assert len(begriff.split()) <= web_tools._HOECHSTENS_WOERTER
+
+
+def test_eigennamen_ueberleben_die_kuerzung():
+    """Grossgeschriebenes im Originalsatz ist das Thema - es muss bleiben."""
+
+    frage = (
+        "Sag mir bitte mal eben, ob Markus Gabriel in Bonn ueber den Neuen "
+        "Realismus und ueber Bewusstsein und ueber Sinnfelder gesprochen hat"
+    )
+    begriff = web_tools.suchbegriff_aus(frage)
+    assert "markus" in begriff and "gabriel" in begriff
+
+
+def test_site_filter_bleibt_unangetastet():
+    begriff = web_tools.suchbegriff_aus(
+        "Finde Studien zum Realismus site:jstor.org bitte"
+    )
+    assert "site:jstor.org" in begriff
+
+
+# ---------------------------------------------------------------------------
+# Alltagssuche: der Abbruch machte einen Suchschluessel wirkungslos
+# ---------------------------------------------------------------------------
+
+
+def test_alltagssuche_bricht_ohne_echten_webindex_weiterhin_ab(monkeypatch):
+    """Ohne Schluessel bleibt es beim ehrlichen Fehler statt Wikipedia."""
+
+    monkeypatch.setattr(web_tools, "_echter_webindex_verfuegbar", lambda: False)
+    monkeypatch.setattr(
+        web_tools,
+        "_einmal_suchen",
+        lambda maschine, query, limit: (_ for _ in ()).throw(
+            web_tools._Suchfehler("abgewiesen", f"{maschine.name} hat abgewiesen.")
+        ),
+    )
+    with pytest.raises(web_tools._Suchfehler):
+        web_tools.search_web("was kostet eine Hausratversicherung Preis", limit=3)
+
+
+def test_alltagssuche_fragt_mit_schluessel_die_offenen_quellen(monkeypatch):
+    """Mit Schluessel darf der Abbruch die beste Quelle nicht ueberspringen."""
+
+    gefragt: list[str] = []
+
+    def keine_maschine(maschine, query, limit):
+        raise web_tools._Suchfehler("abgewiesen", f"{maschine.name} hat abgewiesen.")
+
+    def offene(query, limit=6):
+        gefragt.append(query)
+        return (
+            [
+                {
+                    "titel": "Hausratversicherung Preise 2026",
+                    "url": "https://example.org/hausrat",
+                    "beschreibung": "Was eine Hausratversicherung kostet.",
+                }
+            ],
+            ["Google"],
+        )
+
+    monkeypatch.setattr(web_tools, "_echter_webindex_verfuegbar", lambda: True)
+    monkeypatch.setattr(web_tools, "_einmal_suchen", keine_maschine)
+    import backend.research.offene_quellen as oq
+
+    monkeypatch.setattr(oq, "offene_suche", offene)
+
+    treffer = web_tools.search_web("Hausratversicherung Preis kosten", limit=3)
+    assert gefragt, "Die offenen Quellen wurden gar nicht erst gefragt."
+    assert treffer and "hausrat" in treffer[0]["url"]
+
+
+def test_duckduckgo_steht_nicht_mehr_in_der_normalrotation():
+    """Eine Maschine, die zuverlaessig ein Bilderraetsel zeigt, kostet nur Zeit."""
+
+    namen = {maschine.name for maschine in web_tools._SUCHMASCHINEN}
+    assert "DuckDuckGo Lite" in namen, "Der Ausweichweg muss erhalten bleiben."
+    assert "DuckDuckGo Lite" not in web_tools.NORMALE_MASCHINEN
+    assert web_tools.NORMALE_MASCHINEN == frozenset({"Bing", "Yahoo"})

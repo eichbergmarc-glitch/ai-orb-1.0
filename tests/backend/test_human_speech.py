@@ -7,13 +7,15 @@ from backend.voice.speaker_id import Stimmprofil
 
 
 def test_denklaut_ist_sparsam_und_hat_abkuehlzeit():
-    policy = HumanSpeechPolicy(cooldown_seconds=30, minimum_words=6)
+    policy = HumanSpeechPolicy(
+        fillers_enabled=True, cooldown_seconds=30, minimum_words=6
+    )
     text = (
         "Warum ist dieser Ansatz langfristig besser und welche technischen, "
         "finanziellen und praktischen Nachteile muss ich bei der Entscheidung berücksichtigen?"
     )
 
-    assert policy.thinking_cue(text, now=100) in {"Hmm.", "Hmm, lass mich kurz überlegen."}
+    assert policy.thinking_cue(text, now=100) == "Hmm."
     assert policy.thinking_cue(text, now=110) == ""
     assert policy.thinking_cue(text, now=131) != ""
 
@@ -21,6 +23,13 @@ def test_denklaut_ist_sparsam_und_hat_abkuehlzeit():
 def test_kurze_antworten_bekommen_keinen_kuenstlichen_fuelllaut():
     policy = HumanSpeechPolicy(minimum_words=8)
     assert policy.thinking_cue("Wie spät ist es?", now=100) == ""
+
+
+def test_automatische_denkfueller_sind_standardmaessig_aus():
+    policy = HumanSpeechPolicy(minimum_words=4)
+    assert policy.thinking_cue(
+        "Analysiere diese schwierige Frage bitte sehr ausführlich.", now=100
+    ) == ""
 
 
 def test_stimmprofil_speichert_nur_nicht_rekonstruierbaren_rhythmus():

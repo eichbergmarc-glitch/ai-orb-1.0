@@ -68,17 +68,57 @@ def setup_logging() -> None:
         system_handler.setFormatter(formatter)
         root_logger.addHandler(system_handler)
 
-        if console_output:
-            console_handler = logging.StreamHandler(stream=sys.stdout)
-            console_handler.setFormatter(formatter)
-            root_logger.addHandler(console_handler)
-
+        # Die Startmeldung geht in die Datei, nicht auf den Bildschirm.
+        #
+        # Sie stand bisher am Anfang JEDER Ausgabe - auch der von
+        # "python -m backend.lernen.messen --bericht", die reines JSON sein
+        # soll. Am 01.09.2026 begann die Berichtsdatei des ersten echten
+        # Messlaufs mit "Logging initialisiert ..." und liess sich nicht
+        # einlesen. Im Systemprotokoll steht sie weiterhin, und dort gehoert
+        # sie hin: Sie interessiert bei der Fehlersuche, nicht beim Lesen
+        # eines Messberichts.
         _is_configured = True
         root_logger.info(
             "Logging initialisiert (Level=%s, Verzeichnis=%s)",
             level_name,
             logs_dir,
         )
+
+        if console_output:
+            console_handler = logging.StreamHandler(stream=_konsolenstrom())
+            console_handler.setFormatter(formatter)
+            root_logger.addHandler(console_handler)
+
+
+def _konsolenstrom():
+    """Macht die Standardausgabe unicodefest - vor allem unter Windows.
+
+    Sobald die Ausgabe dort in eine Datei umgeleitet wird, verwendet Python
+    die Gebietsschema-Kodierung (cp1252). Ein einziges Zeichen ausserhalb
+    davon laesst dann den Protokollaufruf mit ``UnicodeEncodeError``
+    abbrechen - beim echten Messlauf am 01.09.2026 belegt an der Meldung
+    "Providerwechsel: None \u2192 claude_code". Die Messung lief weiter,
+    aber jede solche Meldung warf einen Stapelauszug in die Ausgabe und
+    machte das Protokoll unlesbar.
+
+    Zwei Stufen, beide ohne Nebenwirkung, wenn sie nicht greifen:
+    erst auf UTF-8 umstellen, ersatzweise wenigstens die Fehlerbehandlung
+    auf "ersetzen" setzen. Ein Strom ohne ``reconfigure`` (etwa ein
+    umgelenkter Testpuffer) bleibt unangetastet.
+    """
+
+    strom = sys.stdout
+    umstellen = getattr(strom, "reconfigure", None)
+    if umstellen is None:
+        return strom
+    try:
+        umstellen(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - Protokollierung darf nie der Grund sein.
+        try:
+            umstellen(errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+    return strom
 
 
 def get_logger(module_name: str) -> logging.Logger:

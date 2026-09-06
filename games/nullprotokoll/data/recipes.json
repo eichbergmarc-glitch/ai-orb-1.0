@@ -1,0 +1,54 @@
+{
+  "recipes": [
+    {
+      "id": "repair_badge",
+      "puzzle_id": "puzzle_badge",
+      "inputs": ["badge_cracked", "film_conductive"],
+      "result": "badge_repaired",
+      "success_text": "Du legst den silbrigen Rand der Folie genau über den Riss. Die Kontrolllinie der Karte leuchtet einmal auf: eine improvisierte, aber saubere Brücke."
+    },
+    {
+      "id": "charge_cell",
+      "puzzle_id": "puzzle_cell",
+      "inputs": ["cell_empty", "capacitor_charged"],
+      "result": "bridge_cell",
+      "success_text": "Die dreieckigen Kontakte rasten ein. Der Kondensator entlädt sich in die Zelle; eine blaue Diode zeigt acht Sekunden nutzbare Leistung."
+    },
+    {
+      "id": "build_retrieval_line",
+      "puzzle_id": "puzzle_retrieval",
+      "inputs": ["fiber_cord", "speaker_magnet"],
+      "result": "retrieval_line",
+      "success_text": "Du ziehst die Faserschlaufe um den Ringmagneten fest. Das Ergebnis ist nicht elegant, aber lang, isoliert und erstaunlich zugkräftig."
+    },
+    {
+      "id": "secure_radio",
+      "puzzle_id": "puzzle_radio",
+      "inputs": ["radio_broken", "crypto_module"],
+      "result": "radio_secure",
+      "success_text": "Das AE-6-Modul verschwindet im Schacht. Nach einem kurzen Schlüsselabgleich wechselt die Anzeige von OFFEN auf LOKAL GESICHERT."
+    },
+    {
+      "id": "test_self",
+      "puzzle_id": "puzzle_marker_self",
+      "inputs": ["swab_self", "assay_ampoule"],
+      "result": "marker_test_self",
+      "success_text": "Das Reagenz wird schwarz. PC-MESH positiv. In deinem Gewebe liegen synthetische Partikel, die Erinnerungsmuster tragen können."
+    },
+    {
+      "id": "test_juna",
+      "puzzle_id": "puzzle_marker_juna",
+      "inputs": ["swab_juna", "assay_ampoule"],
+      "result": "marker_test_juna",
+      "success_text": "Die Ampulle bleibt klar. Junas angebliche biologische Quarantäne besitzt keine medizinische Grundlage."
+    },
+    {
+      "id": "build_sandbox",
+      "puzzle_id": "puzzle_sandbox",
+      "inputs": ["isolation_token", "mirror_module"],
+      "result": "sandbox_bridge",
+      "success_text": "Der Token verriegelt sich im Spiegelmodul. Eine grüne Linie bildet einen geschlossenen Kreis: Rechenraum ohne Ausgang."
+    }
+  ]
+}
+

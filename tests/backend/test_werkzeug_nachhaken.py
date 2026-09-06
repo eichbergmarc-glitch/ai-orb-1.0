@@ -17,7 +17,11 @@ from backend.events.event_bus import EventBus
 from backend.security.security_engine import SecurityEngine
 from backend.tools.base_tool import Tool, ToolResult
 from backend.tools.registry import ToolRegistry
-from backend.tools.tool_engine import ToolEngine, _klingt_nach_ausrede
+from backend.tools.tool_engine import (
+    ToolEngine,
+    _kompakte_vorabantwort,
+    _klingt_nach_ausrede,
+)
 from backend.orchestrator.providers.base_provider import ChatMessage
 
 
@@ -192,3 +196,49 @@ def test_vorab_ausgefuehrte_bildanalyse_wird_nicht_wiederholt():
     assert provider.aufrufe == 0
     assert runs == []
     assert "Handschrift" in antwort
+
+
+def test_vorab_suche_wird_nicht_als_rohe_url_liste_vorgelesen():
+    roh = (
+        "Treffer Eins\n    https://example.org/eins\n    Erste Beschreibung.\n\n"
+        "Treffer Zwei\n    https://example.org/zwei\n    Zweite Beschreibung.\n\n"
+        "Treffer Drei\n    https://example.org/drei\n    Dritte Beschreibung.\n\n"
+        "Treffer Vier\n    https://example.org/vier\n    Vierte Beschreibung."
+    )
+    antwort = _kompakte_vorabantwort("internet_suchen", roh)
+    assert "http" not in antwort
+    assert "Treffer Eins" in antwort
+    assert "Treffer Drei" in antwort
+    assert "Treffer Vier" not in antwort
+
+
+def test_erfolgreiche_vorab_suche_schlaegt_falsche_modellausrede():
+    provider = _FakeProvider(["darf nicht nachgefragt werden"])
+    eng, tool = _engine(provider)
+    roh = (
+        "moneyland.ch Haftpflichtversicherung Vergleich\n"
+        "    https://www.moneyland.ch/de/haftpflichtversicherung-vergleich\n"
+        "    Schweizer Versicherungen und Praemien vergleichen.\n\n"
+        "comparis.ch Privathaftpflicht\n"
+        "    https://www.comparis.ch/hausrat-versicherung/default\n"
+        "    Angebote fuer die Schweiz."
+    )
+
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(
+            messages=[],
+            first_reply=(
+                "Ich habe keinen Zugriff auf eine Internetsuche und kann "
+                "keine aktuellen Quellen nennen."
+            ),
+            actor="test",
+            preexecuted={"internet_suchen": roh},
+        )
+    )
+
+    assert provider.aufrufe == 0, "Vorhandene Treffer duerfen nicht wegdiskutiert werden."
+    assert tool.gerufen == 0
+    assert runs == []
+    assert "moneyland.ch" in antwort and "comparis.ch" in antwort
+    assert "http" not in antwort
+    assert "keinen Zugriff" not in antwort

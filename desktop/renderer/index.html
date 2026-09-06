@@ -3,15 +3,46 @@
   <head>
     <meta charset="utf-8" />
     <!--
+      Ansichtsfenster fuer Tablet und Handy: echte Geraetebreite, kein
+      Zoom durch Doppeltipp (der Orb reagiert selbst auf Doppeltipp) und
+      Zeichenflaeche bis unter die abgerundeten Ecken.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark" />
+    <!--
       Strikte Content-Security-Policy: Die Oberfläche lädt ausschließlich
       eigene Dateien und spricht ausschließlich mit dem lokalen Backend.
       Es werden keine externen Ressourcen nachgeladen.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src http://127.0.0.1:* http://localhost:*;"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data: blob:; manifest-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*;"
     />
     <title>AI-Orb</title>
+    <!--
+      Aus der Seite wird eine App.
+
+      Legt man sie auf einem iPad ueber "Teilen > Zum Home-Bildschirm"
+      ab, startet sie danach ohne Adresszeile und ohne Safari-Leisten -
+      im Vollbild, mit eigenem Symbol. Die drei apple-Zeilen sind dafuer
+      die entscheidenden; das Manifest allein genuegt iOS bis heute
+      nicht, und ein Zertifikat verlangt es fuer diesen Weg nicht.
+    -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="AI-Orb" />
+    <!--
+      "black-translucent": Die Statusleiste liegt ueber der Seite statt
+      neben ihr. Der Orb schwebt dadurch bis unter die Uhr - wie auf dem
+      Rechner, wo er auch keinen Rahmen hat.
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#03152d" />
+    <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png" />
+    <link rel="icon" href="assets/icons/icon-192.png" sizes="192x192" />
     <link rel="stylesheet" href="styles/themes.css" />
     <link rel="stylesheet" href="styles/orb.css" />
   </head>
@@ -27,6 +58,7 @@
       <button type="button" data-action="search" aria-label="Suche starten">⌕<span>Suche</span></button>
       <button type="button" data-action="files" aria-label="Dateien öffnen">▢<span>Dateien</span></button>
       <button type="button" data-action="settings" aria-label="Einstellungen öffnen">⚙<span>Einstellungen</span></button>
+      <button type="button" data-action="quit" aria-label="AI-Orb beenden">×<span>Beenden</span></button>
       <div id="orb-info" class="orb-info" aria-live="polite">Bereit</div>
     </nav>
     <section id="chat-panel" class="chat-panel" hidden aria-label="Chat mit AI-Orb">
@@ -39,6 +71,47 @@
         <button type="submit" aria-label="Senden">➤</button>
       </form>
     </section>
+    <!--
+      Sprechen statt tippen - nur im Browser sichtbar. Am Rechner hoert
+      der Orb mit seinem eigenen Mikrofon zu und braucht keinen Knopf.
+    -->
+    <div id="stimme" class="stimme">
+      <div id="stimme-anzeige" class="stimme__anzeige" aria-live="polite"></div>
+      <div class="stimme__reihe">
+      <button
+        id="chat-knopf"
+        class="stimme__nebenknopf"
+        type="button"
+        aria-label="Chat anzeigen"
+        title="Chat anzeigen"
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"
+          />
+        </svg>
+      </button>
+      <button
+        id="stimme-knopf"
+        class="stimme__knopf"
+        type="button"
+        data-zustand="aus"
+        aria-label="Sprechen"
+      >
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"
+          />
+          <path
+            fill="currentColor"
+            d="M18 11a1 1 0 0 0-2 0 4 4 0 0 1-8 0 1 1 0 0 0-2 0 6 6 0 0 0 5 5.9V19H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-2.1A6 6 0 0 0 18 11z"
+          />
+        </svg>
+      </button>
+      </div>
+    </div>
     <aside id="diagnostics" class="diagnostics" hidden aria-live="polite">
       <div class="diagnostics__header">
         <span>AI-Orb Diagnose</span>
@@ -52,7 +125,17 @@
       die Datei veraendert nichts. So kann die echte WebGL-Ausgabe automatisch
       gegen die Referenz geprueft werden, statt nur Shadertext zu testen.
     -->
-    <script src="preview-bridge.js"></script>
+    <script src="preview-bridge.js?v=tri-core-1"></script>
+    <!--
+      Ersetzt im normalen Browser die Electron-Bruecke: Konfiguration,
+      Ereignisse und Bewegung laufen dann ueber HTTP statt ueber den
+      Hauptprozess. In Electron bleibt die Datei wirkungslos.
+    -->
+    <script src="web-bridge.js?v=1"></script>
     <script src="renderer.js"></script>
+    <!-- Sprechen und Hoeren auf Geraeten ohne eigenen Orb. -->
+    <script src="stimme.js?v=1"></script>
+    <!-- Rueckfragen des Orb dort beantworten, wo gefragt wurde. -->
+    <script src="zustimmung.js?v=1"></script>
   </body>
 </html>

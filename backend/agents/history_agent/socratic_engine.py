@@ -427,3 +427,40 @@ def guidance_for_prompt(decision: SocraticDecision) -> str:
         f"{fragen}\n"
         "Stelle genau EINE Frage. Zwei Fragen auf einmal beantwortet niemand."
     )
+
+
+def feedback_for_answer(
+    previous_question: str,
+    *,
+    attempt: int,
+    continue_with_question: bool,
+) -> str:
+    """Macht aus einer Gegenfrage eine echte gemeinsame Lernschleife.
+
+    Die erste Version des sokratischen Modus konnte zwar eine Frage stellen,
+    verlor aber beim naechsten Sprachzug den Zusammenhang. Diese Anweisung
+    bindet die Antwort an die konkrete vorige Frage und erzwingt verwertbares
+    Feedback statt eines neuen, zufaelligen Fragenkatalogs.
+    """
+
+    previous = " ".join(str(previous_question or "").split())[-900:]
+    if continue_with_question:
+        return (
+            "LERNWERKSTATT – der Benutzer beantwortet gerade deine vorige "
+            f"Frage (Versuch {max(1, attempt)}):\n{previous}\n"
+            "Pruefe seine Antwort konkret. Nenne zuerst knapp, was daran "
+            "zutrifft. Benenne dann genau eine Luecke oder Unsicherheit. Ist "
+            "der Gedanke tragfaehig, vertiefe ihn mit genau EINER Transferfrage. "
+            "Ist er erst teilweise richtig, gib einen kleinen Hinweis und stelle "
+            "genau EINE Leitfrage zum naechsten Denkschritt. Wiederhole die alte "
+            "Frage nicht und stelle niemals mehrere Fragen auf einmal."
+        )
+
+    return (
+        "LERNWERKSTATT – der Benutzer hat die vorige Frage bereits mehrfach "
+        f"bearbeitet:\n{previous}\n"
+        "Gib jetzt klares, respektvolles Feedback: Was war richtig, wo lag die "
+        "entscheidende Luecke, und wie lautet der vollstaendige Gedankengang? "
+        "Erklaere ihn in wenigen gut verbundenen Saetzen. Keine weitere "
+        "Gegenfrage in diesem Zug."
+    )

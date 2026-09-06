@@ -141,9 +141,35 @@ const api = {
   setSpeaking: (speaking: boolean): void => {
     ipcRenderer.send("voice:speaking", { speaking });
   },
+
+  /** Aktualisiert die separate Lehrtafel einer laufenden Vorlesung. */
+  showLectureVisual: (payload: {
+    path?: string;
+    title?: string;
+    topic?: string;
+    caption?: string;
+    kind?: string;
+    // Ohne dieses Feld kam die Darstellungsart nie im Fenster an. Das
+    // Backend schickte sie seit jeher mit; auf dem Weg durch Renderer und
+    // Bruecke fiel sie heraus, und die Tafel zeigte deshalb IMMER die
+    // schlichte Uebersicht - auch dort, wo eine fachliche Gliederung
+    // vorlag.
+    layout?: string;
+    summary?: Array<{ title?: string; text?: string }>;
+    generation?: number;
+  }): void => {
+    ipcRenderer.send("lecture-visual:show", payload);
+  },
+};
+
+const flipperCenterApi = {
+  status: () => ipcRenderer.invoke("flipper:status"),
+  openQFlipper: () => ipcRenderer.invoke("flipper:open-qflipper"),
+  chooseApp: () => ipcRenderer.invoke("flipper:choose-app"),
 };
 
 /** Der Typ der freigegebenen Schnittstelle. */
 export type AiOrbApi = typeof api;
 
 contextBridge.exposeInMainWorld("aiOrb", api);
+contextBridge.exposeInMainWorld("flipperCenter", flipperCenterApi);

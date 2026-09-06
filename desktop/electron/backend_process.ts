@@ -342,6 +342,26 @@ export class BackendProcess {
 
       const health = await this.fetchHealth();
       if (health !== null) {
+        // Ein bereits laufender fremder Kern kann denselben Status liefern.
+        // Genau das geschieht bei einem zweiten Orb-Start: Der neue Python-
+        // Prozess verliert die Einzelinstanz-Sperre, waehrend die Abfrage
+        // noch die alte Instanz auf Port 8756 erreicht. Einen Augenblick
+        // warten und dann den EIGENEN Kindprozess pruefen, bevor ein zweites
+        // Orb-Fenster geoeffnet wird.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (!this.isRunning) {
+          if (!this.lastError) {
+            this.lastError =
+              "Ein anderer AI-Orb-Kern läuft bereits. Die zweite Oberfläche " +
+              "wird nicht geöffnet.";
+          }
+          return false;
+        }
+        const confirmedHealth = await this.fetchHealth();
+        if (confirmedHealth === null) {
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+          continue;
+        }
         onProgress?.({ step: "Backend", detail: `Fassung ${health.version ?? "?"}`, ok: true });
         return true;
       }

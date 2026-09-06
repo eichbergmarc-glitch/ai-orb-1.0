@@ -38,7 +38,10 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -64,6 +67,12 @@ class RemoteTtsEngine(TtsEngine):
         self._token_env = str(self.option("token_env", "REMOTE_TTS_TOKEN"))
         self._speaker = int(self.option("speaker", 0))
         self._timeout = float(self.option("timeout", 30.0))
+        #: Wie lange eine Erreichbarkeitsantwort gilt, bevor neu geklopft wird.
+        self._probe_gueltig = float(self.option("probe_cache_seconds", 60.0))
+        #: Wie kurz das Klopfen selbst sein darf.
+        self._probe_frist = float(self.option("connect_timeout", 1.5))
+        self._probe_zeit = 0.0
+        self._probe_ergebnis: bool | None = None
 
     @property
     def token(self) -> str:
@@ -72,14 +81,65 @@ class RemoteTtsEngine(TtsEngine):
     # --- Verfügbarkeit ---------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Verfügbar, sobald eine Serveradresse eingetragen ist.
+        """Verfügbar, wenn eine Adresse eingetragen ist UND jemand antwortet.
 
-        Ob der Server tatsächlich antwortet, zeigt sich erst beim Sprechen –
-        eine ständige Erreichbarkeitsprüfung würde jeden Start verzögern.
-        Fällt der Server aus, greift der Rückfall auf die lokale Stimme.
+        Der zweite Teil ist neu, und er ist der Unterschied zwischen
+        „fällt zurück" und „fällt nach dreissig Sekunden zurück". Vorher
+        genügte ein Eintrag in der Konfiguration: Ein eingeschlafener
+        Colab-Server galt als verfügbar, jeder Satz lief in sein Zeitlimit,
+        und der Orb schwieg jedes Mal aufs Neue, bevor die lokale Stimme
+        übernahm.
+
+        Geklopft wird kurz (anderthalb Sekunden) und höchstens einmal je
+        Minute - eine Erreichbarkeitsprüfung, die selbst zur Wartezeit
+        wird, hätte nichts gewonnen.
         """
 
-        return bool(self._endpoint)
+        if not self._endpoint:
+            return False
+
+        jetzt = time.monotonic()
+        if (
+            self._probe_ergebnis is not None
+            and (jetzt - self._probe_zeit) < self._probe_gueltig
+        ):
+            return self._probe_ergebnis
+
+        self._probe_zeit = jetzt
+        self._probe_ergebnis = self._klopfen()
+        if not self._probe_ergebnis:
+            logger.info(
+                "Der TTS-Server unter %s antwortet nicht; es spricht die "
+                "lokale Stimme.",
+                self._endpoint,
+            )
+        return self._probe_ergebnis
+
+    def _klopfen(self) -> bool:
+        """Ein kurzer Verbindungsversuch zur Serveradresse."""
+
+        adresse = urllib.parse.urlparse(self._endpoint)
+        host = adresse.hostname
+        if not host:
+            # Eine Adresse, die sich nicht lesen laesst, wird beim Sprechen
+            # ohnehin scheitern - dann aber mit einer klaren Meldung.
+            return True
+        port = adresse.port or (443 if adresse.scheme == "https" else 80)
+        try:
+            with socket.create_connection((host, port), timeout=self._probe_frist):
+                return True
+        except OSError:
+            return False
+
+    def vermerke_fehlschlag(self) -> None:
+        """Merkt sich einen gescheiterten Sprechversuch.
+
+        Damit gilt der Server sofort als nicht erreichbar und nicht erst
+        nach Ablauf der Probefrist.
+        """
+
+        self._probe_zeit = time.monotonic()
+        self._probe_ergebnis = False
 
     def installation_hint(self) -> str:
         return (
@@ -103,6 +163,7 @@ class RemoteTtsEngine(TtsEngine):
                 "speaker": self._speaker,
                 # Der Server darf diese Hinweise nutzen oder ignorieren.
                 "speed": request.speed,
+                "emotion": request.emotion,
             }
         ).encode("utf-8")
 
@@ -127,6 +188,9 @@ class RemoteTtsEngine(TtsEngine):
             # getrennt. Bewusst als Debug, nicht als Fehler – der Rückfall
             # auf Piper besorgt den Rest.
             logger.debug("TTS-Server nicht erreichbar (%s): %s", self._endpoint, error)
+            # Gleich vermerken: Der naechste Satz soll nicht noch einmal
+            # das volle Zeitlimit kosten.
+            self.vermerke_fehlschlag()
             return SpeechResult(engine=self.name, error=f"TTS-Server nicht erreichbar: {error}")
 
         if not audio:

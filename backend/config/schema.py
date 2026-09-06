@@ -16,6 +16,17 @@ class Rule:
 
 RULES: dict[str, Rule] = {
     "app.environment": Rule((str,), choices=frozenset({"development", "production"})),
+    # Der Betriebsmodus der Sicherheitsschicht. Bewusst mit fester
+    # Auswahl: Ein Tippfehler soll den Start anhalten und nicht
+    # stillschweigend zu einer Auslegung fuehren. "geschuetzt" ist die
+    # Vorgabe, wenn nichts dasteht - der offene Modus muss ausdruecklich
+    # dastehen, damit er gilt.
+    "security.mode": Rule(
+        (str,),
+        choices=frozenset(
+            {"geschuetzt", "geschützt", "offen", "open", "unrestricted", "alles"}
+        ),
+    ),
     "backend.host": Rule((str,)),
     "backend.port": Rule((int,), 1, 65535),
     "window.width": Rule((int,), 160, 4096),
@@ -40,6 +51,13 @@ RULES: dict[str, Rule] = {
     "security.consent_timeout_seconds": Rule((int, float), 5, 3600),
     "voice.follow_up_seconds": Rule((int, float), 0, 600),
     "voice.barge_in_hold_ms": Rule((int,), 50, 5000),
+    "voice.vorlesung.abschnitt_max_tokens": Rule((int,), 80, 2000),
+    "voice.vorlesung.pause_sekunden": Rule((int, float), 0.5, 30),
+    "voice.vorlesung.max_abschnitte": Rule((int,), 1, 100),
+    "voice.output.elevenlabs.stability": Rule((int, float), 0.0, 1.0),
+    "voice.output.elevenlabs.similarity_boost": Rule((int, float), 0.0, 1.0),
+    "voice.output.elevenlabs.style": Rule((int, float), 0.0, 1.0),
+    "kalender.zeitzone": Rule((str,)),
     "browser.zeitlimit_ms": Rule((int,), 1000, 300000),
     "tools.max_rounds": Rule((int,), 1, 30),
 }
@@ -94,4 +112,3 @@ def validate_config(data: dict[str, Any]) -> list[str]:
             ):
                 errors.append(f"states.{name}.scale: erwartet Zahl zwischen 0.1 und 2.0")
     return errors
-

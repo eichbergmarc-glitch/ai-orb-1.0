@@ -17,8 +17,8 @@ class HumanSpeechPolicy:
         self,
         *,
         enabled: bool = True,
-        fillers_enabled: bool = True,
-        cooldown_seconds: float = 38.0,
+        fillers_enabled: bool = False,
+        cooldown_seconds: float = 120.0,
         minimum_words: int = 9,
     ) -> None:
         self.enabled = enabled
@@ -56,4 +56,7 @@ class HumanSpeechPolicy:
             return ""
 
         self._last_cue = moment
-        return "Hmm." if complexity < 24 else "Hmm, lass mich kurz überlegen."
+        # Bewusst nur ein sehr kurzer Laut. Die fruehere, bei jeder komplexen
+        # Frage gleichlautende Phrase "lass mich kurz ueberlegen" wirkte wie
+        # ein mechanischer Vorspann und verlaengerte jede Antwort.
+        return "Hmm."

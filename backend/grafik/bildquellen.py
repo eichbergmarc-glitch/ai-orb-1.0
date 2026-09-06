@@ -41,6 +41,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from backend.system.logging_setup import get_logger
 
@@ -58,6 +59,26 @@ _KENNUNG = "AI-Orb/0.26 (lokaler Sprachassistent; Kontakt ueber den Betreiber)"
 _MAX_BYTES = 12 * 1024 * 1024
 
 _ZEITLIMIT = 25
+
+#: Wie gross die laengere Kante eines brauchbaren Bildes mindestens ist.
+#:
+#: Der Anlass steht in ``data/grafiken/fotos``: Neben Aufnahmen mit 1600
+#: Bildpunkten lagen dort Dateien mit 197x240 und 211x240 - Vorschaubilder,
+#: die Openverse als Ergebnis liefert. Im Vorlesungsfenster, das mindestens
+#: 680 Punkte breit ist, wird so ein Bild auf das Dreifache aufgeblasen. Es
+#: ist dann nicht klein, sondern matschig, und genau das hat der Benutzer
+#: als "ungenuegend und langweilig" beschrieben.
+#:
+#: 700 ist die Grenze, unterhalb derer ein Bild im Fenster nicht mehr
+#: gewinnt, sondern verliert. Lieber gar kein Bild als ein verwaschenes:
+#: Ein fehlendes faellt niemandem auf, ein unscharfes zieht den Blick an
+#: und enttaeuscht ihn.
+MINDESTKANTE = 700
+
+#: Und die Untergrenze, unter der eine Datei ueberhaupt kein Bild sein kann.
+#: In derselben Ablage lagen mehrfach 442 Byte grosse "Bilder" - Platzhalter
+#: oder Fehlerseiten, die als JPEG durchgingen und im Fenster landeten.
+_MINDESTBYTES = 3000
 
 #: Wie oft ein zu schnelles "Nein" wiederholt wird.
 #:
@@ -111,6 +132,11 @@ class Bildtreffer:
             "lizenz": self.lizenz,
             "quelle": self.quelle,
             "nachweis": self.nachweis(),
+            # Die Lehrtafel kann damit unter mehreren fachlich passenden
+            # Treffern das ausreichend grosse, gut proportionierte Bild
+            # waehlen, statt blind den ersten Suchtreffer zu nehmen.
+            "breite": self.breite,
+            "hoehe": self.hoehe,
         }
 
 
@@ -181,6 +207,20 @@ def _json_abrufen(url: str, *, zeitlimit: int = _ZEITLIMIT) -> dict:
     return daten if isinstance(daten, dict) else {}
 
 
+def _gross_genug(breite: int, hoehe: int) -> bool:
+    """Ob die gemeldeten Masse fuer das Vorlesungsfenster reichen.
+
+    Unbekannte Masse (0) gelten als in Ordnung: Manche Quellen melden sie
+    nicht, und ein Bild wegen einer fehlenden Angabe zu verwerfen waere
+    strenger als noetig. Beim Speichern wird ohnehin nachgemessen - dort
+    gibt es das Bild selbst und nicht nur eine Auskunft darueber.
+    """
+
+    if breite <= 0 and hoehe <= 0:
+        return True
+    return max(breite, hoehe) >= MINDESTKANTE
+
+
 def _entkleiden(text: str) -> str:
     """Nimmt HTML aus den Angaben - Commons liefert Urheber als Verweis."""
 
@@ -208,8 +248,11 @@ def _commons_suchen(begriff: str, anzahl: int, zeitlimit: int) -> list[Bildtreff
             "prop": "imageinfo",
             "iiprop": "url|size|extmetadata|mime",
             # Eine gerenderte Vorschau: damit kommen auch SVG und TIFF als
-            # brauchbares Rasterbild an, und riesige Originale bleiben aussen vor.
-            "iiurlwidth": "1400",
+            # brauchbares Rasterbild an, und riesige Originale bleiben aussen
+            # vor. 1600 statt 1400, weil genau bei 1600 auch abgelegt wird -
+            # jede kleinere Anforderung verschenkte Schaerfe, die die Ablage
+            # danach nicht mehr herstellen kann.
+            "iiurlwidth": "1600",
         }
     )
     daten = _json_abrufen(f"{_COMMONS}?{frage}", zeitlimit=zeitlimit)
@@ -228,6 +271,11 @@ def _commons_suchen(begriff: str, anzahl: int, zeitlimit: int) -> list[Bildtreff
             eintrag = zusatz.get(name) or {}
             return _entkleiden(eintrag.get("value", "")) if isinstance(eintrag, dict) else ""
 
+        breite = int(info.get("thumbwidth") or info.get("width") or 0)
+        hoehe = int(info.get("thumbheight") or info.get("height") or 0)
+        if not _gross_genug(breite, hoehe):
+            continue
+
         titel = str(seite.get("title", "")).removeprefix("Datei:").removeprefix("File:")
         treffer.append(
             Bildtreffer(
@@ -237,8 +285,8 @@ def _commons_suchen(begriff: str, anzahl: int, zeitlimit: int) -> list[Bildtreff
                 urheber=feld("Artist"),
                 lizenz=feld("LicenseShortName") or feld("License"),
                 quelle="Wikimedia Commons",
-                breite=int(info.get("thumbwidth") or info.get("width") or 0),
-                hoehe=int(info.get("thumbheight") or info.get("height") or 0),
+                breite=breite,
+                hoehe=hoehe,
             )
         )
         if len(treffer) >= anzahl:
@@ -257,6 +305,12 @@ def _openverse_suchen(begriff: str, anzahl: int, zeitlimit: int) -> list[Bildtre
         adresse = str(eintrag.get("url") or "")
         if not adresse:
             continue
+        breite = int(eintrag.get("width") or 0)
+        hoehe = int(eintrag.get("height") or 0)
+        # Von hier kamen die 197x240 grossen Vorschaubilder. Openverse nennt
+        # die Masse mit; wer sie nicht liest, laedt sie herunter.
+        if not _gross_genug(breite, hoehe):
+            continue
         lizenz = str(eintrag.get("license", "")).upper()
         fassung = str(eintrag.get("license_version", ""))
         treffer.append(
@@ -267,8 +321,8 @@ def _openverse_suchen(begriff: str, anzahl: int, zeitlimit: int) -> list[Bildtre
                 urheber=str(eintrag.get("creator") or ""),
                 lizenz=f"{lizenz} {fassung}".strip(),
                 quelle="Openverse",
-                breite=int(eintrag.get("width") or 0),
-                hoehe=int(eintrag.get("height") or 0),
+                breite=breite,
+                hoehe=hoehe,
             )
         )
         if len(treffer) >= anzahl:
@@ -277,7 +331,11 @@ def _openverse_suchen(begriff: str, anzahl: int, zeitlimit: int) -> list[Bildtre
 
 
 def bilder_suchen(
-    begriff: str, *, anzahl: int = 3, zeitlimit: int = _ZEITLIMIT
+    begriff: str,
+    *,
+    anzahl: int = 3,
+    zeitlimit: int = _ZEITLIMIT,
+    akzeptieren: Callable[[Bildtreffer], bool] | None = None,
 ) -> list[Bildtreffer]:
     """Sucht freie Bilder zu einem Begriff.
 
@@ -293,7 +351,15 @@ def bilder_suchen(
     gefunden: list[Bildtreffer] = []
     for name, sucher in (("Wikimedia Commons", _commons_suchen), ("Openverse", _openverse_suchen)):
         try:
-            gefunden.extend(sucher(begriff, anzahl - len(gefunden), zeitlimit))
+            fehlen = anzahl - len(gefunden)
+            # Bei fachlicher Relevanzpruefung mehr Metadaten ansehen, aber nur
+            # passende Dateien herunterladen. So blockieren zwei irrelevante
+            # Commons-Treffer nicht mehr den anschliessenden Openverse-Versuch.
+            pruefmenge = min(12, max(fehlen, fehlen * 4)) if akzeptieren else fehlen
+            kandidaten = sucher(begriff, pruefmenge, zeitlimit)
+            if akzeptieren is not None:
+                kandidaten = [treffer for treffer in kandidaten if akzeptieren(treffer)]
+            gefunden.extend(kandidaten[:fehlen])
         except BildquelleFehler as fehler:
             logger.info("Bildsuche bei %s fehlgeschlagen: %s", name, fehler)
         except Exception:  # noqa: BLE001 - eine Bildsuche darf nichts umwerfen.
@@ -301,7 +367,12 @@ def bilder_suchen(
         if len(gefunden) >= anzahl:
             break
 
-    logger.info("Bildsuche '%s': %d Treffer.", begriff, len(gefunden))
+    logger.info(
+        "Bildsuche '%s': %d passende Treffer%s.",
+        begriff,
+        len(gefunden),
+        " (fachlich gefiltert)" if akzeptieren else "",
+    )
     return gefunden[:anzahl]
 
 
@@ -310,22 +381,40 @@ def bilder_suchen(
 # ---------------------------------------------------------------------------
 
 
-def _sichern(daten: bytes, ziel: Path, *, max_kante: int = 1600) -> Path:
-    """Prueft, dass es wirklich ein Bild ist, und schreibt es neu.
+def _sichern(
+    daten: bytes, ziel: Path, *, max_kante: int = 1600, min_kante: int = MINDESTKANTE
+) -> Path:
+    """Prueft, dass es wirklich ein BRAUCHBARES Bild ist, und schreibt es neu.
 
     Das Neuschreiben ist kein Selbstzweck: Es wirft alles weg, was ausser
     Bildpunkten in der Datei stand - eingebettete Vorschauen, Ortsangaben,
     Kommentarfelder. Was aus dem Netz kommt, geht so nur als Bild weiter.
+
+    Neu ist die Groessenpruefung. "Ist es ein Bild?" war zu wenig gefragt:
+    Ein 197x240 grosses Vorschaubild ist ein Bild, und ein 442 Byte grosser
+    Platzhalter ist es formal auch. Beide sind trotzdem unbrauchbar, und
+    beide lagen in der Ablage des Benutzers. Wer hier durchfaellt, wird
+    verworfen - der Aufrufer nimmt dann den naechsten Treffer.
     """
 
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     import io
 
+    if len(daten) < _MINDESTBYTES:
+        raise BildquelleFehler(
+            f"Die Antwort war mit {len(daten)} Byte zu klein fuer ein Bild."
+        )
+
     try:
         with Image.open(io.BytesIO(daten)) as geoeffnet:
             geoeffnet.load()
             bild = ImageOps.exif_transpose(geoeffnet)
+            if max(bild.size) < min_kante:
+                raise BildquelleFehler(
+                    f"Das Bild ist mit {bild.size[0]}x{bild.size[1]} zu klein; "
+                    f"mindestens {min_kante} Bildpunkte an der langen Kante."
+                )
             if bild.mode not in ("RGB", "L"):
                 bild = bild.convert("RGB")
             bild.thumbnail((max_kante, max_kante))

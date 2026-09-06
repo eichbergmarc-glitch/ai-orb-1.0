@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="AI-Orb" />
+<meta name="theme-color" content="#05080f" />
+<title>AI-Orb</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<style>
+  :root{
+    --orb-base:#4aa3ff;
+    --orb-accent:#bfe4ff;
+    --orb-deep:#0d3a72;
+    --orb-error:#ff5f6d;
+    --surface:rgba(10,16,26,.72);
+    --surface-hi:rgba(20,30,46,.86);
+    --text:#e8f1ff;
+    --muted:#8fa6c4;
+    --line:rgba(120,170,230,.18);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#05080f;color:var(--text);
+    font:400 17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;overscroll-behavior:none;touch-action:manipulation}
+  canvas#orb{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0}
+
+  .safe{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+
+  /* ---------- Kopfzeile ---------- */
+  header{position:fixed;top:0;left:0;right:0;z-index:3;display:flex;align-items:center;gap:12px;
+    padding:calc(env(safe-area-inset-top) + 12px) 20px 12px;pointer-events:none}
+  header > *{pointer-events:auto}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none;
+    box-shadow:0 0 10px currentColor;transition:background .3s,color .3s}
+  .dot.on{background:#3fdd90;color:#3fdd90}
+  .dot.off{background:var(--orb-error);color:var(--orb-error)}
+  .zustand{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+    font-weight:590;white-space:nowrap}
+  .spacer{flex:1}
+  .ghost{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--text);
+    border-radius:999px;padding:9px 15px;font-size:14px;font-weight:590;
+    backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);cursor:pointer}
+  .ghost:active{background:var(--surface-hi)}
+  .ghost[aria-pressed="true"]{border-color:rgba(74,163,255,.55);color:var(--orb-accent)}
+
+  /* ---------- Antwortfläche ---------- */
+  main{position:fixed;inset:0;z-index:2;display:flex;flex-direction:column;justify-content:flex-end;
+    padding:0 0 calc(env(safe-area-inset-bottom) + 108px);pointer-events:none}
+  #verlauf{max-height:52vh;overflow-y:auto;-webkit-overflow-scrolling:touch;pointer-events:auto;
+    padding:0 20px;display:flex;flex-direction:column;gap:12px;
+    mask-image:linear-gradient(to bottom,transparent 0,#000 44px);
+    -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 44px)}
+  #verlauf::-webkit-scrollbar{width:0}
+  .bubble{max-width:min(680px,88%);padding:13px 17px;border-radius:20px;white-space:pre-wrap;
+    word-wrap:break-word;backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+    animation:auf .34s cubic-bezier(.2,.8,.3,1) both;font-size:16.5px}
+  @keyframes auf{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  .bubble.ich{align-self:flex-end;background:rgba(74,163,255,.20);border:1px solid rgba(74,163,255,.34);
+    border-bottom-right-radius:7px}
+  .bubble.orb{align-self:flex-start;background:var(--surface);border:1px solid var(--line);
+    border-bottom-left-radius:7px}
+  .bubble.sys{align-self:center;background:none;border:none;color:var(--muted);font-size:13.5px;
+    text-align:center;padding:2px 0;max-width:92%}
+  .bubble.fehler{align-self:flex-start;background:rgba(255,95,109,.14);
+    border:1px solid rgba(255,95,109,.36);color:#ffd7da}
+  .meta{display:block;margin-top:7px;font-size:11.5px;color:var(--muted);letter-spacing:.03em}
+
+  /* ---------- Eingabe ---------- */
+  footer{position:fixed;left:0;right:0;bottom:0;z-index:4;
+    padding:12px 16px calc(env(safe-area-inset-bottom) + 14px);
+    display:flex;align-items:flex-end;gap:10px;
+    background:linear-gradient(to top,rgba(5,8,15,.88),rgba(5,8,15,0))}
+  #eingabe{flex:1;min-height:50px;max-height:132px;resize:none;border-radius:25px;
+    border:1px solid var(--line);background:var(--surface);color:var(--text);
+    padding:14px 18px;font:inherit;font-size:16.5px;outline:none;
+    backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
+  #eingabe:focus{border-color:rgba(74,163,255,.5)}
+  #eingabe::placeholder{color:var(--muted)}
+  .rund{flex:none;width:50px;height:50px;border-radius:50%;border:1px solid var(--line);
+    background:var(--surface);color:var(--text);display:grid;place-items:center;cursor:pointer;
+    backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);transition:transform .16s,background .2s}
+  .rund:active{transform:scale(.93)}
+  .rund svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:1.9;
+    stroke-linecap:round;stroke-linejoin:round}
+  .rund.aktiv{background:rgba(255,95,109,.24);border-color:rgba(255,95,109,.6);color:#ffd7da;
+    animation:puls 1.4s ease-in-out infinite}
+  @keyframes puls{0%,100%{box-shadow:0 0 0 0 rgba(255,95,109,.42)}50%{box-shadow:0 0 0 13px rgba(255,95,109,0)}}
+  .rund[hidden]{display:none}
+  #senden{background:rgba(74,163,255,.24);border-color:rgba(74,163,255,.5);color:var(--orb-accent)}
+
+  /* ---------- Einstellungen ---------- */
+  #panel{position:fixed;inset:auto 14px calc(env(safe-area-inset-bottom) + 78px) auto;z-index:6;
+    width:min(330px,calc(100vw - 28px));background:var(--surface-hi);border:1px solid var(--line);
+    border-radius:22px;padding:8px;backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);
+    box-shadow:0 22px 60px rgba(0,0,0,.55)}
+  #panel[hidden]{display:none}
+  #panel .zeile{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:12px 14px;border-radius:14px}
+  #panel .zeile + .zeile{border-top:1px solid var(--line)}
+  #panel .zeile span{font-size:15px}
+  #panel .zeile small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px;line-height:1.35}
+  .schalter{appearance:none;width:50px;height:30px;border-radius:15px;background:rgba(255,255,255,.13);
+    border:none;position:relative;flex:none;cursor:pointer;transition:background .22s}
+  .schalter::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;
+    background:#fff;transition:transform .22s}
+  .schalter:checked{background:#3fdd90}
+  .schalter:checked::after{transform:translateX(20px)}
+  .hinweis{padding:10px 14px 12px;color:var(--muted);font-size:12px;line-height:1.45}
+</style>
+</head>
+<body>
+
+<canvas id="orb"></canvas>
+
+<header>
+  <span class="dot" id="dot"></span>
+  <span class="zustand" id="zustand">verbinde…</span>
+  <span class="spacer"></span>
+  <button class="ghost" id="btnPanel" aria-label="Einstellungen">Einstellungen</button>
+</header>
+
+<main>
+  <div id="verlauf" aria-live="polite"></div>
+</main>
+
+<div id="panel" hidden>
+  <label class="zeile">
+    <span>Vorlesen<small>Antworten werden auf dem iPad gesprochen.</small></span>
+    <input type="checkbox" class="schalter" id="swStimme" checked />
+  </label>
+  <label class="zeile">
+    <span>Freihändig<small>Nach dem Vorlesen hört der Orb von selbst weiter zu.</small></span>
+    <input type="checkbox" class="schalter" id="swFrei" />
+  </label>
+  <label class="zeile">
+    <span>Nur Text<small>Verlauf ausblenden, nur der Orb bleibt sichtbar.</small></span>
+    <input type="checkbox" class="schalter" id="swStill" />
+  </label>
+  <a class="zeile" href="vorschlaege.html" style="text-decoration:none;color:inherit;display:flex">
+    <span>Vorschläge des Orb<small>Was er an sich selbst verbessern will – und was du freigeben musst.</small></span>
+    <span style="color:var(--muted);font-size:20px;flex:none">›</span>
+  </a>
+  <div class="hinweis" id="panelInfo"></div>
+</div>
+
+<footer>
+  <button class="rund" id="mikro" aria-label="Sprechen" hidden>
+    <svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3Z"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
+  </button>
+  <textarea id="eingabe" rows="1" placeholder="Frag den Orb …" enterkeyhint="send"></textarea>
+  <button class="rund" id="senden" aria-label="Senden">
+    <svg viewBox="0 0 24 24"><path d="M4 12h15"/><path d="M13 6l6 6-6 6"/></svg>
+  </button>
+</footer>
+
+<script>
+/* =============================================================================
+   AI-Orb für iPad
+   -----------------------------------------------------------------------------
+   Diese Oberflaeche ersetzt auf dem iPad die Electron-Oberflaeche des Desktops.
+   Sie spricht ausschliesslich mit dem Orb-Backend, ueber genau die Endpunkte,
+   die in docs/API.md beschrieben sind: POST /ask, GET /events, GET /health.
+   Es werden keine externen Ressourcen geladen - alles steckt in dieser Datei.
+   ============================================================================= */
+
+(function () {
+  "use strict";
+
+  /* ------------------------------------------------------------------ Zustand */
+  var ZUSTAND = {
+    bereit:  { text: "bereit",  farbe: [0.29, 0.64, 1.00], energie: 0.34, tempo: 0.28 },
+    hoert:   { text: "hört zu", farbe: [0.44, 0.90, 1.00], energie: 0.92, tempo: 0.85 },
+    denkt:   { text: "denkt",   farbe: [0.64, 0.42, 1.00], energie: 0.74, tempo: 1.55 },
+    spricht: { text: "spricht", farbe: [0.25, 0.87, 0.62], energie: 0.80, tempo: 0.62 },
+    fehler:  { text: "Fehler",  farbe: [1.00, 0.37, 0.43], energie: 0.52, tempo: 0.20 }
+  };
+  var zustand = "bereit";
+  var verbunden = false;
+
+  var el = function (id) { return document.getElementById(id); };
+  var verlauf = el("verlauf"), eingabe = el("eingabe"), dot = el("dot"),
+      lblZustand = el("zustand"), btnMikro = el("mikro"), btnSenden = el("senden"),
+      btnPanel = el("btnPanel"), panel = el("panel"),
+      swStimme = el("swStimme"), swFrei = el("swFrei"), swStill = el("swStill");
+
+  /* ------------------------------------------------------- Einstellungen merken */
+  function merke(k, v) { try { localStorage.setItem("orb." + k, v ? "1" : "0"); } catch (e) {} }
+  function lies(k, standard) {
+    try { var v = localStorage.getItem("orb." + k); return v === null ? standard : v === "1"; }
+    catch (e) { return standard; }
+  }
+  swStimme.checked = lies("stimme", true);
+  swFrei.checked   = lies("frei", false);
+  swStill.checked  = lies("still", false);
+  function stillAnwenden() { verlauf.style.display = swStill.checked ? "none" : "flex"; }
+  stillAnwenden();
+  swStimme.onchange = function () { merke("stimme", swStimme.checked); if (!swStimme.checked) stoppSprechen(); };
+  swFrei.onchange   = function () { merke("frei", swFrei.checked); };
+  swStill.onchange  = function () { merke("still", swStill.checked); stillAnwenden(); };
+  btnPanel.onclick  = function () { panel.hidden = !panel.hidden; btnPanel.setAttribute("aria-pressed", String(!panel.hidden)); };
+  document.addEventListener("click", function (e) {
+    if (!panel.hidden && !panel.contains(e.target) && e.target !== btnPanel) {
+      panel.hidden = true; btnPanel.setAttribute("aria-pressed", "false");
+    }
+  });
+
+  /* ------------------------------------------------------------------ Verlauf */
+  function blase(art, text, meta) {
+    var d = document.createElement("div");
+    d.className = "bubble " + art;
+    d.textContent = text;
+    if (meta) {
+      var m = document.createElement("small");
+      m.className = "meta"; m.textContent = meta; d.appendChild(m);
+    }
+    verlauf.appendChild(d);
+    while (verlauf.children.length > 60) verlauf.removeChild(verlauf.firstChild);
+    verlauf.scrollTop = verlauf.scrollHeight;
+    return d;
+  }
+
+  function setzeZustand(neu) {
+    if (!ZUSTAND[neu] || neu === zustand) return;
+    zustand = neu;
+    lblZustand.textContent = ZUSTAND[neu].text;
+  }
+
+  function setzeVerbindung(ok) {
+    verbunden = ok;
+    dot.className = "dot " + (ok ? "on" : "off");
+    if (!ok) { lblZustand.textContent = "keine Verbindung"; setzeZustand("fehler"); }
+    else if (zustand === "fehler") { setzeZustand("bereit"); }
+  }
+
+  /* --------------------------------------------------------------- Sprachausgabe */
+  var stimme = null, stimmenGeladen = false;
+  function stimmeWaehlen() {
+    if (!window.speechSynthesis) return;
+    var alle = speechSynthesis.getVoices() || [];
+    var de = alle.filter(function (v) { return /^de/i.test(v.lang); });
+    // Bevorzugt eine hochwertige deutsche Stimme, sonst die erste deutsche.
+    stimme = de.filter(function (v) { return /premium|enhanced|siri/i.test(v.name); })[0] || de[0] || null;
+    stimmenGeladen = true;
+  }
+  if (window.speechSynthesis) {
+    stimmeWaehlen();
+    speechSynthesis.onvoiceschanged = stimmeWaehlen;
+  }
+  function stoppSprechen() {
+    try { if (window.speechSynthesis) speechSynthesis.cancel(); } catch (e) {}
+  }
+
+  // iOS gibt die Sprachausgabe erst nach einer echten Berührung frei. Deshalb
+  // wird sie bei der ersten Eingabe einmal stumm angestoßen - danach darf der
+  // Orb auch von sich aus sprechen.
+  var freigeschaltet = false;
+  function freischalten() {
+    if (freigeschaltet || !window.speechSynthesis) return;
+    freigeschaltet = true;
+    try {
+      var u = new SpeechSynthesisUtterance(" ");
+      u.volume = 0; u.lang = "de-DE";
+      speechSynthesis.speak(u);
+    } catch (e) {}
+  }
+  document.addEventListener("pointerdown", freischalten, { once: true });
+  document.addEventListener("keydown", freischalten, { once: true });
+  function sprich(text, fertig) {
+    if (!swStimme.checked || !window.speechSynthesis || !text) { if (fertig) fertig(); return; }
+    stoppSprechen();
+    if (!stimmenGeladen) stimmeWaehlen();
+    // Sehr lange Antworten in Saetze zerlegen: iOS bricht lange Aeusserungen ab.
+    var teile = text.replace(/\s+/g, " ").match(/[^.!?…]+[.!?…]*/g) || [text];
+    var stapel = [], puffer = "";
+    teile.forEach(function (s) {
+      if ((puffer + s).length > 190) { if (puffer) stapel.push(puffer); puffer = s; }
+      else puffer += s;
+    });
+    if (puffer) stapel.push(puffer);
+
+    setzeZustand("spricht");
+    var i = 0;
+    (function weiter() {
+      if (i >= stapel.length) {
+        setzeZustand("bereit");
+        if (fertig) fertig();
+        return;
+      }
+      var satz = stapel[i++];
+      var weiterGelaufen = false;
+      function einmalWeiter() {
+        if (weiterGelaufen) return;
+        weiterGelaufen = true;
+        clearTimeout(wache);
+        weiter();
+      }
+      // Sicherheitsnetz: Wenn iOS die Ausgabe still verschluckt - keine Stimme
+      // installiert, App im Hintergrund -, bleibt der Orb sonst für immer im
+      // Zustand "spricht" stehen. Nach der geschätzten Sprechdauer geht es
+      // in jedem Fall weiter.
+      var wache = setTimeout(einmalWeiter, 2200 + satz.length * 95);
+      var u = new SpeechSynthesisUtterance(satz);
+      u.lang = "de-DE";
+      if (stimme) u.voice = stimme;
+      u.rate = 1.02; u.pitch = 1.0;
+      u.onend = einmalWeiter;
+      u.onerror = einmalWeiter;
+      try { speechSynthesis.speak(u); } catch (e) { einmalWeiter(); }
+    })();
+  }
+
+  /* -------------------------------------------------------------- Spracheingabe */
+  var Erkennung = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var erkennung = null, hoertGerade = false, willFreihaendig = false;
+
+  if (Erkennung && window.isSecureContext) {
+    btnMikro.hidden = false;
+    el("panelInfo").textContent =
+      "Die Spracherkennung läuft auf dem iPad selbst – nicht über Whisper auf dem PC. " +
+      "Das ist der Grund, warum sie hier deutlich schneller antwortet.";
+  } else {
+    swFrei.disabled = true;
+    el("panelInfo").textContent = window.isSecureContext
+      ? "Dieses Gerät bietet keine Spracherkennung im Browser. Tippen funktioniert weiterhin."
+      : "Ohne HTTPS erlaubt iOS kein Mikrofon. Siehe docs/IPAD.md, Abschnitt Tailscale.";
+  }
+
+  function hoerenStarten() {
+    if (!Erkennung || hoertGerade) return;
+    stoppSprechen();
+    try {
+      erkennung = new Erkennung();
+      erkennung.lang = "de-DE";
+      erkennung.continuous = false;
+      erkennung.interimResults = true;
+      erkennung.maxAlternatives = 1;
+    } catch (e) { return; }
+
+    var letzter = "";
+    erkennung.onstart = function () {
+      hoertGerade = true;
+      btnMikro.classList.add("aktiv");
+      setzeZustand("hoert");
+    };
+    erkennung.onresult = function (ev) {
+      var roh = "";
+      for (var i = ev.resultIndex; i < ev.results.length; i++) roh += ev.results[i][0].transcript;
+      letzter = roh.trim();
+      eingabe.value = letzter;
+      hoehe();
+    };
+    erkennung.onerror = function (ev) {
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+        blase("sys", "Das Mikrofon ist nicht freigegeben. In den iPad-Einstellungen unter Safari erlauben.");
+        willFreihaendig = false;
+      }
+    };
+    erkennung.onend = function () {
+      hoertGerade = false;
+      btnMikro.classList.remove("aktiv");
+      if (zustand === "hoert") setzeZustand("bereit");
+      if (letzter) { eingabe.value = ""; hoehe(); fragen(letzter); }
+      else if (willFreihaendig) { setTimeout(hoerenStarten, 350); }
+    };
+    try { erkennung.start(); } catch (e) { hoertGerade = false; }
+  }
+
+  function hoerenBeenden() {
+    willFreihaendig = false;
+    if (erkennung && hoertGerade) { try { erkennung.stop(); } catch (e) {} }
+  }
+
+  btnMikro.onclick = function () {
+    if (hoertGerade) hoerenBeenden();
+    else { willFreihaendig = swFrei.checked; hoerenStarten(); }
+  };
+
+  /* ------------------------------------------------------------ Backend-Zugriff */
+  function fragen(text) {
+    text = (text || "").trim();
+    if (!text) return;
+    blase("ich", text);
+    setzeZustand("denkt");
+
+    fetch("api/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    })
+    .then(function (r) {
+      if (!r.ok) throw new Error("Backend antwortet mit " + r.status);
+      return r.json();
+    })
+    .then(function (d) {
+      var antwort = d.response || d.answer || d.text || d.reply || "";
+      if (!antwort) { antwort = "(Der Orb hat nichts zurückgegeben.)"; }
+      var teile = [];
+      if (d.intent) teile.push(d.intent);
+      if (d.model) teile.push(d.model);
+      else if (d.provider) teile.push(d.provider);
+      if (d.project || d.active_project) teile.push(d.project || d.active_project);
+      blase("orb", antwort, teile.length ? teile.join(" · ") : "");
+      sprich(antwort, function () {
+        if (swFrei.checked && Erkennung) { willFreihaendig = true; hoerenStarten(); }
+      });
+      if (!swStimme.checked) setzeZustand("bereit");
+    })
+    .catch(function (e) {
+      blase("fehler", "Keine Antwort vom Orb. " + e.message);
+      setzeZustand("fehler");
+      setzeVerbindung(false);
+    });
+  }
+
+  /* ------------------------------------------------------------- Ereigniskanal */
+  var quelle = null, versuch = 0;
+  function ereignisseVerbinden() {
+    if (!window.EventSource) { pruefeHealth(); return; }
+    try { quelle = new EventSource("api/events"); } catch (e) { return; }
+
+    quelle.onopen = function () { versuch = 0; setzeVerbindung(true); };
+    quelle.onmessage = function (ev) {
+      var d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      var name = String(d.event || d.type || "");
+      var last = d.payload || {};
+
+      if (name === "orb.state" && last.state) { setzeZustand(uebersetze(last.state)); return; }
+      if (/error|fehler/i.test(name)) { setzeZustand("fehler"); return; }
+      if (/think|denk|reason|plan/i.test(name)) { setzeZustand("denkt"); return; }
+      if (/listen|hoer|hör|record/i.test(name)) { setzeZustand("hoert"); return; }
+      if (name === "cognitive.response") {
+        // Antworten des Desktops mitlesen, wenn sie nicht von hier kamen.
+        if (last.text && last.source !== "ipad") { /* still mitlaufen lassen */ }
+        setzeZustand("bereit");
+      }
+    };
+    quelle.onerror = function () {
+      setzeVerbindung(false);
+      try { quelle.close(); } catch (e) {}
+      versuch = Math.min(versuch + 1, 6);
+      setTimeout(ereignisseVerbinden, 700 * versuch);
+    };
+  }
+
+  function uebersetze(s) {
+    s = String(s).toLowerCase();
+    if (/listen|hoer|hör/.test(s)) return "hoert";
+    if (/think|denk|process/.test(s)) return "denkt";
+    if (/speak|spr|talk/.test(s)) return "spricht";
+    if (/error|fehler/.test(s)) return "fehler";
+    return "bereit";
+  }
+
+  function pruefeHealth() {
+    fetch("api/health", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error(String(r.status))); })
+      .then(function () { setzeVerbindung(true); })
+      .catch(function () { setzeVerbindung(false); });
+  }
+  setInterval(pruefeHealth, 20000);
+  pruefeHealth();
+  ereignisseVerbinden();
+
+  /* ---------------------------------------------------------------- Eingabefeld */
+  function hoehe() {
+    eingabe.style.height = "auto";
+    eingabe.style.height = Math.min(eingabe.scrollHeight, 132) + "px";
+  }
+  eingabe.addEventListener("input", hoehe);
+  eingabe.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); absenden(); }
+  });
+  function absenden() {
+    var t = eingabe.value;
+    eingabe.value = ""; hoehe();
+    fragen(t);
+  }
+  btnSenden.onclick = absenden;
+
+  // Tippen auf den Orb: Sprechen abbrechen bzw. Mikrofon starten.
+  el("orb").addEventListener("pointerdown", function () {
+    if (window.speechSynthesis && speechSynthesis.speaking) { stoppSprechen(); setzeZustand("bereit"); return; }
+    if (!btnMikro.hidden) btnMikro.click();
+  });
+
+  blase("sys", "Mit dem Orb auf deinem PC verbunden. Tippe oder sprich.");
+
+  /* =========================================================================
+     Der Orb: ein einziger Fragment-Shader auf einem bildschirmfuellenden
+     Dreieck. Keine Bibliothek, keine Netzabhaengigkeit, ruhig genug fuer die
+     GPU eines iPads.
+     ========================================================================= */
+  var canvas = el("orb");
+  var gl = canvas.getContext("webgl", { alpha: false, antialias: false, powerPreference: "high-performance" })
+        || canvas.getContext("experimental-webgl", { alpha: false, antialias: false });
+
+  if (!gl) { document.body.style.background = "radial-gradient(circle at 50% 42%,#123a63,#05080f 62%)"; return; }
+
+  var VS =
+    "attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}";
+
+  var FS = [
+    "precision highp float;",
+    "uniform vec2  aufloesung;",
+    "uniform float zeit;",
+    "uniform vec3  farbe;",
+    "uniform float energie;",
+    "uniform float tempo;",
+    "",
+    "float hash(vec3 p){ p=fract(p*0.3183099+vec3(0.71,0.113,0.419)); p*=17.0;",
+    "  return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }",
+    "float noise(vec3 x){ vec3 i=floor(x), f=fract(x); f=f*f*(3.0-2.0*f);",
+    "  return mix(mix(mix(hash(i+vec3(0,0,0)),hash(i+vec3(1,0,0)),f.x),",
+    "                 mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),",
+    "             mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),",
+    "                 mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z); }",
+    "float fbm(vec3 p){ float s=0.0, a=0.5;",
+    "  for(int i=0;i<4;i++){ s+=a*noise(p); p*=2.05; a*=0.5; } return s; }",
+    "float weich(vec3 p){ return 0.62*noise(p)+0.30*noise(p*2.1)+0.14*noise(p*4.3); }",
+    "",
+    "// Farbrampe: Der Orb bleibt immer in seiner Farbfamilie. Nur die",
+    "// hellsten Stellen laufen ins Helle - so kippt nichts ins Graue.",
+    "vec3 rampe(float e, vec3 f){",
+    "  vec3 dunkel=f*0.05;",
+    "  vec3 voll  =f*0.95;",
+    "  vec3 spitze=mix(f,vec3(1.0),0.42);",
+    "  vec3 c=mix(dunkel,voll,smoothstep(0.0,0.60,e));",
+    "  c+=spitze*smoothstep(0.78,1.60,e)*0.85;",
+    "  return c;",
+    "}",
+    "",
+    "void main(){",
+    "  vec2 uv=(gl_FragCoord.xy-0.5*aufloesung)/min(aufloesung.x,aufloesung.y);",
+    "  // Auf hohen Schirmen sitzt der Orb etwas ueber der Mitte, damit der",
+    "  // Verlauf darunter Platz hat.",
+    "  float hoch=clamp(aufloesung.y/aufloesung.x-1.0,0.0,0.6);",
+    "  uv.y-=hoch*0.15;",
+    "",
+    "  float t=zeit*tempo;",
+    "  float r=length(uv);",
+    "  float R=0.250+0.010*sin(zeit*0.85)+0.020*energie;",
+    "",
+    "  float d=r/R;",
+    "  float z=sqrt(max(0.0,1.0-min(d*d,1.0)));",
+    "  vec3 n=vec3(uv/R,z);",
+    "",
+    "  // Plasma, das langsam um die eigene Achse zieht. Bewusst grob",
+    "  // gehalten: der Orb soll leuchten, nicht nach Gestein aussehen.",
+    "  float a=t*0.20;",
+    "  vec3 nr=vec3(n.x*cos(a)-n.z*sin(a), n.y, n.x*sin(a)+n.z*cos(a));",
+    "  vec3 q=nr*1.75+vec3(0.0,t*0.14,t*0.26);",
+    "  float w=weich(q+weich(q*1.5+t*0.30)*0.75);",
+    "",
+    "  // Duenne, seltene Faeden aus einem eigenen, feineren Feld.",
+    "  vec3 qf=nr*4.6+vec3(t*0.22,-t*0.17,t*0.41);",
+    "  float f1=fbm(qf);",
+    "  // Nur dort, wo das Plasma ohnehin dichter ist, treten Faeden hervor.",
+    "  float faden=pow(max(0.0,1.0-abs(f1-0.5)*9.5),2.4)*smoothstep(0.34,0.72,w);",
+    "",
+    "  float fres  =pow(1.0-z,3.4);",
+    "  float glut  =pow(z,2.4);",
+    "  float koerper=0.22+0.78*pow(z,0.7);",
+    "  float innen =step(d,1.0);",
+    "",
+    "  // Das Leuchten kommt aus der Mitte und wird vom Plasma moduliert -",
+    "  // nicht umgekehrt.",
+    "  float e=koerper*(0.07+1.00*glut*(0.34+0.90*w)*(0.70+0.48*energie))",
+    "         +faden*(0.35+0.95*energie)",
+    "         +fres*(0.45+0.55*energie);",
+    "",
+    "  // Die Zustandsfarbe kommt in Bildschirmwerten an; fuer die Rechnung",
+    "  // wird sie linearisiert und am Ende wieder zurueckverwandelt.",
+    "  vec3 F=farbe*farbe;",
+    "  vec3 c=innen*rampe(e,F);",
+    "",
+    "  // Halo und auslaufende Ringe.",
+    "  float aussen=1.0-innen;",
+    "  float halo=exp(-max(0.0,d-1.0)*4.4);",
+    "  c+=aussen*F*halo*(0.42+0.55*energie);",
+    "  float ring=sin((d-t*0.6)*11.0)*0.5+0.5;",
+    "  c+=aussen*F*ring*exp(-max(0.0,d-1.0)*6.5)*energie*0.30;",
+    "",
+    "  // Hintergrund: tiefes Blauschwarz, zur Mitte hin leicht angehoben.",
+    "  vec3 bg=mix(vec3(0.0016,0.0032,0.0070),vec3(0.0004,0.0006,0.0013),clamp(r*1.05,0.0,1.0));",
+    "  c+=bg;",
+    "",
+    "  // Tonwertkompression ueber die Helligkeit - so bleibt die Farbe erhalten.",
+    "  float l=dot(c,vec3(0.2126,0.7152,0.0722));",
+    "  c*=1.0/(1.0+l*0.75);",
+    "  c=pow(max(c,0.0),vec3(0.4545));",
+    "  c+=(hash(vec3(gl_FragCoord.xy,zeit))-0.5)*0.016;",
+    "  gl_FragColor=vec4(c,1.0);",
+    "}"
+  ].join("\n");
+
+  function shader(typ, quelle) {
+    var s = gl.createShader(typ);
+    gl.shaderSource(s, quelle); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(s)); return null;
+    }
+    return s;
+  }
+  var prog = gl.createProgram();
+  gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  gl.useProgram(prog);
+
+  var buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(prog, "p");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  var uAufl = gl.getUniformLocation(prog, "aufloesung"),
+      uZeit = gl.getUniformLocation(prog, "zeit"),
+      uFarbe = gl.getUniformLocation(prog, "farbe"),
+      uEnergie = gl.getUniformLocation(prog, "energie"),
+      uTempo = gl.getUniformLocation(prog, "tempo");
+
+  function groesse() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var b = Math.floor(innerWidth * dpr), h = Math.floor(innerHeight * dpr);
+    if (canvas.width !== b || canvas.height !== h) {
+      canvas.width = b; canvas.height = h;
+      gl.viewport(0, 0, b, h);
+    }
+  }
+  window.addEventListener("resize", groesse);
+  window.addEventListener("orientationchange", function () { setTimeout(groesse, 220); });
+  groesse();
+
+  // Weiches Nachziehen zwischen den Zustaenden, damit nichts springt.
+  var akt = { farbe: ZUSTAND.bereit.farbe.slice(), energie: ZUSTAND.bereit.energie, tempo: ZUSTAND.bereit.tempo };
+  var start = performance.now();
+  var pausiert = false;
+  document.addEventListener("visibilitychange", function () { pausiert = document.hidden; });
+
+  function bild(jetzt) {
+    requestAnimationFrame(bild);
+    if (pausiert) return;
+    var z = ZUSTAND[zustand] || ZUSTAND.bereit;
+    var k = 0.055;
+    for (var i = 0; i < 3; i++) akt.farbe[i] += (z.farbe[i] - akt.farbe[i]) * k;
+    akt.energie += (z.energie - akt.energie) * k;
+    akt.tempo   += (z.tempo   - akt.tempo)   * k;
+
+    gl.uniform2f(uAufl, canvas.width, canvas.height);
+    gl.uniform1f(uZeit, (jetzt - start) / 1000);
+    gl.uniform3f(uFarbe, akt.farbe[0], akt.farbe[1], akt.farbe[2]);
+    gl.uniform1f(uEnergie, akt.energie);
+    gl.uniform1f(uTempo, akt.tempo);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  requestAnimationFrame(bild);
+})();
+</script>
+</body>
+</html>

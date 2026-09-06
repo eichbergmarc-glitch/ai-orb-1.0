@@ -5,14 +5,24 @@ Sprachaktivitätserkennung schneidet Äußerungen heraus, Whisper macht Text
 daraus, die Weckworterkennung entscheidet, ob gemeint war, und die
 Sprachausgabe antwortet.
 
-Der Ablauf in einem Satz: **Schlafen, bis „Hallo Orb" fällt – dann zuhören,
-antworten, und noch einen Moment wach bleiben.**
+Der Ablauf in einem Satz: **Auf die zugelassenen Stimmen hören – und für
+alle anderen schlafen, bis „Hallo Orb" fällt.**
 
-Vier Entscheidungen prägen das Verhalten:
+Fünf Entscheidungen prägen das Verhalten:
 
-**Das Weckwort schützt die Privatsphäre.** Im Schlafzustand wird zwar
-zugehört, aber nichts weitergegeben: Der Text wird auf das Weckwort geprüft
-und dann verworfen. Erst danach geht etwas an die KI. Aufnahmen werden nicht
+**Die erkannte Stimme braucht kein Weckwort (freie Ansprache).** Ist eine
+Stimme hinterlegt und wird sie in einer Äußerung sicher wiedererkannt, ist
+der Orb ansprechbar - mitten im Gespräch wie für den ersten Satz. Der
+Preis ist benannt: Was die erkannte Stimme sagt, wird verarbeitet, nicht
+erst nach einem Weckwort. Wer den Orb wegschickt („das war's"), schaltet
+ihn in Ruhe; dann holt ihn nur das Weckwort zurück. Der Benutzer kann
+weitere Stimmen zulassen („hör auf diese Stimme") und widerrufen („hör
+nur auf mich").
+
+**Das Weckwort schützt vor allem Fremden.** Ohne hinterlegte Stimme - und
+für jede nicht erkannte Stimme - wird im Schlafzustand zwar zugehört, aber
+nichts weitergegeben: Der Text wird auf das Weckwort geprüft und dann
+verworfen. Erst danach geht etwas an die KI. Aufnahmen werden nicht
 dauerhaft gespeichert.
 
 **Nach der Antwort bleibt der Orb wach.** Ein Gespräch besteht selten aus
@@ -32,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import threading
 import time
 from collections import deque
@@ -47,6 +58,7 @@ from backend.config import get_config
 from backend.events import event_types
 from backend.events.event_bus import EventBus
 from backend.security.security_engine import SecurityEngine
+from backend.studium.vorlesungs_session import VorlesungsSession
 from backend.system.logging_setup import get_logger
 from backend.system.performance_trace import TurnTrace, mark_stage, reset_turn_trace, start_turn_trace
 from backend.diktat.diktat import KALIBRIERSATZ, Diktierer
@@ -101,13 +113,45 @@ FREMD_GENUG = 0.55
 #: Zeichen, die einen Satz beenden.
 _SENTENCE_ENDINGS = ".!?…"
 
+
+def _gesprochene_kurzfassung(text: str, *, max_zeichen: int = 700) -> str:
+    """Entfernt technische Adressen und begrenzt einen TTS-Rueckfall.
+
+    Der regulaere Satzstrom bleibt unveraendert. Diese Sicherung greift nur,
+    wenn eine vollstaendige Antwort am Ende auf einmal an TTS faellt - genau
+    dort konnten bisher rohe Werkzeugdaten minutenlang vorgelesen werden.
+    """
+
+    knapp = str(text or "").strip()
+    # Bei Markdown-Links den lesbaren Titel behalten, die Adresse weglassen.
+    knapp = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", knapp)
+    knapp = re.sub(r"https?://\S+", "", knapp)
+    knapp = " ".join(knapp.split())
+    if len(knapp) <= max_zeichen:
+        return knapp
+
+    ausschnitt = knapp[:max_zeichen]
+    enden = [ausschnitt.rfind(zeichen) for zeichen in _SENTENCE_ENDINGS]
+    ende = max(enden)
+    if ende >= max_zeichen // 2:
+        ausschnitt = ausschnitt[: ende + 1]
+    else:
+        ausschnitt = ausschnitt.rsplit(" ", 1)[0].rstrip(" ,;:") + "."
+    return ausschnitt.strip() + " Weitere Details fasse ich dir auf Wunsch kurz zusammen."
+
 #: Ab so vielen Zeichen ohne Satzzeichen wird trotzdem gesprochen.
 #:
 #: Manche Antworten kommen als ein langer Fluss ohne Punkt – eine Aufzählung
 #: mit Kommas, ein Nebensatzgebirge. Ewig zu warten hieße, gar nicht
 #: anzufangen. Nach einer Weile wird deshalb am letzten Komma oder
 #: Leerzeichen umbrochen, damit der Orb ins Reden kommt.
-_SOFT_BREAK_AFTER = 160
+_SOFT_BREAK_AFTER = 240
+
+# Ein Komma traegt nur eine kurze Fortsetzungsintonation. Wird genau dort
+# eine Audiodatei beendet, klingt die technische Luecke danach wie
+# Zoegern. Deshalb ist ein Komma erst bei wirklich langen Saetzen eine
+# Notloesung; vorher wird nur an einem staerkeren Semikolon getrennt.
+_COMMA_BREAK_AFTER = 400
 
 #: Abkürzungen, deren Punkt kein Satzende ist.
 #:
@@ -118,7 +162,16 @@ _ABBREVIATIONS = frozenset({
     "dr", "prof", "hr", "fr", "nr", "z", "b", "u", "a", "d", "h",
     "usw", "etc", "ca", "bzw", "vgl", "ggf", "evtl", "inkl", "max", "min",
     "s", "sog", "bspw", "abb", "tab", "jh", "st",
+    "mio", "mrd", "tsd", "hrsg", "bd", "kap", "art", "abs",
 })
+
+#: Ab dieser Pufferlaenge wird notfalls an einem blossen Leerzeichen
+#: umbrochen - aber wirklich nur notfalls. Der gewoehnliche weiche
+#: Umbruch wartet auf ein Komma oder Semikolon, denn dort macht auch
+#: ein Mensch beim Sprechen eine kleine Pause. Ein Schnitt mitten im
+#: Satzglied ("die Verschiebung der | Konsonanten") war der Grund fuer
+#: die unnatuerlichen Luecken, die der Benutzer am 20.08. meldete.
+_NOTBRUCH_AB = 600
 
 
 def _take_complete_sentence(buffer: str) -> tuple[str, str]:
@@ -151,12 +204,36 @@ def _take_complete_sentence(buffer: str) -> tuple[str, str]:
             last_word = candidate[:-1].split()[-1].strip(".,;:").lower() if candidate[:-1].split() else ""
             if last_word in _ABBREVIATIONS:
                 continue
+            # Eine Ordnungszahl ist auch keiner: "Zwischen dem 6. und 8.
+            # Jahrhundert" zerfiel sonst in Bruchstücke, und zwischen
+            # ihnen entstand eine Sprechpause mitten im Gedanken. Ein bis
+            # zwei Ziffern sind eine Ordnungszahl oder ein Datumsteil;
+            # eine Jahreszahl ("... endete 1815.") bleibt ein Satzende.
+            if last_word.isdigit() and len(last_word) <= 2:
+                continue
 
         return candidate, buffer[index + 1 :].lstrip()
 
     # Kein Satzzeichen, aber der Puffer wird lang – weich umbrechen.
+    #
+    # Aber nur dort, wo auch ein Mensch Luft holt: an einem Komma oder
+    # Semikolon. Der alte Umbruch am letzten LEERZEICHEN schnitt lange
+    # Sätze mitten im Satzglied durch, und jede Schnittstelle wurde zur
+    # hörbaren Lücke - genau die "unnatürlichen Lücken mitten im Satz",
+    # die der Benutzer am 20.08. gemeldet hat. Erst wenn der Puffer sehr
+    # lang wird und weit und breit kein Komma kommt, wird notfalls doch
+    # am Leerzeichen gebrochen - besser eine Lücke als acht Sekunden
+    # Schweigen vor einem Nebensatzgebirge.
     if len(buffer) >= _SOFT_BREAK_AFTER:
-        cut = max(buffer.rfind(", "), buffer.rfind(" "))
+        cut = buffer.rfind("; ")
+        if cut > 40:
+            return buffer[: cut + 1].strip(), buffer[cut + 1 :].lstrip()
+    if len(buffer) >= _COMMA_BREAK_AFTER:
+        cut = buffer.rfind(", ")
+        if cut > 80:
+            return buffer[: cut + 1].strip(), buffer[cut + 1 :].lstrip()
+    if len(buffer) >= _NOTBRUCH_AB:
+        cut = buffer.rfind(" ")
         if cut > 40:
             return buffer[:cut].strip(), buffer[cut:].lstrip()
 
@@ -252,11 +329,29 @@ class VoicePipeline:
         self._diktat_ziel_sekunden = float(
             config.get("voice.diktat.ziel_sekunden", 12)
         )
+        # Tagebucheintraege sind ein echtes, mehrteiliges Sprachdiktat. Der
+        # Zustand muss hier leben (und nicht nur im Orchestrator), weil jede
+        # Mikrofon-Aeusserung ein eigener Verarbeitungslauf sein kann.
+        self._tagebuch_diktat_aktiv = False
+        self._tagebuch_diktat_teile: list[str] = []
+        self._tagebuch_diktat_art = "neu"
+        self._tagebuch_diktat_position = "letzter"
 
         # --- Einstellungen -------------------------------------------------------
         self._enabled = bool(config.get("voice.enabled", True))
         self._always_on = bool(config.get("voice.wake_word.always_on", True))
         self._follow_up_seconds = float(config.get("voice.follow_up_seconds", 25.0))
+        #: Freie Ansprache: Wer nachweislich eine ZUGELASSENE Stimme ist
+        #: (die hinterlegte des Benutzers oder eine von ihm freigegebene
+        #: Gaststimme), braucht kein Weckwort - weder mitten im Gespraech
+        #: noch fuer den ersten Satz. Der Benutzer hat es so verlangt:
+        #: "er sollte mich ja immer erkennen, weil er ja meine Stimme
+        #: kennt." Ohne hinterlegte Stimme bleibt alles beim Weckwort,
+        #: sonst hoerte der Orb wieder auf jeden - genau davor schuetzt
+        #: die Stimmpruefung. Wer den Orb wegschickt ("das war's"),
+        #: schaltet ihn in Ruhe: Dann gilt das Weckwort wieder, bis es
+        #: einmal faellt.
+        self._freie_ansprache = bool(config.get("voice.freie_ansprache", True))
         self._min_confidence = float(config.get("voice.input.min_confidence", 0.35))
         self._min_characters = int(config.get("voice.input.min_characters", 2))
         #: Unter dieser Sicherheit wird nachgefragt statt geantwortet.
@@ -303,6 +398,24 @@ class VoicePipeline:
             str(word).strip().lower()
             for word in (config.get("voice.stop_words", ["stop", "stopp", "halt"]) or [])
         }
+
+        #: Ob der Stop-Spaeher auch bei einer lokalen Stimme mithoert.
+        #:
+        #: Voreinstellung an. Der Grund steht ausfuehrlich bei
+        #: :meth:`_stop_spaeher_fuer_ausgabe`: Ohne dies war das Stop-Wort
+        #: bei der lokalen Stimme wirkungslos - und zwar vollstaendig, nicht
+        #: nur unzuverlaessig.
+        self._stop_waehrend_lokaler_stimme = bool(
+            config.get("voice.stop_waehrend_lokaler_stimme", True)
+        )
+        #: Ob eine Taste als zusaetzlicher Unterbrechungsweg eingetragen ist.
+        self._interrupt_taste = str(config.get("voice.interrupt_key", "") or "").strip()
+        #: Ob die eingestellte Stimme im Rechner selbst erzeugt wird. Nur
+        #: dann greift die Ruecksicht auf die CPU ueberhaupt.
+        self._stimme_lokal = any(
+            str(name).strip().lower() in {"supertonic", "pocket_tts", "piper"}
+            for name in (config.get("voice.output.engines", []) or [])
+        )
 
         #: Ob die Antwort im Fluss gesprochen wird – denken, sprechen,
         #: weiterdenken, weitersprechen.
@@ -385,6 +498,19 @@ class VoicePipeline:
             # fuer ein Drei-Sekunden-Fenster schnell genug.
             cpu_threads=2,
             beam_size=1,
+            # Die beiden Schalter, die dieses Fenster billig halten.
+            #
+            # Ohne sie kostete ein 0,6-Sekunden-Fenster am 06.09. bis zu
+            # 14,4 Sekunden Rechenzeit - fuer ein Ergebnis, das am Ende
+            # leer war ("3 Hoerfenster, davon 0 mit Text"). Whisper fuellt
+            # jede Aufnahme intern auf dreissig Sekunden auf und arbeitet
+            # bei Stille die ganze Temperatur-Treppe ab, bevor es aufgibt.
+            #
+            # Hier wird kein Satz verstanden, sondern auf drei kurze Woerter
+            # gehorcht. Ein Durchgang genuegt, und wo nichts gesprochen
+            # wurde, ist auch nichts zu dekodieren.
+            vad_filter=True,
+            temperatur_treppe=False,
             # Ein EIGENER Anker, nicht der des grossen Modells.
             #
             # Hier stand bisher derselbe lange Hinweis: ein Absatz ueber
@@ -433,6 +559,16 @@ class VoicePipeline:
         self._stimme_anzahl = int(config.get("voice.speaker.enrollment_utterances", 3))
         #: Waehrend des Lernens gesammelte Aufnahmen. Leer heisst: kein Lernen.
         self._stimme_lernt: list[Path] | None = None
+        #: Ob gerade eine GASTSTIMME gesammelt wird statt der eigenen.
+        #: Der Ablauf ist derselbe (Proben sammeln, sofort pruefen), nur
+        #: das Ziel ein anderes: Die Proben landen als Gastprofil NEBEN
+        #: dem Benutzerprofil, nicht an seiner Stelle.
+        self._stimme_lernt_gast = False
+        #: Das Urteil der Stimmpruefung zur gerade behandelten Aeusserung.
+        #: Die Befehle rund um die Stimme brauchen es, um Rechte zu
+        #: unterscheiden: Ein Gast darf sprechen, aber nicht bestimmen,
+        #: auf wen der Orb hoert.
+        self._letztes_urteil: Urteil | None = None
         #: Wie oft in Folge eine Probe als unbrauchbar zurueckgewiesen wurde.
         #: Verhindert eine Endlosschleife, wenn das Mikrofon dauerhaft zu leise
         #: oder zu laut ist - nach ein paar Versuchen wird die Probe dennoch
@@ -508,8 +644,8 @@ class VoicePipeline:
 
         self._human_speech = HumanSpeechPolicy(
             enabled=bool(config.get("voice.output.human_timing.enabled", True)),
-            fillers_enabled=bool(config.get("voice.output.human_timing.fillers_enabled", True)),
-            cooldown_seconds=float(config.get("voice.output.human_timing.filler_cooldown_seconds", 38)),
+            fillers_enabled=bool(config.get("voice.output.human_timing.fillers_enabled", False)),
+            cooldown_seconds=float(config.get("voice.output.human_timing.filler_cooldown_seconds", 120)),
             minimum_words=int(config.get("voice.output.human_timing.minimum_words", 9)),
         )
         self._adapt_to_user_rhythm = bool(
@@ -518,7 +654,16 @@ class VoicePipeline:
 
         self._player = AudioPlayer(
             normalize_volume=bool(config.get("voice.output.normalize_volume", True)),
-            target_rms=float(config.get("voice.output.target_rms", 0.14)),
+            target_rms=float(config.get("voice.output.target_rms", 0.10)),
+            trim_boundary_silence=bool(
+                config.get("voice.output.trim_boundary_silence", True)
+            ),
+            leading_silence_ms=float(
+                config.get("voice.output.leading_silence_ms", 30)
+            ),
+            trailing_silence_ms=float(
+                config.get("voice.output.trailing_silence_ms", 70)
+            ),
             on_level=self._on_playback_level,
             on_started=self._on_playback_started,
             on_finished=self._on_playback_finished,
@@ -528,6 +673,7 @@ class VoicePipeline:
             self._on_utterance,
             on_interruption=self._on_interruption,
             on_stop_window=self._on_stop_window,
+            stop_window_ready=self._stop_window_aufnahmebereit,
             stop_window_ms=float(config.get("voice.stop_window_ms", 1200)),
             interruption_hold_ms=float(config.get("voice.barge_in_hold_ms", 270)),
             device=config.get("voice.input.microphone", None),
@@ -541,6 +687,12 @@ class VoicePipeline:
         # --- Zustand ------------------------------------------------------------------
         self._state = VoiceState.OFF
         self._awake_until = 0.0
+        #: Ruhe: Der Benutzer hat den Orb ausdruecklich weggeschickt.
+        #: Solange sie gilt, weckt auch die erkannte Stimme nicht - nur
+        #: das Weckwort holt den Orb zurueck. Ohne dieses Zeichen waere
+        #: "das war's" bei freier Ansprache wirkungslos: Der naechste
+        #: eigene Satz weckte den Orb sofort wieder.
+        self._ruhe = False
 
         #: Gesetzt, sobald der Benutzer dem Orb ins Wort gefallen ist.
         #:
@@ -562,6 +714,27 @@ class VoicePipeline:
         #: Ob gerade ein Hörfenster erkannt wird – Fenster, die währenddessen
         #: eintreffen, werden verworfen statt gestaut.
         self._stop_check_busy = False
+        #: Das eine gemerkte Fenster, das nach dem laufenden geprueft wird.
+        #:
+        #: Dieses Feld fehlte. Nicht der Wert war falsch - es gab das Feld
+        #: nicht. ``_check_stop_window`` las es nach jeder Erkennung, und
+        #: jedes einzelne Hoerfenster endete deshalb mit einem
+        #: AttributeError: waehrend einer laengeren Antwort dutzendfach,
+        #: mitsamt Rueckverfolgung im Protokoll. Die Verkettung "gleich das
+        #: naechste Fenster pruefen" hat nie funktioniert, und niemand sah
+        #: es, weil der Test der Stoppfenster das Feld auf seinem eigenen
+        #: Doppel selbst setzt.
+        self._pending_stop_window: Path | None = None
+        #: Ob schon gemeldet wurde, dass das kleine Modell fehlt.
+        self._stop_grossmodell_gemeldet = False
+        #: Nach so vielen Sekunden ist ein Hoerfenster kein "stop" mehr.
+        #:
+        #: Ein Fenster, das in der Schlange alt geworden ist, beantwortet
+        #: die Frage von vorgestern. Es zu erkennen kostet die Rechenzeit,
+        #: die das aktuelle braucht.
+        self._stop_fenster_verfall = max(
+            0.5, float(config.get("voice.stop_window_verfall_s", 2.5))
+        )
         #: Gesetzt, sobald Spracherkennung UND Sprachausgabe geladen sind.
         #:
         #: Der Orb meldete bisher „Ich bin bereit", sobald der Kern stand –
@@ -575,13 +748,26 @@ class VoicePipeline:
         #: die Lücken zwischen Sätzen technisch beseitigt – ganz ohne Pause
         #: klingt das aber gehetzt. Ein Mensch atmet zwischen Sätzen.
         self._sentence_pause = max(
-            0.0, float(config.get("voice.output.sentence_pause_ms", 180)) / 1000.0
+            0.0, float(config.get("voice.output.sentence_pause_ms", 60)) / 1000.0
         )
+        # Satzstrom mit Vorproduktion: Das Modell darf weiterdenken, waehrend
+        # der erste Satz laeuft. Der jeweils naechste Satz wird bereits in
+        # eine WAV-Datei umgewandelt und wartet beim Wiedergabeende bereit.
+        self._satzstrom_queue: asyncio.Queue[Any] | None = None
+        self._satzstrom_worker: asyncio.Task[bool] | None = None
+        self._satzstrom_synth_lock = asyncio.Lock()
+        self._satzstrom_failed = False
         self._apply_learned_speech_style()
         self._history: list[VoiceTurn] = []
         self._max_history = int(config.get("voice.max_history", 50))
         self._last_error = ""
         self._speaking_task: asyncio.Task[None] | None = None
+        #: Läuft, solange das Mikrofon nicht zu öffnen war und im
+        #: Hintergrund weiter versucht wird. Ohne diese Schleife blieb der
+        #: Orb bis zum nächsten Neustart taub, sobald das Mikrofon beim
+        #: Start klemmte - vierzehn Vorfälle an einem Nachmittag, weil
+        #: jemand immer wieder von Hand neu starten musste.
+        self._mikrofon_heilung: asyncio.Task[None] | None = None
         self._processing = False
         # The concrete trace is also kept on the pipeline because playback
         # callbacks arrive from the audio thread and do not inherit asyncio's
@@ -595,6 +781,20 @@ class VoicePipeline:
         #: Die gerade laufende Antwort-Aufgabe - damit ein "Stop" sie auch
         #: WAEHREND des Denkens abbrechen kann, nicht erst beim Sprechen.
         self._antwort_task: asyncio.Task | None = None
+
+        # --- Fortlaufende Vorlesung -------------------------------------------
+        # Ein Sprachmodell kann nicht von selbst nach seiner Antwort wieder
+        # aufgerufen werden. Frueher sagte es deshalb zwar "ich mache weiter,
+        # wenn du nichts sagst", danach geschah aber nichts. Die Sitzung haelt
+        # den fachlichen Stand; diese Pipeline setzt nach jedem Abschnitt den
+        # wirklich auszufuehrenden Folgeauftrag.
+        self._vorlesung = VorlesungsSession(
+            max_abschnitte=int(config.get("voice.vorlesung.max_abschnitte", 24))
+        )
+        self._vorlesung_pause = max(
+            0.5, float(config.get("voice.vorlesung.pause_sekunden", 2.5))
+        )
+        self._vorlesung_task: asyncio.Task[None] | None = None
 
     # --- Lebenszyklus ------------------------------------------------------------------
 
@@ -615,6 +815,36 @@ class VoicePipeline:
         """Ob der Orb gerade auf Anweisungen hört."""
 
         return self._state in (VoiceState.LISTENING, VoiceState.THINKING, VoiceState.SPEAKING)
+
+    @property
+    def is_busy(self) -> bool:
+        """Ob gerade ein Benutzerzug verarbeitet oder ausgegeben wird.
+
+        Die Laufzeit fragt diese Eigenschaft ab, bevor sie autonomes Lernen
+        startet. Sie fehlte bisher vollständig; ``getattr(..., False)`` in
+        der Laufzeit lieferte deshalb immer ``False`` und ein Hintergrund-
+        auftrag konnte mitten in einer Antwort dasselbe Modell belegen.
+        """
+
+        antwort = self._antwort_task
+        return bool(
+            self._processing
+            or self._turn_claimed
+            or (antwort is not None and not antwort.done())
+            or self._state in (VoiceState.THINKING, VoiceState.SPEAKING)
+        )
+
+    @property
+    def background_idle(self) -> bool:
+        """Ob rechenintensive Hintergrundarbeit den Dialog nicht stoert.
+
+        ``LISTENING`` gilt absichtlich nicht als Leerlauf: In diesem Zustand
+        wartet der Orb nach einer Antwort aktiv auf eine Fortsetzung. Erst im
+        Schlafzustand (oder bei ausgeschalteter Sprache) darf ein autonomer
+        Modelllauf beginnen.
+        """
+
+        return not self.is_busy and self._state in (VoiceState.OFF, VoiceState.SLEEPING)
 
     def set_offline_mode(self, enabled: bool) -> None:
         """Koppelt den Modellmodus an eine garantiert lokale Stimme."""
@@ -665,12 +895,15 @@ class VoicePipeline:
             await self._publish_state()
             return False
 
-        if not self._capture.start():
+        # In einem Thread, nicht in der Ereignisschleife: Das Öffnen
+        # unternimmt inzwischen mehrere Anläufe mit kurzen Wartezeiten.
+        if not await asyncio.to_thread(self._capture.start):
             self._last_error = (
                 "Das Mikrofon ließ sich nicht öffnen. Prüfe unter "
                 "Windows-Einstellungen → Datenschutz → Mikrofon, ob der Zugriff "
-                "erlaubt ist."
+                "erlaubt ist. Ich versuche es im Hintergrund weiter."
             )
+            self._mikrofon_weiter_versuchen()
             await self._publish_state()
             return False
 
@@ -690,15 +923,64 @@ class VoicePipeline:
         )
         return True
 
+    def _mikrofon_weiter_versuchen(self) -> None:
+        """Versucht im Hintergrund weiter, an das Mikrofon zu kommen.
+
+        Der Fehler, um den es geht, ist fast immer vorübergehend: Windows
+        wechselt gerade das Gerät, eine Videokonferenz hält es fest, ein
+        Kopfhörer wird umgesteckt. Wer da nur einmal beim Start fragt, ist
+        für den Rest des Tages taub - und niemand merkt es, bis er den Orb
+        anspricht und nichts geschieht.
+
+        Deshalb: alle dreißig Sekunden ein Versuch, zwanzig Mal, dann ist
+        gut. Öffnet sich das Mikrofon, geht der Orb in Bereitschaft, als
+        wäre nichts gewesen; das Protokoll behält den Vorfall.
+        """
+
+        if self._mikrofon_heilung is not None and not self._mikrofon_heilung.done():
+            return
+
+        async def _schleife() -> None:
+            for _ in range(20):
+                await asyncio.sleep(30)
+                if self._capture.is_running or not self._enabled:
+                    return
+                if not await asyncio.to_thread(self._capture.start):
+                    continue
+                self._last_error = ""
+                await self._set_state(VoiceState.SLEEPING)
+                self._security.record_action(
+                    "voice", "microphone",
+                    "Mikrofon nach Wartezeit geöffnet, wartet auf das Weckwort.",
+                )
+                asyncio.create_task(self._warm_up(), name="ai-orb-voice-warmup")
+                logger.info("Das Mikrofon ist wieder da - die Sprachsteuerung läuft.")
+                return
+            logger.warning(
+                "Das Mikrofon war auch nach zehn Minuten nicht zu öffnen - "
+                "es wird nicht weiter versucht. MIKROFON-PRUEFEN.bat hilft "
+                "bei der Suche."
+            )
+
+        self._mikrofon_heilung = asyncio.create_task(
+            _schleife(), name="ai-orb-mikrofon-heilung"
+        )
+
     async def stop(self) -> None:
         """Beendet die Sprachsteuerung und gibt das Mikrofon frei."""
 
+        self._vorlesung_timer_abbrechen()
+        self._vorlesung.pausieren()
         self._player.stop()
         if self._speaking_task is not None and not self._speaking_task.done():
             self._speaking_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._speaking_task
         self._speaking_task = None
+
+        if self._mikrofon_heilung is not None and not self._mikrofon_heilung.done():
+            self._mikrofon_heilung.cancel()
+        self._mikrofon_heilung = None
 
         await asyncio.to_thread(self._capture.stop)
         self._capture.cleanup(keep_last=0)
@@ -748,6 +1030,42 @@ class VoicePipeline:
         except Exception:  # noqa: BLE001
             logger.exception("Das kleine Stop-Modell ließ sich nicht laden.")
 
+        self._unterbrechungsweg_pruefen()
+
+    def _unterbrechungsweg_pruefen(self) -> None:
+        """Warnt, wenn der Orb gar nicht mehr zu unterbrechen ist.
+
+        Es gibt genau drei Wege: das gesprochene Stop-Wort, das akustische
+        Dazwischenreden (``voice.barge_in``) und eine Taste
+        (``voice.interrupt_key``). Jeder einzelne laesst sich aus gutem
+        Grund abschalten - alle drei zusammen nicht. Bis zum 26.08.2026
+        waren sie es, ohne dass irgendwo etwas davon stand: barge_in aus
+        wegen des Lautsprecherechos, keine Taste eingetragen, und der
+        Stop-Spaeher stumm, weil die lokale Stimme ihn ausschaltete. Der
+        Benutzer sass vor einem Orb, den er nicht mehr stoppen konnte, und
+        das Protokoll meldete "Die Stop-Wort-Erkennung ist bereit".
+
+        Diese Zeile ist deshalb keine Feinheit, sondern die Zusicherung,
+        dass so ein Zustand nie wieder stillschweigend eintritt.
+        """
+
+        stopwort_moeglich = bool(self._stop_words) and (
+            self._stop_waehrend_lokaler_stimme
+            # Ohne den Schalter haengt es an der Stimme: Eine lokale
+            # (rechenintensive) Engine schaltet den Spaeher ab.
+            or not self._stimme_lokal
+        )
+        if stopwort_moeglich or self._barge_in or self._interrupt_taste:
+            return
+        logger.warning(
+            "Der Orb ist derzeit NICHT zu unterbrechen: Das Stop-Wort ist "
+            "wirkungslos (lokale Stimme und voice.stop_waehrend_lokaler_"
+            "stimme steht auf false), voice.barge_in ist aus und "
+            "voice.interrupt_key ist leer. Mindestens einer der drei Wege "
+            "sollte offen sein."
+        )
+
+
     # --- Aufnahme (läuft im Audio-Thread) ---------------------------------------------
 
     def _on_interruption(self) -> None:
@@ -770,6 +1088,80 @@ class VoicePipeline:
         self._capture.mute(False)
 
         logger.info("Der Benutzer ist dazwischengegangen – der Orb hört auf zu sprechen.")
+
+    def _stop_spaeher_fuer_ausgabe(self, result: Any) -> None:
+        """Schaltet den Stop-Spaeher fuer die Wiedergabe dieses Satzes ein.
+
+        Hier lag der Grund, warum das Stop-Wort ueberhaupt nicht mehr
+        griff. Frueher stand hier sinngemaess: Ist die Stimme lokal, lass
+        Whisper aus - sonst nimmt es der Erzeugung des naechsten Satzes die
+        CPU weg. Die Begruendung stimmt, die Folgerung war zu breit.
+
+        Denn die Stimme des Benutzers IST lokal: In ``config.yaml`` steht
+        als einzige Engine ``supertonic``, und die traegt
+        ``avoid_stop_transcription`` in jedem Ergebnis. Damit war die
+        Bedingung immer wahr, der Spaeher wurde nie eingeschaltet, und im
+        Protokoll stand ab dem 25.08.2026 kein einziges Hoerfenster mehr -
+        nur noch "Die Stop-Wort-Erkennung ist bereit", ohne dass sie je
+        etwas zu hoeren bekam.
+
+        Der alte Trost im Text ("Dazwischenreden bleibt trotzdem moeglich")
+        traf ebenfalls nicht zu: Er setzt ``voice.barge_in`` voraus, und das
+        steht auf ``false``, weil der Lautsprecher sonst ins Mikrofon
+        spricht. Mit leerem ``interrupt_key`` waren damit ALLE drei Wege
+        zu, den Orb zu unterbrechen.
+
+        Jetzt gilt die Sperre nur noch dort, wo sie hingehoert: waehrend
+        des ERZEUGENS (das schaltet die Schleife selbst ab, unmittelbar vor
+        ``await pending``) und bei einem echten PCM-Strom, dessen Datei
+        noch geschrieben wird. Waehrend des ABSPIELENS horcht der Spaeher -
+        auch bei einer lokalen Stimme. Wer das nicht will, setzt
+        ``voice.stop_waehrend_lokaler_stimme: false``; dann bleibt es beim
+        alten Verhalten, und der Orb sagt beim Start, dass er nicht mehr zu
+        unterbrechen ist.
+        """
+
+        context = getattr(result, "context", {}) or {}
+        # Ein laufender PCM-Strom bleibt ausgenommen: Dort entsteht die
+        # Datei noch waehrend des Abspielens, das ist echte Gleichzeitigkeit.
+        strom_laeuft = context.get("pcm_stream") is not None
+        if strom_laeuft:
+            self._capture.set_stop_spotting(False)
+            return
+        if not self._stop_waehrend_lokaler_stimme and (
+            context.get("avoid_stop_transcription")
+            # Cachetreffer tragen nur Engine und Dateipfad. Die Kennung
+            # bewahrt deshalb dieselbe Regel bei wiederholten Saetzen.
+            or getattr(result, "engine", "") in {"supertonic", "pocket_tts"}
+        ):
+            self._capture.set_stop_spotting(False)
+            return
+        self._capture.set_stop_spotting(True)
+
+    def _stop_window_aufnahmebereit(self) -> bool:
+        """Ob ein weiteres Hoerfenster ueberhaupt gebraucht wird.
+
+        Der Spaeher schrieb bisher bedingungslos: bei einer Antwort von 45
+        Sekunden rund 75 WAV-Dateien, ueberwiegend die eigene
+        Lautsprecherstimme. Angesehen wurde davon immer nur eines - die
+        Erkennung laeuft einzeln, und gemerkt wird hoechstens ein weiteres.
+        Alle uebrigen wurden geschrieben und ungelesen wieder geloescht.
+
+        Gefragt wird hier im Aufnahme-Thread, also aus einem anderen Thread
+        als dem, der die Felder setzt. Gelesen werden nur einzelne einfache
+        Werte, und ein Fehlgriff kostet hoechstens ein Fenster zu viel oder
+        zu wenig - keine Sperre wert.
+        """
+
+        if not self._listening_for_stop:
+            return False
+        if self._stop_transcriber.load_failed:
+            # Ohne das kleine Modell wird ohnehin nicht geprueft.
+            return False
+        return not (
+            self._stop_check_busy
+            and getattr(self, "_pending_stop_window", None) is not None
+        )
 
     def _on_stop_window(self, path: Path) -> None:
         """Bekommt während des Sprechens ein kurzes Hörfenster.
@@ -808,6 +1200,30 @@ class VoicePipeline:
         """
 
         if not self._listening_for_stop or self._interrupted.is_set():
+            window.unlink(missing_ok=True)
+            return
+
+        if self._stop_transcriber.load_failed:
+            # Hier stand der Rueckfall auf das grosse Modell: "lieber
+            # langsam hinhoeren als gar nicht". Der Gedanke war richtig,
+            # die Rechnung nicht. Das grosse Modell teilt sich die
+            # Warteschlange mit den Saetzen des Benutzers, und in eine
+            # lange Antwort fallen dutzende Fenster. Genau so entstand der
+            # Stau vom 17.08.: erkannt wurde die eigene Stimme, gewartet
+            # hat der Benutzer. Ein spaetes "stop" ist nicht besser als
+            # keines, wenn es die naechste Frage um Minuten verzoegert.
+            #
+            # Die Notbremse bleibt: Ein kurzes "Stop" als eigene Aeusserung
+            # wird weiterhin geprueft (siehe _ist_kurzer_stop), und das
+            # Dazwischenreden meldet der Pegel ohne jede Erkennung.
+            if not getattr(self, "_stop_grossmodell_gemeldet", False):
+                self._stop_grossmodell_gemeldet = True
+                logger.warning(
+                    "Das kleine Erkennungsmodell liess sich nicht laden - "
+                    "das Stop-Wort wird waehrend des Sprechens nicht mehr "
+                    "aus Hoerfenstern geprueft. Sprich den Orb an oder sag "
+                    "'Stop', sobald er eine Pause macht."
+                )
             window.unlink(missing_ok=True)
             return
 
@@ -876,15 +1292,14 @@ class VoicePipeline:
                             )
                             self.interrupt()
                             return
-                    # Ließ sich das kleine Modell nicht laden, lieber
-                    # langsam hinhören als gar nicht: dann übernimmt das
-                    # große. Ein spätes „stop" ist besser als keines.
-                    erkennung = (
-                        self._transcriber
-                        if self._stop_transcriber.load_failed
-                        else self._stop_transcriber
+                    # Mit Verfallszeit: Ein Fenster, das waehrend der
+                    # vorigen Erkennung alt geworden ist, wird verworfen
+                    # statt erkannt. Es beantwortet die Frage von
+                    # vorgestern und kostet die Zeit des aktuellen.
+                    transcript = await self._stop_transcriber.transcribe(
+                        aktuell,
+                        verfallen_nach=getattr(self, "_stop_fenster_verfall", 2.5),
                     )
-                    transcript = await erkennung.transcribe(aktuell)
                     self._spaeher_merken(transcript.text)
                     # Schlecht erkannte Fenster zaehlen nicht.
                     #
@@ -975,6 +1390,12 @@ class VoicePipeline:
 
         if self._loop is None:
             return
+
+        # Beginnt im kurzen Fenster zwischen zwei Vorlesungsabschnitten eine
+        # Wortmeldung, hat sie Vorrang. Das geschieht vor der (mehrsekündigen)
+        # Transkription; andernfalls könnte der Folgeabschnitt anlaufen,
+        # während Whisper den Einwand noch liest.
+        self._loop.call_soon_threadsafe(self._vorlesung_timer_abbrechen)
 
         # Redet der Benutzer, während der Orb spricht, bricht die Wiedergabe
         # sofort ab. Das geschieht hier und nicht in der Loop, damit es ohne
@@ -1067,10 +1488,18 @@ class VoicePipeline:
                     )
                     self.verarbeitung_abbrechen()
                     return
+                # Mit Dauer: Daran laesst sich ablesen, ob die Aufnahme
+                # fuer einen verlaesslichen Abdruck ueberhaupt lang genug
+                # war - der haeufigste Grund, wenn die EIGENE Stimme
+                # faelschlich durchfaellt. (Der Wortlaut kann hier nicht
+                # stehen: Was als fremd gilt, wird bewusst nie erkannt
+                # und nirgends aufgeschrieben.)
                 logger.info(
-                    "Fremde Stimme überhört (Ähnlichkeit %.2f, Schwelle %.2f).",
+                    "Fremde Stimme überhört (Ähnlichkeit %.2f, Schwelle %.2f, "
+                    "Dauer %.1f s).",
                     urteil.aehnlichkeit,
                     urteil.schwelle,
+                    duration,
                 )
                 await self._event_bus.publish("voice.speaker.rejected", urteil.to_dict())
                 return
@@ -1078,14 +1507,42 @@ class VoicePipeline:
             if (
                 self._adapt_to_user_rhythm
                 and urteil.geprueft
+                # Der Sprechrhythmus gehoert dem Benutzer. Eine zugelassene
+                # Gaststimme darf sprechen, aber nicht den Tonfall des Orbs
+                # zu sich hinueberziehen.
+                and urteil.wer != "gast"
                 and self._stimme.rhythmus_aktualisieren(path)
             ):
                 self._apply_learned_speech_style()
 
-            # Ab hier ist klar: Der Benutzer hat gesprochen, und es ist
-            # wirklich er. Was er vorher unterbrochen hat, ist damit
-            # abgeschlossen - die naechste Rede darf wieder sprechen.
+            # Ab hier ist klar: Eine zugelassene Stimme hat gesprochen.
+            # Was vorher unterbrochen wurde, ist damit abgeschlossen -
+            # die naechste Rede darf wieder sprechen.
             self._neue_rede()
+            self._letztes_urteil = urteil
+
+            # Freie Ansprache: Die nachweislich erkannte Stimme braucht
+            # kein Weckwort. NACHWEISLICH heisst geprueft - eine zu kurze
+            # oder unlesbare Aufnahme kommt zwar durch (im Zweifel wird
+            # zugehoert), weckt aber nicht: Sonst weckte jedes Husten den
+            # Orb, sobald kein Profil da ist oder die Pruefung scheitert.
+            # getattr statt Zugriff: Teil-Aufbauten (Tests, Werkzeuge)
+            # haben die Felder nicht immer, und der Aeusserungsweg darf
+            # daran nicht scheitern.
+            if (
+                getattr(self, "_freie_ansprache", False)
+                and not getattr(self, "_ruhe", False)
+                and urteil.geprueft
+                and self._is_asleep()
+            ):
+                logger.info(
+                    "Erkannte Stimme (%s, Aehnlichkeit %.2f) - der Orb ist "
+                    "ohne Weckwort ansprechbar.",
+                    urteil.wer or "benutzer",
+                    urteil.aehnlichkeit,
+                )
+                self._wake()
+                await self._set_state(VoiceState.LISTENING)
 
             # Im Schlaf hoert der Orb nur auf sein Weckwort - und dafuer
             # braucht es das grosse Modell nicht.
@@ -1191,6 +1648,21 @@ class VoicePipeline:
                 logger.info("Verworfen: Wortwiederholung ohne Inhalt.")
                 return
 
+            # Und die andere Sorte Artefakt: Whispers Standardsaetze.
+            #
+            # Auf Stille oder Rauschen gibt das Modell gern das aus, was in
+            # seinen Trainingsdaten am Ende von Videos stand - "Untertitel
+            # im Auftrag des ZDF" steht im Protokoll des Benutzers woertlich
+            # (31.08.2026, 12:46, zweimal hintereinander). Das ist kein
+            # Satz, den jemand gesagt hat; darauf zu antworten heisst, ins
+            # Gespraech zu platzen, waehrend der Benutzer noch redet.
+            if _ist_whisper_phantom(transcript.text):
+                logger.info(
+                    "Verworfen: Whisper-Standardsatz ohne Sprecher (%r).",
+                    transcript.text[:60],
+                )
+                return
+
             await self._event_bus.publish(
                 event_types.SPEECH_TRANSCRIBED,
                 {
@@ -1224,6 +1696,13 @@ class VoicePipeline:
             if self._active_turn_trace is trace:
                 self._active_turn_trace = None
             reset_turn_trace(trace_token)
+            # War es nur ein fremdes Geraeusch, bleibt die Vorlesung aktiv.
+            # Der Timer wurde vorsorglich beim Beginn der Aufnahme gestoppt
+            # und wird hier erneut gesetzt. Eine echte Wortmeldung hat die
+            # Sitzung in _handle_while_awake dagegen pausiert.
+            vorlesung = getattr(self, "_vorlesung", None)
+            if vorlesung is not None and vorlesung.aktiv and not self.is_busy:
+                self._vorlesung_fortsetzung_planen()
 
     # --- Die Stimme lernen ----------------------------------------------------
 
@@ -1238,12 +1717,40 @@ class VoicePipeline:
         """
 
         self._stimme_lernt = []
+        self._stimme_lernt_gast = False
         self._stimme_rueckweisungen = 0
         anzahl = max(2, self._stimme_anzahl)
         return (
             f"Ich höre jetzt genau hin. Sag mir bitte {anzahl} ganze Sätze, "
             "einen nach dem anderen – der Inhalt ist gleichgültig, es geht "
             "nur um den Klang. Jeder sollte ein paar Sekunden dauern."
+        )
+
+    async def gaststimme_lernen_starten(self) -> str:
+        """Lässt eine WEITERE Stimme zu – auf ausdrücklichen Wunsch.
+
+        Der Benutzer sagt "hör auf diese Stimme" und spielt dem Orb danach
+        die andere Stimme vor (eine Person im Raum oder eine Aufnahme).
+        Die nächsten Aufnahmen gelten als Proben dieser Gaststimme. Sie
+        wird NEBEN der Benutzerstimme zugelassen, nie an ihrer Stelle, und
+        gilt, bis der Benutzer "hör nur auf mich" sagt.
+        """
+
+        if not self._stimme.gelernt:
+            return (
+                "Dafür muss ich zuerst deine eigene Stimme kennen, sonst "
+                "kann ich Gast und Hausherr nicht auseinanderhalten. Sag "
+                "erst: lerne meine Stimme."
+            )
+        self._stimme_lernt = []
+        self._stimme_lernt_gast = True
+        self._stimme_rueckweisungen = 0
+        anzahl = max(2, self._stimme_anzahl)
+        return (
+            f"Gut. Spiel mir jetzt {anzahl} ganze Sätze der anderen Stimme "
+            "vor, einen nach dem anderen – jeder ein paar Sekunden lang. "
+            "Ich höre dann auch auf diese Stimme, bis du sagst: hör nur "
+            "auf mich."
         )
 
     async def stimme_neu_einlernen(self) -> str:
@@ -1292,7 +1799,10 @@ class VoicePipeline:
         # Das konfigurierte Grundtempo bleibt die Mitte; das Benutzerprofil
         # verändert es höchstens um zwölf Prozent.
         self._tts.set_rhythm_speed(max(0.88, min(1.12, tempo)))
-        self._sentence_pause = max(0.13, min(0.42, pause_ms / 1000.0))
+        # Die Stimme selbst bringt bereits Atempausen mit. Das Profil darf
+        # sie nuancieren, aber keine zusaetzlichen halben Sekunden zwischen
+        # getrennt erzeugten Dateien einfuegen.
+        self._sentence_pause = max(0.04, min(0.16, pause_ms / 1000.0))
 
     async def _stimme_sammeln(self, path: Path) -> None:
         """Nimmt eine Probe entgegen und lernt, sobald genug beisammen sind."""
@@ -1373,12 +1883,19 @@ class VoicePipeline:
             return
 
         proben = list(self._stimme_lernt)
-        geklappt, meldung = self._stimme.lernen(proben)
-        if geklappt:
-            self._apply_learned_speech_style()
+        war_gast = getattr(self, "_stimme_lernt_gast", False)
+        if war_gast:
+            geklappt, meldung = self._stimme.gast_lernen(proben)
+        else:
+            geklappt, meldung = self._stimme.lernen(proben)
+            if geklappt:
+                self._apply_learned_speech_style()
         self._stimme_aufraeumen()
 
-        await self._event_bus.publish("voice.speaker.enrolled", self._stimme.status())
+        await self._event_bus.publish(
+            "voice.speaker.guest_enrolled" if war_gast else "voice.speaker.enrolled",
+            self._stimme.status(),
+        )
         await self._say(meldung)
 
         if not geklappt:
@@ -1396,6 +1913,7 @@ class VoicePipeline:
             with contextlib.suppress(OSError):
                 probe.unlink()
         self._stimme_lernt = None
+        self._stimme_lernt_gast = False
         self._stimme_rueckweisungen = 0
 
     #: Saetze, die das Hinterlegen der Stimme ausloesen.
@@ -1450,6 +1968,84 @@ class VoicePipeline:
         "hast du meine stimme",
     )
 
+    #: Saetze, mit denen der Benutzer eine WEITERE Stimme zulaesst.
+    #: In entumlauteter Schreibweise, weil vor dem Vergleich normalisiert
+    #: wird - Whisper schreibt mal "hör", mal "hoer".
+    _GAST_ZULASSEN = (
+        "hoer auf diese stimme",
+        "hoere auf diese stimme",
+        "hoer auch auf diese stimme",
+        "hoere auch auf diese stimme",
+        "hoer auf die naechste stimme",
+        "hoere auf die naechste stimme",
+        "hoer auch auf die naechste stimme",
+        "auf eine andere stimme hoeren",
+        "lern diese stimme",
+        "lerne diese stimme",
+        "merk dir diese stimme",
+        "merke dir diese stimme",
+        "gaststimme zulassen",
+        "gaststimme lernen",
+        "lerne die gaststimme",
+    )
+
+    #: Saetze, die alle Gaststimmen widerrufen. Der Satz des Benutzers
+    #: woertlich ("hoer nur auf mich") plus naheliegende Abwandlungen.
+    _NUR_AUF_MICH = (
+        "hoer nur auf mich",
+        "hoere nur auf mich",
+        "hoer nur noch auf mich",
+        "hoere nur noch auf mich",
+        "nur auf mich hoeren",
+        "nur noch auf mich hoeren",
+        "vergiss die gaststimme",
+        "vergiss die gaststimmen",
+        "gaststimme vergessen",
+        "gaststimmen vergessen",
+        "vergiss die andere stimme",
+    )
+
+    def _stimmrecht(self) -> bool:
+        """Ob die gerade sprechende Stimme ueber Stimmen bestimmen darf.
+
+        Nur der Benutzer verwaltet, auf wen der Orb hoert. Eine
+        zugelassene Gaststimme darf sprechen und fragen - aber weder
+        Profile loeschen noch weitere Gaeste zulassen, sonst koennte ein
+        Gast den Hausherrn aussperren. Ohne hinterlegtes Profil gibt es
+        nichts zu schuetzen, und ein ungeprueftes Urteil (zu kurze
+        Aufnahme) sperrt niemanden aus - im Zweifel wird zugehoert.
+        """
+
+        if not self._stimme.aktiv:
+            return True
+        # getattr statt Zugriff: Teil-Aufbauten (Tests, Werkzeuge) haben
+        # das Feld nicht immer, und die Rechtepruefung darf daran nicht
+        # scheitern - im Zweifel wird nicht ausgesperrt.
+        urteil = getattr(self, "_letztes_urteil", None)
+        if urteil is None or not urteil.geprueft:
+            return True
+        return urteil.wer != "gast"
+
+    def _freie_benutzeransprache_aktiv(self) -> bool:
+        """Ob die verifizierte Benutzerstimme unmittelbar gemeint ist.
+
+        ``freie_ansprache`` soll mehr leisten als den schlafenden Orb zu
+        wecken: Wenn die hinterlegte Benutzerstimme sicher erkannt wurde,
+        ist genau diese Identitaet bereits die Anrede. Ein zusaetzlicher
+        Sprachfilter darf den Satz danach nicht erneut wegen eines fehlenden
+        "Hallo Orb" verwerfen. Gaststimmen bleiben bewusst ausgenommen.
+        """
+
+        urteil = getattr(self, "_letztes_urteil", None)
+        return bool(
+            getattr(self, "_freie_ansprache", False)
+            and not getattr(self, "_ruhe", False)
+            and urteil is not None
+            and urteil.akzeptiert
+            and urteil.geprueft
+            and urteil.wer == "benutzer"
+        )
+
     async def _stimme_befehl(self, text: str) -> bool:
         """Behandelt die Saetze rund um die hinterlegte Stimme.
 
@@ -1458,6 +2054,36 @@ class VoicePipeline:
         """
 
         klein = text.lower()
+        # Fuer die Gast-Befehle entumlautet, damit "hör" und "hoer"
+        # dasselbe sind - wie beim Ringmenue.
+        normalisiert = (
+            klein.replace("ü", "ue").replace("ö", "oe").replace("ä", "ae").replace("ß", "ss")
+        )
+
+        gast_zulassen = any(satz in normalisiert for satz in self._GAST_ZULASSEN)
+        nur_auf_mich = any(satz in normalisiert for satz in self._NUR_AUF_MICH)
+        verwaltet = (
+            gast_zulassen
+            or nur_auf_mich
+            or any(satz in klein for satz in self._STIMME_NEU)
+            or any(satz in klein for satz in self._STIMME_LERNEN)
+            or any(satz in klein for satz in self._STIMME_VERGESSEN)
+        )
+        if verwaltet and not self._stimmrecht():
+            await self._say(
+                "Das entscheidet nur mein Benutzer mit seiner eigenen "
+                "Stimme - dich höre ich als Gast.",
+                emotion="freundlich",
+            )
+            return True
+
+        if nur_auf_mich:
+            await self._say(self._stimme.gaeste_vergessen(), emotion="freundlich")
+            return True
+
+        if gast_zulassen:
+            await self._say(await self.gaststimme_lernen_starten(), emotion="freundlich")
+            return True
 
         # Das saubere Neu-Einlernen zuerst - es enthaelt die Woerter des
         # gewoehnlichen Lernens und wuerde sonst von ihm gefangen.
@@ -1481,9 +2107,17 @@ class VoicePipeline:
                     f"{stand['benoetigt']} Sätzen habe ich."
                 )
             elif stand.get("gelernt"):
+                gaeste = int(stand.get("gaeste", 0) or 0)
+                zusatz = (
+                    " Dazu ist eine Gaststimme zugelassen."
+                    if gaeste == 1
+                    else f" Dazu sind {gaeste} Gaststimmen zugelassen."
+                    if gaeste
+                    else " Ich höre nur auf dich."
+                )
                 await self._say(
                     f"Ja. Ich habe deine Stimme aus {stand['aufnahmen']} "
-                    "Aufnahmen hinterlegt und höre nur auf dich."
+                    f"Aufnahmen hinterlegt.{zusatz}"
                 )
             else:
                 await self._say(
@@ -1497,6 +2131,10 @@ class VoicePipeline:
     def _is_asleep(self) -> bool:
         """Ob das Weckwort nötig ist."""
 
+        # Eine Sprechpause beendet niemals einen Tagebucheintrag. Nur der
+        # ausdrueckliche Schlusssatz tut das.
+        if self._tagebuch_diktat_aktiv:
+            return False
         if self._state is VoiceState.SLEEPING:
             return True
         return time.time() > self._awake_until and self._state is not VoiceState.THINKING
@@ -1542,6 +2180,8 @@ class VoicePipeline:
         turn.woke = True
         logger.info("Weckwort erkannt (%.0f %%): '%s'", match.score * 100, match.phrase)
 
+        # Das Weckwort hebt die Ruhe auf - es ist das einzige, das das tut.
+        self._ruhe = False
         self._wake()
         await self._event_bus.publish(
             "voice.wake_word.detected",
@@ -1553,6 +2193,25 @@ class VoicePipeline:
             # nachzufragen.
             if await self._menue_befehl(match.command):
                 return
+            if await self._tagebuch_aufnahme(match.command, turn):
+                return
+            # Ein Vorlesungsstart kommt sehr oft zusammen mit dem Weckwort.
+            # Dieser Weg umgeht den normalen Wachfenster-Handler und muss die
+            # feste Sitzungssteuerung deshalb selbst anwenden.
+            vorlesungsbefehl = self._vorlesung.befehl(match.command)
+            if vorlesungsbefehl == "pausieren":
+                self._vorlesung.pausieren()
+                await self._say("Die Vorlesung ist pausiert.", emotion="freundlich")
+                return
+            if vorlesungsbefehl == "start":
+                auftrag = self._vorlesung.starten(match.command)
+                await self._respond(auftrag, turn, vorlesungszug=True)
+                return
+            if vorlesungsbefehl == "fortsetzen":
+                auftrag = self._vorlesung.fortsetzen()
+                if auftrag:
+                    await self._respond(auftrag, turn, vorlesungszug=True)
+                    return
             await self._respond(match.command, turn)
         elif self._acknowledge:
             await self._set_state(VoiceState.LISTENING)
@@ -1562,6 +2221,114 @@ class VoicePipeline:
             await self._set_state(VoiceState.LISTENING)
 
     # --- Diktiermodus ------------------------------------------------------------
+
+    _TAGEBUCH_ENDE = re.compile(
+        r"(?:^|\s)(?:"
+        r"tagebuch(?:eintrag|eitrag)\s+beendet|"
+        r"ende\s+des\s+(?:tagebuch\s*)?eintrag(?:s|es)|"
+        r"(?:tagebuch\s*)?eintrag\s+ende|"
+        r"änderung\s+beendet|aenderung\s+beendet|"
+        r"ende\s+der\s+änderung|ende\s+der\s+aenderung"
+        r")[.!?]*\s*$",
+        re.IGNORECASE,
+    )
+
+    async def _tagebuch_aufnahme(self, text: str, turn: VoiceTurn) -> bool:
+        """Fuehrt ein Tagebuchdiktat bis zum ausdruecklichen Schlusssatz."""
+
+        from backend.orchestrator.orchestrator import parse_tagebuch_befehl
+
+        text = text.strip()
+        if not self._tagebuch_diktat_aktiv:
+            befehl = parse_tagebuch_befehl(text)
+            if befehl is None:
+                return False
+            if befehl.werkzeug not in {
+                "tagebuch_diktat_start", "tagebuch_aenderung_start",
+            }:
+                # Auch Oeffnen, Entfernen und direkte Aenderungen muessen vor
+                # der Hintergrundgespraechspruefung ankommen. Sie laufen dank
+                # Tagebuch-Schnellweg lokal und ohne Sprachmodell.
+                self._wake()
+                await self._respond(text, turn)
+                return True
+            self._tagebuch_diktat_aktiv = True
+            self._tagebuch_diktat_teile = []
+            self._tagebuch_diktat_art = (
+                str(befehl.argumente.get("modus", "ersetzen_gesamt"))
+                if befehl.werkzeug == "tagebuch_aenderung_start"
+                else "neu"
+            )
+            self._tagebuch_diktat_position = str(
+                befehl.argumente.get("position", "letzter")
+            )
+            self._wake()
+            if self._tagebuch_diktat_art == "neu":
+                aufforderung = (
+                    "Beginne jetzt mit dem Diktieren. Beende mit dem Satz: "
+                    "Ende des Eintrages."
+                )
+            elif self._tagebuch_diktat_art == "anhaengen":
+                aufforderung = (
+                    "Diktiere jetzt die Ergänzung. Beende mit dem Satz: "
+                    "Änderung beendet."
+                )
+            else:
+                aufforderung = (
+                    "Diktiere jetzt die vollständige neue Fassung. Beende mit "
+                    "dem Satz: Änderung beendet."
+                )
+            await self._say(aufforderung)
+            self._wartet_auf_antwort = True
+            return True
+
+        ende = self._TAGEBUCH_ENDE.search(text)
+        abschnitt = text[:ende.start()].strip() if ende else text
+        if abschnitt:
+            self._tagebuch_diktat_teile.append(abschnitt)
+            logger.info(
+                "Tagebuchdiktat: Abschnitt %d aufgenommen (%d Zeichen).",
+                len(self._tagebuch_diktat_teile), len(abschnitt),
+            )
+
+        self._wake()
+        self._wartet_auf_antwort = True
+        if not ende:
+            # Absichtlich schweigen: Eine Antwort zwischen zwei Abschnitten
+            # wuerde die Aufnahme unterbrechen und koennte selbst wieder vom
+            # Mikrofon erfasst werden.
+            return True
+
+        if not self._tagebuch_diktat_teile:
+            await self._say(
+                "Es wurde noch kein Text aufgenommen. Diktiere weiter und "
+                "sage danach: Ende des Eintrages."
+            )
+            self._wartet_auf_antwort = True
+            return True
+
+        gesamtdiktat = " ".join(self._tagebuch_diktat_teile).strip()
+        logger.info(
+            "Tagebuchdiktat vollständig: %d Abschnitte, %d Zeichen.",
+            len(self._tagebuch_diktat_teile), len(gesamtdiktat),
+        )
+        self._tagebuch_diktat_aktiv = False
+        self._tagebuch_diktat_teile = []
+        self._wartet_auf_antwort = False
+        if self._tagebuch_diktat_art == "neu":
+            auftrag = f"Orb, neuer Tagebucheintrag: {gesamtdiktat}"
+        elif self._tagebuch_diktat_art == "anhaengen":
+            auftrag = f"Orb, ergänze den letzten Tagebucheintrag um: {gesamtdiktat}"
+        else:
+            lage = "ersten" if self._tagebuch_diktat_position == "erster" else "letzten"
+            auftrag = (
+                f"Orb, ersetze den {lage} Tagebucheintrag vollständig durch: "
+                f"{gesamtdiktat}"
+            )
+        self._tagebuch_diktat_art = "neu"
+        self._tagebuch_diktat_position = "letzter"
+        await self._respond(auftrag, turn)
+        return True
 
     _DIKTAT_AUSLOESER = (
         "diktier", "diktat", "nimm ein diktat", "diktiere mir", "diktiermodus",
@@ -1760,6 +2527,13 @@ class VoicePipeline:
             self._wake()
             return
 
+        # Vor Richtungs-, Laengen- und Sicherheitsfiltern: Im aktiven Modus
+        # ist jede erkannte Aeusserung Teil des Eintrags. So beendet weder
+        # eine Pause noch ein kurzer Satz oder eine niedrige Konfidenz das
+        # Diktat versehentlich.
+        if await self._tagebuch_aufnahme(text, turn):
+            return
+
         # Laeuft ein Diktat, gehen ALLE Aeusserungen an die Diktatsteuerung -
         # zuerst, noch vor der Laengen- und Sicherheitspruefung, weil die
         # Steuerworte kurz sind ("weiter", "stopp") und sicher durchkommen
@@ -1783,11 +2557,18 @@ class VoicePipeline:
         # Gespraech im Raum, ein Fernseher, die eigene Lautsprecherstimme.
         # Alles verarbeitet, alles beantwortet.
         #
-        # Die Frage ist nicht "verstehe ich den Satz?", sondern "war er an
-        # MICH gerichtet?". Im Zweifel wird zugehoert und geschwiegen: Ein
-        # uebersehener Auftrag kostet eine Wiederholung, eine Antwort auf
-        # ein fremdes Gespraech kostet Vertrauen.
-        if self._hintergrund_erkennen and not weckwort_gefallen:
+        # Bei einer Gaststimme oder einer nicht verifizierbaren Aufnahme ist
+        # die Frage nicht "verstehe ich den Satz?", sondern "war er an MICH
+        # gerichtet?". Die sicher erkannte Benutzerstimme ist bei aktivierter
+        # freier Ansprache dagegen selbst die Anrede. Sie nochmals nach Name,
+        # Frageform oder Imperativ zu filtern machte das Weckwort faktisch
+        # weiterhin notwendig.
+        erkannter_benutzer = self._freie_benutzeransprache_aktiv()
+        if (
+            self._hintergrund_erkennen
+            and not weckwort_gefallen
+            and not erkannter_benutzer
+        ):
             from backend.voice.gespraechsrichtung import einschaetzen
 
             richtung = einschaetzen(
@@ -1796,9 +2577,21 @@ class VoicePipeline:
                 wurde_gefragt=self._wartet_auf_antwort,
             )
             if not richtung.antworten:
+                # Mit allen Messwerten in EINER Zeile, auf Wunsch des
+                # Benutzers (20.08.): Satz, Erkennungssicherheit, Stimm-
+                # aehnlichkeit samt Schwelle und ob eine Rueckfrage offen
+                # stand. Nur so laesst sich spaeter im Protokoll sehen,
+                # WORAN ein zu Unrecht verworfener Satz gescheitert ist.
+                urteil = getattr(self, "_letztes_urteil", None)
                 logger.info(
-                    "Nicht an mich gerichtet (%s): %r - %s",
-                    richtung.art, text[:70], richtung.grund,
+                    "Nicht an mich gerichtet (%s): %r - %s "
+                    "[verstanden %.2f, stimme %.2f/schwelle %.2f, "
+                    "rueckfrage offen: %s]",
+                    richtung.art, text[:120], richtung.grund,
+                    transcript.confidence,
+                    getattr(urteil, "aehnlichkeit", 0.0) or 0.0,
+                    getattr(urteil, "schwelle", 0.0) or 0.0,
+                    "ja" if self._wartet_auf_antwort else "nein",
                 )
                 await self._event_bus.publish(
                     "voice.background.detected",
@@ -1808,6 +2601,11 @@ class VoicePipeline:
                 # oft gleich darauf doch etwas vom Orb.
                 self._wake()
                 return
+        elif erkannter_benutzer and not weckwort_gefallen:
+            logger.info(
+                "Verifizierte Benutzerstimme gilt ohne Weckwort als direkte "
+                "Ansprache."
+            )
         # Ab hier gilt die Aeusserung als an den Orb gerichtet - auch dann,
         # wenn sie den Namen trug und die Pruefung uebersprungen wurde.
         self._wartet_auf_antwort = False
@@ -1882,13 +2680,56 @@ class VoicePipeline:
             self._wake()
             return
 
+        # Fortlaufende Vorlesung: feste Steuerung statt eines unverbindlichen
+        # Versprechens des Sprachmodells. Ein Start oder "Fahre fort" baut
+        # einen Abschnittsauftrag; ein Stop pausiert und behaelt den Stand.
+        vorlesungsbefehl = self._vorlesung.befehl(text)
+        vorlesungszug = False
+        if vorlesungsbefehl == "pausieren":
+            self._vorlesung_timer_abbrechen()
+            self._vorlesung.pausieren()
+            await self._say(
+                "Die Vorlesung ist pausiert. Sag: Fahre mit der Vorlesung fort, "
+                "dann mache ich an derselben Stelle weiter.",
+                emotion="freundlich",
+            )
+            self._wake()
+            return
+        if vorlesungsbefehl == "start":
+            text = self._vorlesung.starten(text)
+            vorlesungszug = True
+        elif vorlesungsbefehl == "fortsetzen":
+            text = self._vorlesung.fortsetzen()
+            vorlesungszug = bool(text)
+        elif self._vorlesung.aktiv:
+            # Eine Frage oder Bemerkung stoppt die aktuelle Rede, aber nicht
+            # die Sitzung. Nach der Antwort setzt der finally-Block des
+            # Hoerfensters den Folgezeitgeber erneut. Nur ein ausdrueckliches
+            # Stop/Pause oben beendet die automatische Fortsetzung.
+            self._vorlesung.benutzer_unterbricht()
+
         if self._is_dismissal(text):
-            await self._say("Alles klar. Sag Bescheid, wenn du mich brauchst.", emotion="freundlich")
+            # Ruhe ist mehr als Schlaf: Bei freier Ansprache wuerde die
+            # naechste eigene Aeusserung den Orb sofort wieder wecken -
+            # das Wegschicken waere wirkungslos. Die Ruhe haelt, bis das
+            # Weckwort faellt.
+            self._vorlesung_timer_abbrechen()
+            if self._vorlesung.aktiv:
+                self._vorlesung.pausieren()
+            self._ruhe = True
+            weckwort = (
+                self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Orb"
+            )
+            await self._say(
+                f"Alles klar, ich ziehe mich zurück. Sag '{weckwort}', "
+                "wenn du mich wieder brauchst.",
+                emotion="freundlich",
+            )
             await self._set_state(VoiceState.SLEEPING)
             self._awake_until = 0.0
             return
 
-        await self._respond(text, turn)
+        await self._respond(text, turn, vorlesungszug=vorlesungszug)
 
     async def _menue_befehl(self, text: str) -> bool:
         """Oeffnet oder schliesst das Ringmenue direkt per Sprache."""
@@ -1902,6 +2743,20 @@ class VoicePipeline:
             .strip(" .,!?:;")
             .split()
         )
+        chat_oeffnen = {
+            "chat", "chat oeffnen", "oeffne den chat", "oeffne chat",
+            "chat einblenden", "zeige den chat", "zeig mir den chat",
+            "chatfenster oeffnen", "oeffne das chatfenster",
+        }
+        chat_schliessen = {
+            "chat schliessen", "schliesse den chat", "chat ausblenden",
+            "chatfenster schliessen", "schliesse das chatfenster",
+        }
+        orb_beenden = {
+            "orb beenden", "beende den orb", "beende orb", "orb schliessen",
+            "schliesse den orb", "ai orb beenden", "ai-orb beenden",
+            "programm beenden", "anwendung beenden",
+        }
         oeffnen = {
             "menue", "menu", "menue einblenden", "menu einblenden",
             "menue oeffnen", "menu oeffnen", "oeffne das menue",
@@ -1913,6 +2768,15 @@ class VoicePipeline:
             "schliess das menue", "blende das menue aus", "menue ausblenden",
             "menu ausblenden",
         }
+        if normalisiert in chat_oeffnen:
+            await self._event_bus.publish(event_types.ORB_CHAT_REQUESTED, {"action": "open"})
+            return True
+        if normalisiert in chat_schliessen:
+            await self._event_bus.publish(event_types.ORB_CHAT_REQUESTED, {"action": "close"})
+            return True
+        if normalisiert in orb_beenden:
+            await self._event_bus.publish(event_types.ORB_QUIT_REQUESTED, {"source": "voice"})
+            return True
         if normalisiert in oeffnen:
             await self._event_bus.publish(event_types.ORB_MENU_REQUESTED, {"action": "open"})
             return True
@@ -1941,23 +2805,32 @@ class VoicePipeline:
             "ende",
         }
 
-    async def _respond(self, text: str, turn: VoiceTurn) -> None:
+    async def _respond(
+        self,
+        text: str,
+        turn: VoiceTurn,
+        *,
+        vorlesungszug: bool = False,
+    ) -> None:
         """Holt eine Antwort und spricht sie."""
 
         self._processing = True
         response_completed = False
+        answer = ""
         # Die eigene Aufgabe merken: Ein "Stop" waehrend des Denkens bricht
         # genau sie ab (siehe verarbeitung_abbrechen).
         self._antwort_task = asyncio.current_task()
         try:
             await self._set_state(VoiceState.THINKING)
-            cue = self._human_speech.thinking_cue(text)
+            # Laufende Vorlesungsabschnitte duerfen niemals mit einem
+            # kuenstlichen Denkfueller beginnen. Bei normalen Antworten gilt
+            # weiterhin die ausdruecklich konfigurierbare Richtlinie.
+            cue = "" if vorlesungszug else self._human_speech.thinking_cue(text)
             if cue:
                 # Nicht in den Antworttext mischen: Der Denklaut ist eine
                 # zeitliche Reaktion und bleibt dadurch auch bei Streaming
                 # genau einmal und vor der eigentlichen Antwort.
                 await self._say(cue, emotion="nachdenklich")
-                await asyncio.sleep(min(0.42, max(0.14, self._sentence_pause)))
                 await self._set_state(VoiceState.THINKING)
 
             # Der Fluss-Weg, wenn er bereitsteht: denken, sprechen,
@@ -1975,15 +2848,17 @@ class VoicePipeline:
             # der Rest noch entsteht. Der Denkweg bleibt dabei vollständig,
             # mit Absicht, Gedächtnis, Professor und Werkzeugen.
             gesprochen = False
+            self._satzstrom_starten()
             try:
-                answer, gesprochen = await self._answer(text, on_speech=self._sprich_satz)
+                answer, _ = await self._answer(text, on_speech=self._sprich_satz)
             except Exception:  # noqa: BLE001
                 logger.exception("Die Antwort konnte nicht erzeugt werden.")
                 answer = (
                     "Da ist bei mir etwas schiefgegangen. Die Einzelheiten "
                     "stehen im Protokoll."
                 )
-                gesprochen = False
+            finally:
+                gesprochen = await self._satzstrom_beenden()
 
             turn.answered = True
 
@@ -1997,7 +2872,14 @@ class VoicePipeline:
                 answer = "Dazu fällt mir gerade nichts ein."
 
             mark_stage("answer_tts_requested")
-            response_completed = await self._say(answer)
+            # Ein Werkzeug-Rueckfall kann interne Rohdaten zurueckgeben. In
+            # normalen Gespraechen niemals minutenlang URLs oder Trefferlisten
+            # vorlesen. Vorlesungen sind davon ausgenommen; sie besitzen ihren
+            # eigenen abschnittsweisen Ablauf.
+            gesprochenes_answer = (
+                answer if vorlesungszug else _gesprochene_kurzfassung(answer)
+            )
+            response_completed = await self._say(gesprochenes_answer)
         finally:
             self._processing = False
             self._antwort_task = None
@@ -2014,6 +2896,73 @@ class VoicePipeline:
                     "voice.response.finished",
                     {"completed": response_completed},
                 )
+            if vorlesungszug:
+                erfolgreich = bool(
+                    turn.answered
+                    and response_completed
+                    and not self._interrupted.is_set()
+                )
+                self._vorlesung.abschnitt_beendet(answer, erfolgreich=erfolgreich)
+                if self._vorlesung.aktiv:
+                    self._vorlesung_fortsetzung_planen()
+
+    def _vorlesung_timer_abbrechen(self) -> None:
+        """Verwirft einen noch nicht gestarteten Folgeabschnitt."""
+
+        task = getattr(self, "_vorlesung_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._vorlesung_task = None
+
+    def _vorlesung_fortsetzung_planen(self) -> None:
+        """Plant genau einen Folgeabschnitt nach dem Unterbrechungsfenster."""
+
+        if not self._vorlesung.aktiv or self._loop is None:
+            return
+        vorhanden = self._vorlesung_task
+        if vorhanden is not None and not vorhanden.done():
+            return
+
+        async def _fortsetzen() -> None:
+            try:
+                await asyncio.sleep(self._vorlesung_pause)
+                # Ein gleichzeitig verarbeitetes Hoerfenster darf die
+                # Fortsetzung verzoegern, aber nicht verlieren. Die fruehere
+                # Fassung kehrte bei ``is_busy`` einfach zurueck; danach gab es
+                # keinen Zeitgeber mehr und der Orb wartete unbegrenzt.
+                while self._vorlesung.aktiv and self.is_busy:
+                    await asyncio.sleep(0.35)
+                if not self._vorlesung.aktiv:
+                    self._vorlesung_task = None
+                    return
+                # Das Feld vor _respond freigeben: Dessen Abschluss darf
+                # bereits den darauffolgenden Abschnitt planen.
+                self._vorlesung_task = None
+                self._neue_rede()
+                turn = VoiceTurn(transcript="automatische Vorlesungsfortsetzung")
+                logger.info(
+                    "Vorlesung wird automatisch mit Abschnitt %d fortgesetzt.",
+                    self._vorlesung.stand.naechster_abschnitt,
+                )
+                await self._respond(
+                    self._vorlesung.naechster_auftrag(),
+                    turn,
+                    vorlesungszug=True,
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception:  # noqa: BLE001 - ein Folgefehler darf die Stimme nicht reissen.
+                logger.exception("Die Vorlesung konnte nicht automatisch fortgesetzt werden.")
+                self._vorlesung.pausieren()
+
+        self._vorlesung_task = asyncio.create_task(
+            _fortsetzen(), name="ai-orb-vorlesung-fortsetzen"
+        )
+        logger.info(
+            "Vorlesungsfortsetzung in %.1f Sekunden geplant (Abschnitt %d).",
+            self._vorlesung_pause,
+            self._vorlesung.stand.naechster_abschnitt,
+        )
 
     async def _sprich_satz(self, satz: str) -> bool:
         """Spricht einen einzelnen, fertig gedachten Satz.
@@ -2027,7 +2976,154 @@ class VoicePipeline:
         if self._interrupted.is_set():
             return False
         mark_stage("answer_tts_requested")
-        return await self._say(satz)
+        queue = self._satzstrom_queue
+        if queue is None:
+            return await self._say(satz)
+        if self._satzstrom_failed:
+            return False
+
+        # Nicht auf die Wiedergabe warten: Sonst stoppt der Providerstrom an
+        # jedem Punkt, und der naechste Satz wird erst NACH der vorherigen
+        # Audiodatei erzeugt. Die gemessene tote Luecke betrug 1,1 bis 1,9 s.
+        async def _vorbereiten() -> Any:
+            # Die TTS-Engine selbst bleibt seriell (wichtig fuer lokale
+            # Modelle), laeuft aber parallel zur Wiedergabe des Vorgaengers.
+            async with self._satzstrom_synth_lock:
+                return await self._tts.speak(satz, state="speaking")
+
+        pending = asyncio.create_task(_vorbereiten())
+        await queue.put((satz, pending))
+        return True
+
+    def _satzstrom_starten(self) -> None:
+        """Startet eine geordnete, vorproduzierende Satzwiedergabe."""
+
+        if self._satzstrom_worker is not None and not self._satzstrom_worker.done():
+            return
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        self._satzstrom_failed = False
+        self._satzstrom_queue = queue
+        self._satzstrom_worker = asyncio.create_task(self._satzstrom_abspielen(queue))
+
+    async def _satzstrom_beenden(self) -> bool:
+        """Schliesst den Satzstrom und wartet auf die letzte Wiedergabe."""
+
+        queue = self._satzstrom_queue
+        worker = self._satzstrom_worker
+        if queue is None or worker is None:
+            return False
+        await queue.put(None)
+        try:
+            return bool(await worker)
+        finally:
+            self._satzstrom_queue = None
+            self._satzstrom_worker = None
+            self._satzstrom_failed = False
+
+    async def _satzstrom_abspielen(self, queue: asyncio.Queue[Any]) -> bool:
+        """Spielt vorproduzierte Saetze lueckenarm und in richtiger Folge."""
+
+        first = await queue.get()
+        if first is None:
+            return False
+
+        completed = True
+        interrupted = False
+        played_anything = False
+        last_text = ""
+
+        async with self._speech_lock:
+            await self._set_state(VoiceState.SPEAKING)
+            await self._event_bus.publish(
+                event_types.TTS_STARTED, {"text": first[0], "stream": True}
+            )
+            self._listening_for_stop = True
+            self._capture.mute(True)
+            # Noch wird nichts abgespielt. Stop-Whisper jetzt zu starten
+            # wuerde nur mit der lokalen TTS um dieselben CPU-Kerne kaempfen.
+            self._capture.set_stop_spotting(False)
+
+            current = first
+            try:
+                while current is not None:
+                    text, pending = current
+                    last_text = str(text)
+                    self._letzte_saetze.append(self._woerter(last_text))
+                    self._gesprochene_woerter = set().union(*self._letzte_saetze)
+
+                    if self._interrupted.is_set():
+                        pending.cancel()
+                        interrupted = True
+                        completed = False
+                        break
+
+                    try:
+                        self._capture.set_stop_spotting(False)
+                        result = await pending
+                    except asyncio.CancelledError:
+                        interrupted = True
+                        completed = False
+                        break
+
+                    active_trace = getattr(self, "_active_turn_trace", None)
+                    if active_trace is not None and "answer_tts_requested" in active_trace.stages:
+                        active_trace.mark("answer_audio_ready")
+
+                    if not result.succeeded:
+                        self._last_error = result.error
+                        logger.error("Die Sprachausgabe ist fehlgeschlagen: %s", result.error)
+                        self._satzstrom_failed = True
+                        completed = False
+                        break
+
+                    self._stop_spaeher_fuer_ausgabe(result)
+
+                    played = await asyncio.to_thread(
+                        self._play_tts_result_blocking, result
+                    )
+                    if not played or self._interrupted.is_set():
+                        interrupted = self._interrupted.is_set()
+                        self._satzstrom_failed = not interrupted
+                        completed = False
+                        break
+                    played_anything = True
+
+                    # Keine zusaetzliche sleep-Pause: Die WAV behaelt einen
+                    # kontrollierten Atemrand. Der naechste, parallel erzeugte
+                    # Satz kann unmittelbar anschliessen.
+                    current = await queue.get()
+            finally:
+                # Noch nicht abgespielte Synthesen abbrechen, beispielsweise
+                # nach einem gesprochenen "Stop".
+                while not queue.empty():
+                    queued = queue.get_nowait()
+                    if queued is not None:
+                        queued[1].cancel()
+                self._listening_for_stop = False
+                self._capture.set_stop_spotting(False)
+                self._capture.mute(False)
+                self._spaeher_bilanz()
+                await self._event_bus.publish(
+                    event_types.TTS_FINISHED,
+                    {
+                        "completed": completed,
+                        "interrupted": interrupted,
+                        "final": not self._processing,
+                    },
+                )
+
+        if played_anything:
+            self._wartet_auf_antwort = (
+                last_text.rstrip().rstrip("'\"").endswith("?")
+                or (
+                    "beginne" in last_text.lower()
+                    and "diktieren" in last_text.lower()
+                )
+            )
+        if interrupted:
+            self._wake()
+            await self._set_state(VoiceState.LISTENING)
+        return completed and played_anything
 
     async def _respond_streaming(self, text: str, turn: VoiceTurn) -> bool:
         """Spricht die Antwort im Fluss, Satz für Satz, während sie entsteht.
@@ -2045,32 +3141,36 @@ class VoicePipeline:
         """
 
         buffer = ""
-        spoke_anything = False
         turn.answered = True
+        self._satzstrom_starten()
 
         try:
             async for piece in self._answer_stream(text):
                 buffer += piece
+                # Alle fertigen Saetze sofort in den Vorproduktionsstrom
+                # geben. Die Synthese des Nachfolgers laeuft damit bereits,
+                # waehrend der Vorgaenger zu hoeren ist.
+                saetze: list[str] = []
                 sentence, buffer = _take_complete_sentence(buffer)
                 while sentence:
-                    mark_stage("answer_tts_requested")
-                    if await self._say(sentence):
-                        spoke_anything = True
-                    if self._interrupted.is_set():
-                        return spoke_anything
+                    saetze.append(sentence)
                     sentence, buffer = _take_complete_sentence(buffer)
+                if saetze:
+                    # Die direkte Schnellspur nutzt denselben Vorproduktions-
+                    # strom wie der vollstaendige Denkweg. Dadurch kann auch
+                    # hier das Modell weiterliefern, waehrend Audio laeuft.
+                    for satz in saetze:
+                        await self._sprich_satz(satz)
+                    if self._interrupted.is_set():
+                        break
 
             # Was nach dem letzten Satzzeichen übrig blieb, noch sprechen.
             rest = buffer.strip()
-            if rest:
-                mark_stage("answer_tts_requested")
-                if await self._say(rest):
-                    spoke_anything = True
+            if rest and not self._interrupted.is_set():
+                await self._sprich_satz(rest)
         except Exception:  # noqa: BLE001 - Fluss gescheitert, dann eben normal.
             logger.exception("Der Streaming-Weg ist gescheitert; Rückfall auf den ganzen Text.")
-            return spoke_anything
-
-        return spoke_anything
+        return await self._satzstrom_beenden()
 
     # --- Sprechen -------------------------------------------------------------------------
 
@@ -2095,7 +3195,25 @@ class VoicePipeline:
         # Durcheinander. Wer sprechen will, wartet, bis der Vorredner
         # fertig ist.
         async with self._speech_lock:
-            return await self._say_locked(text, emotion=emotion)
+            gesprochen = await self._say_locked(text, emotion=emotion)
+
+        # Endet die eigene Rede mit einer Frage, wartet der Orb auf die
+        # Antwort. Das stand bisher NUR nach der Verstehens-Rueckfrage -
+        # und genau daran scheiterte am 20.08. um 04:35:36 das "Ja,
+        # bitte, tu das" des Benutzers: Der Orb hatte in seiner Antwort
+        # selbst gefragt, die Zustimmung darauf galt der Richtungs-
+        # pruefung aber als Zustimmung in einem fremden Gespraech.
+        # Endet die Rede OHNE Frage, ist auch keine offen - dann faellt
+        # das Zeichen zurueck.
+        if gesprochen:
+            self._wartet_auf_antwort = (
+                str(text).rstrip().rstrip("'\"").endswith("?")
+                or (
+                    "beginne" in str(text).lower()
+                    and "diktieren" in str(text).lower()
+                )
+            )
+        return gesprochen
 
     async def _say_locked(self, text: str, *, emotion: str = "") -> bool:
         """Der eigentliche Sprechvorgang – läuft unter der Sprechsperre."""
@@ -2134,7 +3252,9 @@ class VoicePipeline:
         # der gerade lief.
         self._listening_for_stop = True
         self._capture.mute(True)
-        self._capture.set_stop_spotting(True)
+        # Erst waehrend der Wiedergabe horchen. Vorher konkurrierte Whisper
+        # beim Erzeugen jedes Satzes mit der lokalen TTS um die CPU.
+        self._capture.set_stop_spotting(False)
 
         completed = True
         interrupted = False
@@ -2172,6 +3292,7 @@ class VoicePipeline:
                         pending.cancel()
                         break
 
+                    self._capture.set_stop_spotting(False)
                     result = await pending
 
                     active_trace = getattr(self, "_active_turn_trace", None)
@@ -2183,6 +3304,8 @@ class VoicePipeline:
                         logger.error("Die Sprachausgabe ist fehlgeschlagen: %s", result.error)
                         completed = False
                         break
+
+                    self._stop_spaeher_fuer_ausgabe(result)
 
                     # Den nächsten Satz sofort in Arbeit geben, bevor der
                     # aktuelle abgespielt wird – das ist der ganze Trick.
@@ -2201,7 +3324,7 @@ class VoicePipeline:
                         break
 
                     played = await asyncio.to_thread(
-                        self._player.play_blocking, result.audio_path
+                        self._play_tts_result_blocking, result
                     )
 
                     if self._interrupted.is_set():
@@ -2249,6 +3372,14 @@ class VoicePipeline:
         # wurde, und bekamen immer nein - das Zeichen war eine Zeile vorher
         # geloescht worden.
         return completed
+
+    def _play_tts_result_blocking(self, result: Any) -> bool:
+        """Spielt neue Streams und bleibt mit einfachen Test-Playern kompatibel."""
+
+        method = getattr(self._player, "play_result_blocking", None)
+        if callable(method):
+            return bool(method(result))
+        return bool(self._player.play_blocking(result.audio_path))
 
     async def wait_until_warm(self, timeout: float = 90.0) -> bool:
         """Wartet, bis Erkennung und Ausgabe wirklich geladen sind.
@@ -2542,7 +3673,9 @@ class VoicePipeline:
                 if self._stop_transcriber.load_failed
                 else self._stop_transcriber
             )
-            transcript = await erkennung.transcribe(path)
+            # Auch hier eine Verfallszeit: Ein "Stop", das sechs Sekunden
+            # in der Schlange stand, bremst nichts mehr.
+            transcript = await erkennung.transcribe(path, verfallen_nach=6.0)
         except Exception:  # noqa: BLE001 - die Notbremse darf nie selbst reissen.
             logger.debug("Stop-Kurzprüfung nicht möglich.", exc_info=True)
             return False
@@ -2637,6 +3770,30 @@ class VoicePipeline:
 
         return [turn.to_dict() for turn in self._history[-limit:]][::-1]
 
+    @property
+    def transcriber(self) -> "Transcriber":
+        """Die Spracherkennung.
+
+        Nach aussen sichtbar, weil ein Gerät ohne eigenes Mikrofon am
+        Rechner - ein iPad im selben Netz - seine Aufnahme hierher
+        schickt. Die Erkennung ist dieselbe; nur der Weg des Tons ist
+        ein anderer.
+        """
+
+        return self._transcriber
+
+    @property
+    def tts(self) -> "TtsManager":
+        """Die Sprachausgabe.
+
+        Wird von aussen gebraucht, um eine Antwort zu *erzeugen*, ohne sie
+        hier abzuspielen: Wer auf dem iPad fragt, will die Antwort auf dem
+        iPad hören und nicht aus den Lautsprechern eines Rechners, vor dem
+        niemand sitzt.
+        """
+
+        return self._tts
+
     def status(self) -> dict[str, Any]:
         """Gesamtstatus der Sprachsteuerung."""
 
@@ -2649,12 +3806,15 @@ class VoicePipeline:
             "awake_seconds_left": round(remaining, 1),
             "wake_words": self._wake_word.phrases,
             "always_on": self._always_on,
+            "freie_ansprache": self._freie_ansprache,
+            "ruhe": self._ruhe,
             "barge_in": self._barge_in,
             "last_error": self._last_error,
             "capture": self._capture.status(),
             "transcriber": self._transcriber.status(),
             "tts": self._tts.status(),
             "player": self._player.status(),
+            "vorlesung": self._vorlesung.status(),
             "turns": len(self._history),
         }
 
@@ -2680,6 +3840,59 @@ class VoicePipeline:
             + (self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Orb")
             + "'."
         )
+
+
+#: Saetze, die Whisper aus dem Nichts erzeugt.
+#:
+#: Sie stammen aus Untertiteldateien in den Trainingsdaten und tauchen
+#: auf, wenn das Modell Stille oder Rauschen bekommt. Wer sie kennt, sieht
+#: sie sofort - der Orb sah sie bisher als Aeusserung an.
+_PHANTOMSAETZE: tuple[str, ...] = (
+    "untertitel im auftrag des zdf",
+    "untertitelung im auftrag des zdf",
+    "untertitelung des zdf",
+    "untertitel der amara org community",
+    "untertitel von stephanie geiges",
+    "untertitel im auftrag des swr",
+    "untertitel im auftrag des wdr",
+    "mehr infos auf amara org",
+    "vielen dank fuer das zuschauen",
+    "vielen dank fuers zuschauen",
+    "vielen dank fuer ihre aufmerksamkeit und auf wiedersehen",
+    "abonniert diesen kanal",
+    "copyright wdr",
+)
+
+
+def _ist_whisper_phantom(text: str) -> bool:
+    """Ob eine Erkennung einer von Whispers Standardsaetzen ist.
+
+    Geprueft wird streng: Der bereinigte Text muss im Kern AUS so einem
+    Satz bestehen, nicht ihn bloss enthalten. Sonst verschluckte der Orb
+    eine echte Frage, in der zufaellig "vielen Dank" vorkommt.
+    """
+
+    bereinigt = str(text or "").lower()
+    for zeichen in ".,!?;:\u2026\"'()[]-\u2013\u2014":
+        bereinigt = bereinigt.replace(zeichen, " ")
+    bereinigt = (
+        bereinigt.replace("ü", "ue").replace("ä", "ae").replace("ö", "oe")
+        .replace("ß", "ss")
+    )
+    # Jahreszahlen haengt Whisper gern an ("Untertitel im Auftrag des ZDF, 2020").
+    bereinigt = " ".join(
+        wort for wort in bereinigt.split() if not wort.isdigit()
+    )
+    if not bereinigt:
+        return False
+
+    for satz in _PHANTOMSAETZE:
+        if bereinigt == satz or bereinigt.startswith(satz):
+            return True
+        # Umgekehrt auch: "untertitel des zdf" ist eine Kurzform.
+        if satz.startswith(bereinigt) and len(bereinigt) >= 20:
+            return True
+    return False
 
 
 def _ist_geplapper(text: str) -> bool:

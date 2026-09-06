@@ -33,7 +33,10 @@ runtime/
 node_modules/
 models/
 logs/
-audio/
+# Nur Laufzeit-Audio im Projektstamm ignorieren. Die ungenaue Regel
+# ``audio/`` blendete bislang auch backend/audio und damit Python-Quellcode
+# aus jedem GitHub-Push aus.
+/audio/
 build/
 dist/
 __pycache__/
@@ -41,3 +44,9 @@ __pycache__/
 data/
 .env.*
 .env.example
+
+# 12,9 GB Testprotokolle - gehoert nicht ins Repository.
+.pytest_cache.zip
+
+# Ablage fuer Zwischendateien und heruntergeladene Installer.
+tmp/

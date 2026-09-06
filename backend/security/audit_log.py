@@ -78,6 +78,9 @@ class AuditLog:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._max_entries = max(100, max_entries)
+        #: Wie viele Zeilen im Protokoll stehen. -1 heisst: noch nicht
+        #: gezaehlt. Der Zaehler ersetzt den Dateiscan nach jedem Eintrag.
+        self._zeilen = -1
 
     @property
     def path(self) -> Path:
@@ -102,16 +105,42 @@ class AuditLog:
                 return
             self._trim_if_needed()
 
+    def _zeilen_zaehlen(self) -> int:
+        """Zählt die Zeilen der Protokolldatei - einmal je Programmlauf."""
+
+        try:
+            with self._path.open("r", encoding="utf-8") as handle:
+                return sum(1 for _ in handle)
+        except OSError:
+            return 0
+
     def _trim_if_needed(self) -> None:
-        """Kürzt das Protokoll, wenn es zu lang geworden ist."""
+        """Kürzt das Protokoll, wenn es zu lang geworden ist.
+
+        Mit einem Zähler statt einem Dateiscan. Vorher wurde nach JEDEM
+        Eintrag die ganze Datei eingelesen - bei 5000 erlaubten Zeilen
+        also 5000 Zeilen lesen, um eine zu schreiben, und das auf dem Weg
+        jeder heiklen Aktion. Gekürzt wird ausserdem erst mit etwas Luft
+        nach oben, damit nicht jeder weitere Eintrag ein Umschreiben der
+        ganzen Datei auslöst.
+        """
+
+        if self._zeilen < 0:
+            self._zeilen = self._zeilen_zaehlen()
+        self._zeilen += 1
+
+        if self._zeilen <= self._max_entries * 1.2:
+            return
 
         try:
             with self._path.open("r", encoding="utf-8") as handle:
                 lines = handle.readlines()
         except OSError:
+            self._zeilen = -1
             return
 
         if len(lines) <= self._max_entries:
+            self._zeilen = len(lines)
             return
 
         keep = lines[-self._max_entries :]
@@ -120,8 +149,11 @@ class AuditLog:
             with temporary.open("w", encoding="utf-8") as handle:
                 handle.writelines(keep)
             temporary.replace(self._path)
+            self._zeilen = len(keep)
         except OSError:
             logger.exception("Das Prüfprotokoll konnte nicht gekürzt werden.")
+            # Beim naechsten Mal lieber neu zaehlen als falsch weiterzaehlen.
+            self._zeilen = -1
 
     def recent(self, limit: int = 50, *, permission: str = "") -> list[dict[str, Any]]:
         """Liest die jüngsten Einträge.

@@ -56,6 +56,15 @@ export class AnimationLoop {
   private frameTimes: number[] = [];
   private qualityLevel = 2;
   private qualityCooldown = 0;
+  private readonly visibilityHandler = (): void => {
+    // Ausgeblendete Electron-Fenster werden vom Betriebssystem stark
+    // gedrosselt. Deren lange Pause ist kein Leistungsproblem und darf
+    // deshalb weder als schlechtes Frame noch als Zeitsprung eingehen.
+    if (!document.hidden) {
+      this.lastFrameTime = performance.now();
+      this.frameTimes = [];
+    }
+  };
 
   /**
    * @param callbacks Die auszuführenden Rückrufe.
@@ -74,6 +83,7 @@ export class AnimationLoop {
     }
     this.running = true;
     this.lastFrameTime = performance.now();
+    document.addEventListener("visibilitychange", this.visibilityHandler);
     this.frameHandle = requestAnimationFrame((time) => this.tick(time));
   }
 
@@ -81,6 +91,7 @@ export class AnimationLoop {
   public stop(): void {
     this.running = false;
     cancelAnimationFrame(this.frameHandle);
+    document.removeEventListener("visibilitychange", this.visibilityHandler);
   }
 
   /**
@@ -117,6 +128,10 @@ export class AnimationLoop {
       return;
     }
     this.frameHandle = requestAnimationFrame((time) => this.tick(time));
+
+    if (document.hidden) {
+      return;
+    }
 
     const rawDelta = now - this.lastFrameTime;
     const targetFps = this.isIdle ? this.options.idleFps : this.options.targetFps;

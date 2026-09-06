@@ -79,6 +79,10 @@ class AgentManager:
             str(name): str(engine or "")
             for name, engine in (agents_config.get("modelle", {}) or {}).items()
         }
+        self._lokale_modell_zuordnung: dict[str, str] = {
+            str(name): str(engine or "")
+            for name, engine in (agents_config.get("lokale_modelle", {}) or {}).items()
+        }
 
         self.registry = AgentRegistry()
         self.capabilities = CapabilityRegistry()
@@ -164,6 +168,9 @@ class AgentManager:
                     agent.name,
                     gewuenscht,
                 )
+            lokal = self._lokale_modell_zuordnung.get(agent.name)
+            if lokal and hasattr(agent, "lokales_modell"):
+                agent.lokales_modell = lokal
             self.add_agent(agent)
 
     def add_agent(self, agent: BaseAgent, permissions: list[str] | None = None) -> None:

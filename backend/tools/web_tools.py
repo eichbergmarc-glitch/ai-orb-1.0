@@ -89,7 +89,14 @@ _SUCHMASCHINEN: tuple[_Maschine, ...] = (
     # HTML-Auswertung erkannte zuletzt nur noch Startseiten als Treffer.
     _Maschine("Bing", "https://www.bing.com/search", "rss",
               ("bing.com", "microsoft.com", "msn.com", "microsofttranslator.com"),
-              zusatz={"setlang": "de", "cc": "de"}),
+              # Der verbundene Kalender und damit der Standort des Benutzers
+              # liegen in der Schweiz. Ohne einen eindeutigen Markt lieferte
+              # Bing fuer Schweizer Versicherungen deutsche oder sogar
+              # voellig fremdsprachige Treffer.
+              zusatz={"setlang": "de-CH", "cc": "ch", "mkt": "de-CH"}),
+    _Maschine("Yahoo", "https://search.yahoo.com/search", "get",
+              ("yahoo.com", "yimg.com", "bing.com", "microsoft.com"),
+              zusatz={"vl": "lang_de", "vc": "ch"}),
     _Maschine("Mojeek", "https://www.mojeek.com/search", "get",
               ("mojeek.com",)),
     _Maschine("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/", "post",
@@ -103,9 +110,28 @@ _SUCHMASCHINEN: tuple[_Maschine, ...] = (
 #: Woran zu erkennen ist, dass die Suchmaschine abgewiesen hat, statt keine
 #: Treffer zu haben. Das sind zwei sehr verschiedene Dinge, und sie
 #: auseinanderzuhalten ist der halbe Weg zur Behebung.
+#:
+#: Bewusst VOLLSTAENDIGE Wendungen. Zuvor stand hier unter anderem das
+#: blosse Wort "anomaly" - und das kommt auf jeder DuckDuckGo-Seite in
+#: Klassennamen wie ``anomaly-modal__mask`` vor. Ein einzelnes Wort aus
+#: einem CSS-Namen ist kein Beweis fuer eine Sperre. "blocked" traf
+#: ausserdem "adblocked", "unblocked" und jeden Text ueber Werbeblocker.
 _ABWEISUNGEN: tuple[str, ...] = (
-    "unusual traffic", "anomaly", "captcha", "are you a robot",
-    "blocked", "rate limit", "too many requests", "zugriff verweigert",
+    "unusual traffic",
+    "bots use duckduckgo",
+    "confirm this search was made by a human",
+    "please complete the following challenge",
+    "are you a robot",
+    "are you a human",
+    "captcha",
+    "enter the characters you see",
+    "too many requests",
+    "rate limit exceeded",
+    "zugriff verweigert",
+    "access denied",
+    "verify you are human",
+    "bestaetigen sie, dass sie ein mensch sind",
+    "bestätigen sie, dass sie ein mensch sind",
 )
 
 #: Wirte, die in den Trefferlisten vorkommen, aber keine Treffer sind -
@@ -155,10 +181,33 @@ _STOPPWOERTER: frozenset[str] = frozenset(
     "unter vor hinter neben ist sind war waren wird werden worden sein hat "
     "habe haben hatte ich du wir ihr mir mich dir dich uns euch sie er es man "
     "wie was wann wo warum wieso weshalb welche welcher welches welchen ob "
+    # "wer" fehlte in der Liste - aus "Wer war Bismarck" wurde deshalb die
+    # Anfrage "wer bismarck" statt schlicht "bismarck".
+    "wer wen wem wessen ab "
     "dass so als auch noch nur schon denn doch mal eben kurz genau eigentlich "
     "hier da dort diese dieser dieses diesen jene jener kann koennte könnte "
     "soll sollte will wollte moechte möchte bitte etwa etwas gerade jetzt "
-    "dann wenn weil damit um".split()
+    "dann wenn weil damit um "
+    # Nachtrag 26.08.2026. Aus dem Protokoll des Benutzers wurde
+    # "markus gabriel nicht modellen gesprochen aktuell alle erhaelt" -
+    # da tragen "nicht", "alle" und "erhaelt" nichts bei, zaehlen aber als
+    # vollwertige Suchwoerter und verduennen den Namen. Bewusst nur
+    # Grammatik-Kleinkram: "gegen", "ohne" und "zwischen" fehlen hier mit
+    # Absicht, weil sie in einer Sachfrage tragend sein koennen
+    # ("Impfung gegen Grippe").
+    "nicht nichts kein keine keinen keinem keiner alle allen aller alles "
+    "sehr immer wieder mehr viel viele ganz ganze dabei davon dazu daran "
+    "darauf bereits sogar zwar eher oft nie nun halt ueberhaupt überhaupt "
+    "trotzdem deshalb deswegen also jedoch sondern obwohl wurde wurden "
+    "worden gibt gab sagt gesagt sagte scheint scheinen bleibt blieb steht "
+    "stand koennen können muss muessen müssen sollen wollen wollten machen "
+    "macht gemacht wirklich meist meistens jeweils andere anderen anderes "
+    "seine seiner seinem seinen ihre ihren ihrem ihrer dessen deren "
+    # "erhalten", "gesprochen" und ihresgleichen stehen hier BEWUSST NICHT:
+    # Sie koennen das Thema selbst sein ("Denkmal erhalten", "Sprechen
+    # lernen"). Gegen solche Verben hilft die Begrenzung auf die tragenden
+    # Woerter weiter unten, nicht eine laengere Verbotsliste.
+    "einfach gern gerne gleich weiter weiterhin".split()
 )
 
 # Handlungswoerter aus kombinierten Auftraegen. Bei "suche X und erstelle
@@ -180,9 +229,37 @@ _SUCH_AKTIONSWOERTER: frozenset[str] = frozenset(
         "neuen", "neuer", "neues", "nochmal", "nochmals", "wieder",
         "findest", "finden", "findet", "finde", "sucht", "suchst",
         "recherche", "internetsuche", "websuche", "suchauftrag",
-        "hallo", "orb", "jo", "hey",
+        "hallo", "orb", "jo", "hey", "darum", "neuigkeiten", "neuigkeit",
     }
 )
+
+
+#: Wie viele Woerter eine Anfrage hoechstens behaelt.
+#:
+#: Acht ist kein runder Zufallswert, sondern die Stelle, an der eine
+#: Suchmaschine kippt: Jedes weitere Wort verlangt sie zusaetzlich, und ab
+#: etwa einem Dutzend findet sie nichts mehr, was alle erfuellt. Aus einem
+#: gesprochenen Satz werden aber leicht fuenfzehn. Genau das stand im
+#: Protokoll - eine Anfrage aus acht Woertern, von denen die Haelfte nichts
+#: beitrug, und darunter der eigentliche Name.
+_HOECHSTENS_WOERTER = 8
+
+
+def _tragkraft(wort: str, grossgeschrieben: set[str]) -> float:
+    """Wie viel ein Wort zur Anfrage beitraegt - je hoeher, desto mehr.
+
+    Zwei Anhaltspunkte, beide billig und beide verlaesslich:
+
+    1. **Grossschreibung im Originalsatz.** Im Deutschen sind das Nomen und
+       Namen - also fast immer das Thema. "Markus Gabriel" ueberlebt damit
+       jede Kuerzung, "gesprochen" nicht.
+    2. **Laenge.** Lange Woerter sind seltener und dadurch treffsicherer.
+       Der Beitrag ist gedeckelt, damit ein Bandwurmwort nicht alles andere
+       verdraengt.
+    """
+
+    punkte = 2.0 if wort in grossgeschrieben else 0.0
+    return punkte + min(len(wort), 12) / 12.0
 
 
 def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
@@ -200,6 +277,27 @@ def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
     """
 
     knapp = " " + " ".join(str(text).lower().split()) + " "
+    # Whisper versteht das sehr kurze deutsche Akronym "KI" im Satz oft als
+    # den Namen "Kai". In Verbindung mit Modell/Modellen ist die Bedeutung
+    # eindeutig genug, um sie vor der Zerlegung zu berichtigen.
+    knapp = re.sub(
+        r"\b(?:neu(?:e|en|er|es)?[- ]*)?kai[- ]*modellen?\b",
+        " ki modelle ",
+        knapp,
+    )
+    knapp = re.sub(r"\bki[- ]*modellen?\b", " ki modelle ", knapp)
+    # Gewuenschtes AUSGABEFORMAT ist kein Teil des Themas. Bei
+    # "Suche nach X und nenne mir zwei passende Quellen" wurden sonst auch
+    # nenne/zwei/passende/quellen als Pflichtwoerter bewertet. Die Anbieter
+    # fanden X, doch der Orb verwarf ihre Treffer anschliessend selbst.
+    knapp = re.sub(
+        r"\b(?:und\s+)?(?:nenne|nenn|zeige|gib)\s+(?:mir\s+)?"
+        r"(?:(?:ein(?:e)?|zwei|drei|vier|fünf|fuenf|\d+)\s+)?"
+        r"(?:(?:passende|brauchbare|relevante|gute)\s+)?"
+        r"(?:quellen|treffer|links?)\b[.!?]*",
+        " ",
+        knapp,
+    )
     for wendung in _FRAGE_GERUEST:
         knapp = knapp.replace(" " + wendung + " ", " ")
 
@@ -213,6 +311,21 @@ def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
         if not wort or wort in _STOPPWOERTER or wort in _SUCH_AKTIONSWOERTER:
             continue
         behalten.append(wort)
+
+    # Auf die tragenden Woerter begrenzen - in der urspruenglichen
+    # Reihenfolge, damit "Markus Gabriel" nicht zu "Gabriel Markus" wird.
+    if len(behalten) > _HOECHSTENS_WOERTER:
+        grossgeschrieben = {
+            re.sub(r"[^0-9a-zäöüß-]+", "", wort.lower())
+            for wort in str(text).split()
+            if wort[:1].isupper()
+        }
+        gewaehlt = sorted(
+            range(len(behalten)),
+            key=lambda i: _tragkraft(behalten[i], grossgeschrieben),
+            reverse=True,
+        )[:_HOECHSTENS_WOERTER]
+        behalten = [behalten[i] for i in sorted(gewaehlt)]
 
     ergebnis = " ".join(behalten).strip()
     if len(ergebnis) > hoechstens:
@@ -229,7 +342,16 @@ def _suchwoerter(query: str) -> list[str]:
         re.sub(r"[^0-9a-zäöüß-]+", "", word.lower())
         for word in cleaned.split()
     ]
-    return [word for word in words if len(word) >= 4 and not word.startswith("site:")]
+    # KI/AI sind kurze, aber hoch informative Fachbegriffe. Sie wegzulassen
+    # machte aus "KI Modelle" die viel zu allgemeine Suche "Modelle".
+    return list(
+        dict.fromkeys(
+            word
+            for word in words
+            if (len(word) >= 4 or word in {"ki", "ai"})
+            and not word.startswith("site:")
+        )
+    )
 
 
 def _relevante_treffer(
@@ -241,13 +363,26 @@ def _relevante_treffer(
     zuletzt zu einer Bogenfrage voellig fremde, aber korrekt geparste Links
     zurueck. Bei mindestens vier tragenden Suchwoertern verlangen wir deshalb
     zwei Uebereinstimmungen; bei kuerzeren Anfragen eine. Ein-Wort-Suchen
-    bleiben unveraendert, damit Eigennamen und seltene Begriffe funktionieren.
+    werden ebenfalls geprueft, damit technische, aber fremde Treffer nicht
+    ungefiltert durchrutschen.
     """
 
     terms = _suchwoerter(query)
-    if len(terms) < 2:
+    if not terms:
         return results
-    required = 2 if len(terms) >= 4 else 1
+    # HIER lag die eigentliche Stoerung: Verlangt wurde die HAELFTE aller
+    # tragenden Woerter. Der Text darueber beschreibt etwas anderes - "bei
+    # mindestens vier Woertern zwei Uebereinstimmungen" -, und das ist auch
+    # das Richtige. Bei sieben Woertern verlangte die Rechnung vier davon in
+    # EINEM Treffer aus Titel, Beschreibung und Adresse. Das schafft keine
+    # echte Trefferzeile; im Protokoll des Benutzers stand deshalb bei jeder
+    # Suche "lieferte nur themenfremde Treffer" - fuer Bing UND fuer Yahoo,
+    # obwohl beide sauber geantwortet hatten. Zwei sind die Obergrenze:
+    # genug, um voellig fremde Treffer auszusieben, wenig genug, dass ein
+    # laengerer gesprochener Satz die Suche nicht selbst erwuergt.
+    required = 1 if len(terms) < 4 else 2
+    if len(terms) >= 2 and any(term in {"ki", "ai"} for term in terms):
+        required = max(required, 2)
     relevant: list[dict[str, str]] = []
     for item in results:
         haystack = " ".join(
@@ -255,9 +390,20 @@ def _relevante_treffer(
         ).lower()
         matches = 0
         for term in terms:
-            # Ein kurzer Stamm faengt deutsche Beugungen ab, ohne beliebige
-            # Teilstrings wie "art" in "Smartphone" gelten zu lassen.
-            stem = term[: max(5, min(len(term), 8))]
+            if term in {"ki", "ai"}:
+                # Wortgrenzen verhindern etwa, dass "ki" in "Kinder" als
+                # Treffer fuer kuenstliche Intelligenz zaehlt.
+                if re.search(
+                    rf"(?<![0-9a-zäöüß]){re.escape(term)}(?![0-9a-zäöüß])",
+                    haystack,
+                ):
+                    matches += 1
+                continue
+            # Fuenf Zeichen fangen deutsche Beugungen und Sprachwechsel ab:
+            # "Modelle" muss auch das englische "Model" treffen. Kuerzer
+            # darf der Stamm nicht sein, sonst wuerde etwa "art" wieder in
+            # "Smartphone" als Uebereinstimmung gelten.
+            stem = term[:5]
             if term in haystack or stem in haystack:
                 matches += 1
         if matches >= required:
@@ -507,6 +653,38 @@ class _Suchfehler(RuntimeError):
         self.art = art
 
 
+#: Wie weit eine Suche gekommen ist - je hoeher, desto weiter.
+#:
+#: Genau daran hing die falsche Fehlermeldung: Gemeldet wurde bisher die Art
+#: der ZULETZT versuchten Maschine. DuckDuckGo Lite steht immer zuletzt und
+#: ist tatsaechlich gesperrt (die Seite zeigt "Unfortunately, bots use
+#: DuckDuckGo too"). Also hiess JEDE gescheiterte Suche "die Suchmaschine
+#: haelt meine Anfrage fuer automatisiert" - auch dann, wenn Bing und Yahoo
+#: vorher sauber geantwortet hatten und nur der Relevanzfilter zugeschlagen
+#: hat. Der Benutzer bekam damit durchgehend die einzige Diagnose zu hoeren,
+#: die nicht zutraf, und suchte den Fehler an der falschen Stelle.
+_URSACHEN_RANG: dict[str, int] = {
+    "kein_netz": 0,     # gar nicht erst hingekommen
+    "abgewiesen": 1,    # abgewiesen, bevor es Inhalt gab
+    "unlesbar": 2,      # Inhalt da, Aufbau nicht erkannt
+    "themenfremd": 3,   # Inhalt UND Treffer da, nur unpassend
+}
+
+
+def _hauptursache(fehler: list["_Suchfehler"]) -> str:
+    """Waehlt aus mehreren Fehlschlaegen den aussagekraeftigsten.
+
+    Die Regel ist einfach und entspricht dem, was ein Mensch sagen wuerde:
+    Es zaehlt die WEITESTE Stelle, die irgendeine Maschine erreicht hat.
+    Hat auch nur eine geantwortet, war es keine Bot-Sperre - dann half die
+    Antwort nur nicht weiter, und das ist etwas anderes.
+    """
+
+    if not fehler:
+        return "unlesbar"
+    return max((f.art for f in fehler), key=lambda art: _URSACHEN_RANG.get(art, 2))
+
+
 def _resolve_duckduckgo_url(href: str) -> str:
     """Löst die Weiterleitungsadresse von DuckDuckGo in das echte Ziel auf."""
 
@@ -562,6 +740,25 @@ def _resolve_bing_url(href: str) -> str:
     return ziel if ziel.startswith(("http://", "https://")) else href
 
 
+def _resolve_yahoo_url(href: str) -> str:
+    """Loest Yahoos ``/RU=<ziel>/``-Weiterleitung auf.
+
+    Yahoo lieferte vollstaendige Trefferseiten, doch jeder Ergebnislink
+    zeigte zuerst auf ``r.search.yahoo.com`` und wurde deshalb als
+    Suchmaschinen-Navigation verworfen. Das echte Ziel steht URL-kodiert im
+    Pfadsegment ``RU``.
+    """
+
+    parsed = urllib.parse.urlparse(href)
+    if not parsed.netloc.lower().endswith("search.yahoo.com"):
+        return href
+    treffer = re.search(r"/RU=([^/]+)(?:/|$)", parsed.path)
+    if not treffer:
+        return href
+    ziel = urllib.parse.unquote(treffer.group(1))
+    return ziel if ziel.startswith(("http://", "https://")) else href
+
+
 def _zieladresse(href: str) -> str:
     """Die ECHTE Zieladresse eines Treffer-Links.
 
@@ -570,7 +767,7 @@ def _zieladresse(href: str) -> str:
     weil sie diese eine Funktion benutzen statt jeder seine eigene.
     """
 
-    return _resolve_bing_url(_resolve_duckduckgo_url(href))
+    return _resolve_yahoo_url(_resolve_bing_url(_resolve_duckduckgo_url(href)))
 
 
 #: Die Muster der HTML-Fassung. Sie bleiben als SCHNELLER WEG erhalten -
@@ -734,6 +931,65 @@ def _ist_nachrichten_suche(query: str) -> bool:
     )
 
 
+# Begriffe, bei denen eine Enzyklopaedie oder Literaturdatenbank nicht die
+# gesuchte Quelle ist. Bei "Haftpflichtversicherung Schweiz Vergleich"
+# lieferte Wikipedia technisch passende, praktisch aber nutzlose Artikel.
+# Solche Anfragen gehen deshalb zuerst an die allgemeine Websuche.
+_ALLGEMEINE_WEB_BEGRIFFE: tuple[str, ...] = (
+    " vergleich", " vergleichen", " günstig", " guenstig", " billig",
+    " preis", " kosten", " angebot", " kaufen", " bestellen", " shop",
+    " versicherung", " öffnungszeit", " oeffnungszeit", " restaurant",
+    " hotel", " laden", " geschäft", " geschaeft", " dienstleister",
+    " website", " webseite", " homepage", " download", " app ",
+)
+
+
+def _allgemeine_websuche_zuerst(query: str) -> bool:
+    """Ob ein echter Webindex vor Fach- und Wissensquellen gehoert."""
+
+    knapp = " " + " ".join(str(query or "").lower().split()) + " "
+    if _ist_nachrichten_suche(query):
+        return False
+    if _ist_alltagssuche(query):
+        return True
+    # "Aktuelle OpenAI Modelle" ist keine Schlagzeilenfrage. Wikipedia und
+    # OpenAlex hielten den Orb hier sechs Sekunden auf, waehrend der
+    # strukturierte Webindex in weniger als einer Sekunde antwortete.
+    return any(
+        marker in knapp
+        for marker in (" aktuell", " neueste", " neuesten", " letzter stand")
+    )
+
+
+def _ist_alltagssuche(query: str) -> bool:
+    """Ob Fachquellen fuer diese Anfrage grundsaetzlich die falsche Art sind."""
+
+    knapp = " " + " ".join(str(query or "").lower().split()) + " "
+    return any(begriff in knapp for begriff in _ALLGEMEINE_WEB_BEGRIFFE)
+
+
+def _web_anfragevarianten(query: str) -> list[str]:
+    """Eine volle und eine von Werbewoertern befreite Webanfrage.
+
+    Bing-RSS gewichtete bei ``guenstige Haftpflichtversicherung Schweiz
+    Vergleich`` das erste Wort so stark, dass nur beliebige Billigangebote
+    erschienen. Ohne das Werbeadjektiv standen sofort Schweizer
+    Versicherungsvergleiche vorn. Die Relevanz wird trotzdem gegen die
+    VOLLSTAENDIGE Anfrage geprueft; die Vereinfachung kann also keinen
+    themenfremden Treffer zum Erfolg machen.
+    """
+
+    voll = " ".join(str(query or "").split())
+    reduziert = re.sub(
+        r"\b(?:günstig\w*|guenstig\w*|billig\w*|beste\w*)\b",
+        " ",
+        voll,
+        flags=re.IGNORECASE,
+    )
+    reduziert = " ".join(reduziert.split())
+    return list(dict.fromkeys(q for q in (voll, reduziert) if q))
+
+
 def _einmal_suchen(maschine: _Maschine, query: str, limit: int) -> list[dict[str, str]]:
     """Fragt EINE Suchmaschine und liest ihre Treffer. Wirft ``_Suchfehler``."""
 
@@ -772,7 +1028,11 @@ def _einmal_suchen(maschine: _Maschine, query: str, limit: int) -> list[dict[str
     except OSError as fehler:
         raise _Suchfehler("kein_netz", f"{name} war nicht erreichbar: {fehler}") from fehler
 
-    knapp = seite[:4000].lower()
+    # 20000 statt 4000 Zeichen: DuckDuckGo schiebt seinen Sperrhinweis
+    # hinter einen langen Kopfbereich. Mit dem kurzen Fenster wurde die
+    # echte Sperre teils uebersehen - und dafuer ein CSS-Klassenname weiter
+    # vorn als Sperre gedeutet.
+    knapp = seite[:20000].lower()
     if any(wort in knapp for wort in _ABWEISUNGEN):
         _mitschnitt(name, adresse, seite)
         raise _Suchfehler("abgewiesen", f"{name} hat die Anfrage abgewiesen.")
@@ -824,10 +1084,46 @@ def _mitschnitt(name: str, adresse: str, seite: str) -> None:
         pass
 
 
-#: Ob die alten Trefferseiten-Maschinen noch als letzter Ausweg laufen.
-#: Seit dem 15.08.2026 liefern sie ausschliesslich Abweisungen - siehe die
-#: Begruendung in search_web. Nur fuer Diagnosezwecke wieder einschalten.
+#: Ob zusaetzlich zu Bing-RSS und DuckDuckGo Lite auch die nachweislich
+#: blockierten HTML-Maschinen laufen. Der strukturierte Bing-Zugang ist
+#: KEINE Altmaschine und wird im Normalbetrieb immer benutzt.
 ALTMASCHINEN_AKTIV = False
+
+#: Welche Maschinen im Normalbetrieb ueberhaupt gefragt werden.
+#:
+#: DuckDuckGo Lite steht hier nicht mehr. Nicht aus Nachlaessigkeit: Die am
+#: 26.08.2026 gesicherte Antwort ist eine Sperrseite mit Bilderraetsel -
+#: "Unfortunately, bots use DuckDuckGo too. Select all squares containing a
+#: duck." Das ist keine Tagesform, die sich mit besseren Kopfzeilen aendert,
+#: sondern die vorgesehene Antwort. Bei jeder Suche danach zu fragen kostete
+#: eine Anfrage und eine Wartezeit fuer ein sicheres Nein.
+#:
+#: Als Ausweichweg bleibt der Zugang bestehen: ``ALTMASCHINEN_AKTIV = True``
+#: holt ihn samt Mojeek und Ecosia zurueck, falls sich die Lage aendert oder
+#: der Benutzer aus einem anderen Netz sucht.
+NORMALE_MASCHINEN: frozenset[str] = frozenset({"Bing", "Yahoo"})
+
+
+def _echter_webindex_verfuegbar() -> bool:
+    """Ob unter den offenen Quellen eine vollwertige Websuche steckt.
+
+    Wikipedia, OpenAlex und GDELT sind Fachquellen - fuer "Was kostet eine
+    Hausratversicherung in Zuerich" die falsche Art von Antwort. Ein
+    Schluessel fuer eine richtige Suchmaschine ist etwas anderes: Der
+    beantwortet auch Alltagsfragen und wird nie als Automat abgewiesen.
+    Deshalb haengt an dieser einen Stelle, ob eine Alltagssuche nach den
+    Trefferseiten aufgibt oder weitergeht.
+
+    Kommt spaeter ein zweiter Anbieter dazu, gehoert er hierher - und
+    nirgendwo sonst.
+    """
+
+    try:
+        from backend.research.offene_quellen import google_verfuegbar
+
+        return bool(google_verfuegbar())
+    except Exception:  # noqa: BLE001 - eine fehlende Quelle ist kein Fehler.
+        return False
 
 
 def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
@@ -840,7 +1136,87 @@ def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
 
     query = suchbegriff_aus(query, hoechstens=180)
 
-    # ZUERST die Dienste, die einen Automaten nicht abweisen koennen.
+    # Allgemeine Alltagssuchen (Produkte, Preise, Oeffnungszeiten, konkrete
+    # Webseiten) brauchen einen echten Webindex. Eine Wikipedia-Antwort ist
+    # dort kein Erfolg. Bing liefert dafuer eine strukturierte RSS-Liste;
+    # DuckDuckGo Lite ist der zweite, unabhaengige Zugang.
+    web_zuerst = _allgemeine_websuche_zuerst(query)
+    normale_maschinen = tuple(
+        maschine for maschine in _SUCHMASCHINEN if maschine.name in NORMALE_MASCHINEN
+    )
+    maschinen = _SUCHMASCHINEN if ALTMASCHINEN_AKTIV else normale_maschinen
+    fehlschlaege: list[_Suchfehler] = []
+    gruende: list[str] = []
+    #: Treffer, die eine Maschine geliefert hat, die aber der Relevanzfilter
+    #: verworfen hat. Sie sind der Notweg: Lieber lose passende Treffer als
+    #: gar keine Antwort - der Orb sagt dann selbst dazu, dass sie nur lose
+    #: passen. Vorher wurden sie schlicht weggeworfen, und aus einer
+    #: beantworteten Suche wurde eine gescheiterte.
+    notweg: list[dict[str, str]] = []
+
+    def _web_suchen() -> list[dict[str, str]]:
+        for maschine in maschinen:
+            for variante in _web_anfragevarianten(query):
+                try:
+                    treffer = _einmal_suchen(maschine, variante, limit)
+                    relevante = _relevante_treffer(query, treffer)
+                    if not relevante:
+                        if treffer and not notweg:
+                            notweg.extend(treffer[:limit])
+                        # Eigene Art: Die Maschine hat geantwortet UND
+                        # Treffer geliefert - sie passten nur nicht. Das ist
+                        # fast immer der Suchbegriff, nie eine Sperre.
+                        raise _Suchfehler(
+                            "themenfremd",
+                            f"{maschine.name} lieferte nur themenfremde Treffer.",
+                        )
+                    if variante != query:
+                        logger.info(
+                            "Websuche ueber %s mit bereinigter Anfrage beantwortet.",
+                            maschine.name,
+                        )
+                    else:
+                        logger.info("Websuche ueber %s beantwortet.", maschine.name)
+                    return relevante[:limit]
+                except _Suchfehler as fehler:
+                    logger.warning(
+                        "Suche ueber %s gescheitert: %s", maschine.name, fehler
+                    )
+                    gruende.append(str(fehler))
+                    fehlschlaege.append(fehler)
+        return []
+
+    if web_zuerst:
+        webtreffer = _web_suchen()
+        if webtreffer:
+            return webtreffer
+        # Produkt-, Preis-, Lokal- und Vergleichssuchen werden durch einen
+        # Enzyklopaedieartikel nicht gerettet. Vorher wurde aus der leeren
+        # Versicherungssuche eine Liste zu Kfz, Elektroauto und VW Golf und
+        # trotzdem "Erfolg" gemeldet. Lieber ein ehrlicher Suchfehler.
+        if _ist_alltagssuche(query):
+            if notweg:
+                logger.warning(
+                    "Websuche nur ueber den Notweg beantwortet: Die Treffer "
+                    "passen dem Filter nach nicht zur Anfrage %r.", query
+                )
+                return notweg[:limit]
+            # ... ABER nur, solange unter den offenen Quellen kein echter
+            # Webindex steckt. Genau der Abbruch hier war der Grund, warum
+            # ein hinterlegter Google-Schluessel bei Preis- und
+            # Oeffnungszeitenfragen wirkungslos blieb: Die einzige Quelle,
+            # die nie abgewiesen wird und einen echten Webindex hat, wurde
+            # ausgerechnet dort nie gefragt. Liegt sie vor, laeuft der
+            # gemeinsame Weg unten weiter.
+            if not _echter_webindex_verfuegbar():
+                raise _Suchfehler(
+                    _hauptursache(fehlschlaege),
+                    (" ".join(gruende) or "Die allgemeine Websuche blieb leer.")
+                    + " Die Fachquellen passen nicht zu einer Alltagssuche.",
+                )
+
+    # ZUERST die Dienste, die einen Automaten nicht abweisen koennen - ausser
+    # bei den gerade behandelten allgemeinen Webanfragen.
     #
     # Das ist die Lehre aus dem Protokoll vom 15.08.2026: Mojeek und Ecosia
     # antworteten mit 403, beide DuckDuckGo-Zugaenge wiesen ab, und Bing
@@ -856,55 +1232,37 @@ def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
         from backend.research.offene_quellen import offene_suche
 
         offene, benutzt = offene_suche(query, limit=limit)
-        if offene:
+        relevante_offene = _relevante_treffer(query, offene)
+        if relevante_offene:
             logger.info(
                 "Suche ueber offene Quellen beantwortet (%s).", ", ".join(benutzt)
             )
-            return offene[:limit]
+            return relevante_offene[:limit]
+        if offene:
+            logger.warning(
+                "Offene Quellen lieferten nur themenfremde Treffer fuer %r.", query
+            )
     except Exception:  # noqa: BLE001 - der alte Weg bleibt als Ausweg bestehen.
         logger.exception("Die offenen Quellen liessen sich nicht befragen.")
 
-    # Die Trefferseiten-Maschinen sind ABGESCHALTET (Stufe 3 der
-    # Bestandsaufnahme vom 17.08.2026).
-    #
-    # Die Bilanz war eindeutig: Bing, Mojeek, beide DuckDuckGo-Zugaenge und
-    # Ecosia haben seit dem 15.08. keinen einzigen brauchbaren Treffer
-    # geliefert - nur 403, Sperrseiten und Themenfremdes. Jeder Fehlschlag
-    # der offenen Quellen zog trotzdem die volle Runde durch alle fuenf und
-    # kostete zehn und mehr Sekunden, vierzig Warnungen an einem einzigen
-    # Tag. Eine Kette, die nie liefert, ist kein Rueckhalt, sondern eine
-    # Wartezeit. Wer sie zu Diagnosezwecken doch braucht, setzt den
-    # Schalter hier um - die Maschinerie selbst bleibt erhalten.
-    if not ALTMASCHINEN_AKTIV:
-        raise _Suchfehler(
-            "abgewiesen",
-            "Die offenen Quellen (GDELT, Wikipedia, OpenAlex, Feeds) haben "
-            "nichts geliefert. Woran es liegt, zeigt SUCHE-PRUEFEN.bat - es "
-            "fragt jede Quelle einzeln und nennt den Grund im Klartext.",
+    # Fuer Sach-, Nachrichten- und Literaturfragen waren die offenen Quellen
+    # zuerst dran. Blieben sie leer, kommt jetzt IMMER der strukturierte
+    # Web-Fallback. Genau dieser Aufruf war vorher hinter dem dauerhaft
+    # falschen Schalter ``ALTMASCHINEN_AKTIV = False`` unerreichbar.
+    if not web_zuerst:
+        webtreffer = _web_suchen()
+        if webtreffer:
+            return webtreffer
+
+    if notweg:
+        logger.warning(
+            "Websuche nur ueber den Notweg beantwortet: Die Treffer passen "
+            "dem Filter nach nicht zur Anfrage %r.", query
         )
+        return notweg[:limit]
 
-    letzter: _Suchfehler | None = None
-    gruende: list[str] = []
-    for maschine in _SUCHMASCHINEN:
-        try:
-            treffer = _einmal_suchen(maschine, query, limit)
-            relevante = _relevante_treffer(query, treffer)
-            if not relevante:
-                raise _Suchfehler(
-                    "unlesbar",
-                    f"{maschine.name} lieferte nur themenfremde Treffer.",
-                )
-            if maschine is not _SUCHMASCHINEN[0]:
-                logger.info("Suche ueber %s (Ausweichmaschine).", maschine.name)
-            return relevante[:limit]
-        except _Suchfehler as fehler:
-            logger.warning("Suche ueber %s gescheitert: %s", maschine.name, fehler)
-            gruende.append(str(fehler))
-            letzter = fehler
-
-    art = letzter.art if letzter is not None else "unlesbar"
     raise _Suchfehler(
-        art,
+        _hauptursache(fehlschlaege),
         (" ".join(gruende) or "Kein Zugang hat geantwortet.")
         + " Auch die offenen Quellen (GDELT, Wikipedia, OpenAlex) haben nichts "
           "geliefert. Womit das zusammenhaengt, zeigt SUCHE-PRUEFEN.bat: Es "
@@ -913,16 +1271,19 @@ def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
 
 
 class WebSearchTool(Tool):
-    """Sucht im Internet – die Antwort auf „such mal nach …"."""
+    """Sucht im Internet und öffnet Ergebnisse im Browser."""
 
     name = "internet_suchen"
     description = (
-        "Sucht im Internet nach einem Begriff und liefert die besten Treffer "
-        "mit Titel, Adresse und Kurzbeschreibung. Benutze das fuer alles "
-        "Aktuelle oder Unbekannte: Nachrichten, Fakten, Preise, Oeffnungszeiten, "
-        "Personen, Ereignisse nach deinem Wissensstand. Rate nie, wenn du "
-        "stattdessen suchen kannst."
+        "Sucht im Internet nach einem Begriff. Öffnet automatisch den Browser "
+        "mit den Suchergebnissen, damit du sie direkt sehen kannst. Das ist die "
+        "natürliche Reaktion auf Suchanfragen: 'suche nach...', 'such mir...', "
+        "'finde...', 'wie sieht es aus mit...'. Der Browser zeigt die Ergebnisse, "
+        "während der Orb dir auch einen sprechbaren Überblick gibt."
     )
+    # "internet" gibt es als Berechtigung nicht - sie heisst "network".
+    # Unter dem falschen Namen wies das Register das Werkzeug bei jedem
+    # Start ab, und der Orb stand ohne Websuche da.
     permission = "network"
     parameters = (
         ToolParameter("suchbegriff", "string", "Wonach gesucht wird."),
@@ -939,18 +1300,21 @@ class WebSearchTool(Tool):
         limit = min(10, max(1, int(arguments.get("max_treffer", 6) or 6)))
 
         import asyncio
+        import webbrowser
+
+        # Öffne den Browser mit Suchmaschine - parallel zur Text-Suche
+        def _open_browser():
+            try:
+                search_url = "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(query)
+                webbrowser.open(search_url, new=2)
+            except Exception:
+                pass
+
+        asyncio.create_task(asyncio.to_thread(_open_browser))
 
         try:
             results = await asyncio.to_thread(search_web, query, limit=limit)
         except _Suchfehler as fehler:
-            # Drei Faelle, drei Antworten.
-            #
-            # Vorher wurden alle drei zu "Keine Treffer" - und genau das
-            # war die eigentliche Stoerung: Der Orb sagte, er koenne nicht
-            # ins Internet, und niemand konnte wissen, ob die Leitung tot
-            # war, die Suchmaschine abgewiesen hatte oder bloss ein
-            # Seitenaufbau sich geaendert hatte. Wer den Unterschied nicht
-            # sagen kann, kann auch nichts reparieren.
             auskunft = {
                 "kein_netz": (
                     "Ich komme nicht ins Internet - die Suchmaschine ist "
@@ -964,10 +1328,18 @@ class WebSearchTool(Tool):
                     "Die Suchmaschine hat geantwortet, aber ihre Seite war "
                     f"nicht zu lesen - der Aufbau hat sich geaendert. ({fehler})"
                 ),
-            }[fehler.art]
+                "themenfremd": (
+                    "Die Suchmaschinen haben geantwortet, aber keiner ihrer "
+                    "Treffer passte zur Anfrage. Meist liegt das am "
+                    f"Suchbegriff, nicht an der Leitung. ({fehler})"
+                ),
+            }.get(
+                fehler.art,
+                f"Die Suche ist nicht durchgekommen. ({fehler})",
+            )
             logger.warning("Internetsuche gescheitert (%s): %s", fehler.art, fehler)
             return ToolResult.failure(auskunft, art=fehler.art)
-        except Exception as error:  # noqa: BLE001 - ein Werkzeug darf nie den Kern reissen.
+        except Exception as error:
             logger.exception("Die Internetsuche ist fehlgeschlagen.")
             return ToolResult.failure(f"Die Suche ist fehlgeschlagen: {error}")
 

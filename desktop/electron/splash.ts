@@ -57,6 +57,10 @@ export class SplashScreen {
   private readonly states = new Map<string, "wartend" | "laeuft" | "ok" | "fehler">();
   private message = "AI-Orb wird gestartet...";
   private failed = false;
+  /** Verhindert konkurrierende ``loadURL``-Aufrufe beim schnellen Start. */
+  private renderInFlight = false;
+  /** Merkt eine Zustandsänderung, die nach dem laufenden Laden gezeichnet wird. */
+  private renderQueued = false;
 
   constructor() {
     for (const step of SPLASH_STEPS) {
@@ -140,12 +144,44 @@ export class SplashScreen {
 
   /** Zeichnet den aktuellen Stand. */
   private async render(): Promise<void> {
-    if (this.window === null || this.window.isDestroyed()) {
+    this.renderQueued = true;
+    if (this.renderInFlight) {
       return;
     }
-    await this.window.loadURL(
-      "data:text/html;charset=utf-8," + encodeURIComponent(this.buildHtml())
-    );
+
+    this.renderInFlight = true;
+    try {
+      while (this.renderQueued) {
+        this.renderQueued = false;
+        const target = this.window;
+        if (target === null || target.isDestroyed()) {
+          return;
+        }
+
+        try {
+          await target.loadURL(
+            "data:text/html;charset=utf-8," + encodeURIComponent(this.buildHtml())
+          );
+        } catch (error) {
+          // Schliessen waehrend loadURL ist ein normaler Startuebergang. Die
+          // alte Fassung liess diese Ablehnung unbehandelt; bei mehreren
+          // schnellen Fortschrittsmeldungen entstanden dadurch dutzende
+          // UnhandledPromiseRejection-Warnungen und ein scheinbar haengender
+          // Electron-Prozess.
+          if (this.window !== target || target.isDestroyed()) {
+            return;
+          }
+          console.error("[Splash] Der Ladebildschirm konnte nicht gezeichnet werden.", error);
+        }
+      }
+    } finally {
+      this.renderInFlight = false;
+      // Eine Aenderung kann genau zwischen der letzten Schleifenpruefung und
+      // dem finally eingetroffen sein. Sie darf nicht verloren gehen.
+      if (this.renderQueued) {
+        void this.render();
+      }
+    }
   }
 
   /** Baut die Seite. */

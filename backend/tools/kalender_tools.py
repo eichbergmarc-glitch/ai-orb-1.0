@@ -22,7 +22,12 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from backend.integrations.kalender.client import KalenderClient, KalenderFehler, Termin
-from backend.integrations.kalender.zeit import ZeitFehler, dauer_lesen, zeit_lesen
+from backend.integrations.kalender.zeit import (
+    ZeitFehler,
+    dauer_lesen,
+    ortszeit,
+    zeit_lesen,
+)
 from backend.system.logging_setup import get_logger
 from backend.tools.base_tool import Tool, ToolParameter, ToolResult
 
@@ -74,7 +79,7 @@ class _KalenderWerkzeug(Tool):
         if not begriff:
             return None, [], "Es fehlt die Angabe, welcher Termin gemeint ist."
 
-        jetzt = datetime.now().astimezone()
+        jetzt = ortszeit()
         treffer = await asyncio.to_thread(
             self._client.termine,
             von=jetzt - timedelta(days=1),
@@ -132,7 +137,7 @@ class TermineAnsehenTool(_KalenderWerkzeug):
     )
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
-        jetzt = datetime.now().astimezone()
+        jetzt = ortszeit()
         zeitraum = str(arguments.get("zeitraum", "woche") or "woche").strip().lower()
         if zeitraum not in _ZEITRAEUME:
             zeitraum = "woche"

@@ -67,6 +67,13 @@ class BaseProvider(abc.ABC):
         """
 
         self._settings = settings
+        # Mehrere Instanzen derselben Engine muessen fuer Routing, Health-
+        # Checks und Metriken unterscheidbar bleiben. Ohne Instanznamen
+        # wuerden etwa zwei lokale Ollama-Modelle beide als ``ollama``
+        # registriert und der zweite Eintrag den ersten ueberschreiben.
+        instance_name = str(settings.get("instance_name", "")).strip()
+        if instance_name:
+            self.name = instance_name
         self._model = str(settings.get("model", ""))
         self._timeout = float(settings.get("timeout", 60))
 

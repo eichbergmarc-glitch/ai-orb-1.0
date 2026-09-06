@@ -48,11 +48,105 @@ class OllamaProvider(BaseProvider):
             1.0,
             float(settings.get("first_token_timeout", min(self._timeout, 10.0))),
         )
+        # Die Frist fuer den ERSTEN Zug nach einer Pause.
+        #
+        # Ollama haelt die Antwort zurueck, bis das Modell im Speicher
+        # steht. Vorher kommt nicht einmal der HTTP-Kopf. Fuer ein warmes
+        # Modell ist das eine Sache von Millisekunden, fuer ein kaltes
+        # 8-Milliarden-Modell auf einem beschaeftigten Rechner eine Minute
+        # und mehr - dieselbe Frist fuer beides zu nehmen heisst, sich
+        # zwischen "traege" und "gibt zu frueh auf" entscheiden zu muessen.
+        #
+        # Im Protokoll vom 06.09. sieht man beide Enden davon:
+        #
+        #     12:45:13  ollama      - keine Antwortverbindung in 60 s
+        #     12:48:23  ollama_fast - Antwort da
+        #     12:55:15  ollama_fast - keine Antwortverbindung in 10 s
+        #
+        # Der Fehlschlag um 12:55 kam sieben Minuten nach dem Erfolg um
+        # 12:48 - also nach Ablauf von keep_alive: 5m. Das Modell war
+        # ausgeraeumt und laedt neu; zehn Sekunden reichen dafuer nicht.
+        # Es war nie kaputt, nur kalt.
+        self._cold_first_token_timeout = min(
+            self._timeout,
+            max(
+                self._first_token_timeout,
+                float(
+                    settings.get(
+                        "first_token_timeout_cold",
+                        max(self._first_token_timeout * 3.0, 90.0),
+                    )
+                ),
+            ),
+        )
+        self._keep_alive_seconds = self._keep_alive_in_sekunden(self._keep_alive)
+        #: Wann dieses Modell zuletzt wirklich geantwortet hat (Uhr des
+        #: Providers, nicht Kalenderzeit). 0.0 heisst: noch nie.
+        self._letzter_erfolg = 0.0
         self._warmup_tokens = max(1, int(settings.get("warmup_tokens", 8)))
+        # Ollamas Standard ist modell- und installationsabhaengig. Der Orb
+        # setzt das aktive Fenster deshalb bei JEDEM Aufruf ausdruecklich,
+        # damit Dialog, Stream und Vorwaermen dieselbe Speicherplanung nutzen.
+        self._context_window = max(
+            2048,
+            min(131072, int(settings.get("context_window", 10240))),
+        )
+        # Reasoning-Modelle koennen ein knappes num_predict vollstaendig fuer
+        # ihren internen Denkkanal verbrauchen. Dann meldet Ollama Erfolg,
+        # liefert dem Benutzer aber leeren Inhalt. Ein konfigurierbarer
+        # Mindestetat verhindert genau diesen scheinbaren Haenger.
+        self._minimum_predict_tokens = max(
+            0, int(settings.get("minimum_predict_tokens", 0))
+        )
         # Ein kleineres Modell schweift leichter ab; eine nuechternere
         # Vorgabe haelt es beim Werkzeugformat.
         roh = settings.get("temperature")
         self._temperatur = float(roh) if roh is not None else 0.4
+
+    @staticmethod
+    def _keep_alive_in_sekunden(wert: str) -> float:
+        """Uebersetzt Ollamas ``keep_alive`` in Sekunden.
+
+        Erlaubt sind blanke Zahlen (Sekunden) und die Kurzformen ``30m``,
+        ``2h``, ``45s``. Ein negativer Wert heisst bei Ollama "nie
+        ausraeumen"; dann wird das Modell nie kalt.
+        """
+
+        text = str(wert or "").strip().lower()
+        if not text:
+            return 0.0
+        faktoren = {"s": 1.0, "m": 60.0, "h": 3600.0}
+        faktor = faktoren.get(text[-1:], 1.0)
+        zahl = text[:-1] if text[-1:] in faktoren else text
+        try:
+            sekunden = float(zahl) * faktor
+        except ValueError:
+            return 0.0
+        return float("inf") if sekunden < 0 else sekunden
+
+    def _erste_frist(self) -> float:
+        """Die Frist auf das erste Lebenszeichen - kalt grosszuegig, warm knapp.
+
+        Warm bleibt knapp, weil ein warmes Modell, das nicht antwortet,
+        wirklich haengt und der Orb dann schnell ausweichen soll. Kalt
+        wird grosszuegig, weil Warten dort nicht Nachsicht ist, sondern
+        das Einzige, was hilft: Der naechste Anbieter in der Reihe muesste
+        genauso lange laden.
+        """
+
+        if self._letzter_erfolg <= 0.0:
+            return self._cold_first_token_timeout
+        if self._keep_alive_seconds <= 0.0:
+            return self._cold_first_token_timeout
+        seit = self._now() - self._letzter_erfolg
+        if seit >= self._keep_alive_seconds:
+            return self._cold_first_token_timeout
+        return self._first_token_timeout
+
+    def _erfolg_vermerken(self) -> None:
+        """Haelt fest, dass das Modell eben noch im Speicher stand."""
+
+        self._letzter_erfolg = self._now()
 
     async def is_available(self) -> bool:
         """Prüft, ob der Ollama-Server läuft und das Modell geladen werden kann."""
@@ -98,10 +192,11 @@ class OllamaProvider(BaseProvider):
         """Führt eine Chat-Anfrage gegen den lokalen Ollama-Server aus."""
 
         options: dict[str, Any] = {
-            "temperature": temperature if temperature is not None else self._temperatur
+            "temperature": temperature if temperature is not None else self._temperatur,
+            "num_ctx": self._context_window,
         }
         if max_tokens is not None:
-            options["num_predict"] = max_tokens
+            options["num_predict"] = max(max_tokens, self._minimum_predict_tokens)
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -119,6 +214,7 @@ class OllamaProvider(BaseProvider):
         text = str(message.get("content", "")).strip()
         if not text:
             raise ProviderError("ollama: Antwort enthält keinen Text.")
+        self._erfolg_vermerken()
 
         return ProviderResponse(
             text=text,
@@ -220,6 +316,7 @@ class OllamaProvider(BaseProvider):
                     "options": {
                         "num_predict": self._warmup_tokens,
                         "temperature": self._temperatur,
+                        "num_ctx": self._context_window,
                     },
                 },
                 versuche=2,
@@ -227,6 +324,7 @@ class OllamaProvider(BaseProvider):
         except ProviderError as fehler:
             logger.info("Das lokale Modell ließ sich nicht vorwärmen: %s", fehler)
             return False
+        self._erfolg_vermerken()
         logger.info("Das lokale Modell '%s' ist vorgewärmt.", self._model)
         return True
 
@@ -240,10 +338,11 @@ class OllamaProvider(BaseProvider):
         """Stream to Ollama while propagating cancellation to the socket."""
 
         options: dict[str, Any] = {
-            "temperature": temperature if temperature is not None else self._temperatur
+            "temperature": temperature if temperature is not None else self._temperatur,
+            "num_ctx": self._context_window,
         }
         if max_tokens is not None:
-            options["num_predict"] = max_tokens
+            options["num_predict"] = max(max_tokens, self._minimum_predict_tokens)
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -257,7 +356,16 @@ class OllamaProvider(BaseProvider):
             connect=min(self._timeout, 5.0),
         )
         loop = asyncio.get_running_loop()
-        first_deadline = loop.time() + self._first_token_timeout
+        frist = self._erste_frist()
+        if frist > self._first_token_timeout:
+            logger.info(
+                "Das lokale Modell '%s' ist vermutlich kalt; es bekommt %.0f s "
+                "statt %.0f s auf das erste Lebenszeichen.",
+                self._model,
+                frist,
+                self._first_token_timeout,
+            )
+        first_deadline = loop.time() + frist
         received_text = False
 
         try:
@@ -268,12 +376,12 @@ class OllamaProvider(BaseProvider):
                 try:
                     response = await asyncio.wait_for(
                         client.send(request, stream=True),
-                        timeout=self._first_token_timeout,
+                        timeout=frist,
                     )
                 except asyncio.TimeoutError as error:
                     raise ProviderError(
                         "ollama: Keine Antwortverbindung innerhalb von "
-                        f"{self._first_token_timeout:.0f} s."
+                        f"{frist:.0f} s."
                     ) from error
                 try:
                     if response.status_code >= 400:
@@ -299,7 +407,7 @@ class OllamaProvider(BaseProvider):
                             if not received_text:
                                 raise ProviderError(
                                     "ollama: Kein erstes Textstueck innerhalb von "
-                                    f"{self._first_token_timeout:.0f} s."
+                                    f"{frist:.0f} s."
                                 ) from error
                             raise ProviderError(
                                 "ollama: Der Antwortstrom ist stehen geblieben."
@@ -315,11 +423,16 @@ class OllamaProvider(BaseProvider):
                         piece = str((data.get("message") or {}).get("content", ""))
                         if piece:
                             received_text = True
+                            self._erfolg_vermerken()
                             yield piece
                         if data.get("done"):
                             break
                 finally:
                     await response.aclose()
+            if not received_text:
+                raise ProviderError(
+                    "ollama: Der Antwortstrom endete ohne sichtbaren Text."
+                )
         except ProviderError:
             raise
         except (httpx.HTTPError, OSError) as error:

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      Ansichtsfenster fuer Tablet und Handy: echte Geraetebreite, kein
+      Zoom durch Doppeltipp (der Orb reagiert selbst auf Doppeltipp) und
+      Zeichenflaeche bis unter die abgerundeten Ecken.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark" />
+    <!--
+      Strikte Content-Security-Policy: Die Oberfläche lädt ausschließlich
+      eigene Dateien und spricht ausschließlich mit dem lokalen Backend.
+      Es werden keine externen Ressourcen nachgeladen.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:*;"
+    />
+    <title>AI-Orb</title>
+    <link rel="stylesheet" href="styles/themes.css" />
+    <link rel="stylesheet" href="styles/orb.css" />
+  </head>
+  <body>
+    <!--
+      Die gesamte Oberfläche besteht aus genau einem Canvas.
+      Keine Schaltflächen, keine Rahmen, keine HTML-Bedienelemente.
+    -->
+    <canvas id="orb-canvas"></canvas>
+    <nav id="orb-menu" class="orb-menu" hidden aria-label="Orb-Menü">
+      <button type="button" data-action="chat" aria-label="Chat öffnen">💬<span>Chat</span></button>
+      <button type="button" data-action="screenshot" aria-label="Screenshot machen">▣<span>Bild</span></button>
+      <button type="button" data-action="search" aria-label="Suche starten">⌕<span>Suche</span></button>
+      <button type="button" data-action="files" aria-label="Dateien öffnen">▢<span>Dateien</span></button>
+      <button type="button" data-action="settings" aria-label="Einstellungen öffnen">⚙<span>Einstellungen</span></button>
+      <button type="button" data-action="quit" aria-label="AI-Orb beenden">×<span>Beenden</span></button>
+      <div id="orb-info" class="orb-info" aria-live="polite">Bereit</div>
+    </nav>
+    <section id="chat-panel" class="chat-panel" hidden aria-label="Chat mit AI-Orb">
+      <header><strong>AI-Orb Chat</strong><button id="chat-close" type="button" aria-label="Chat schließen">×</button></header>
+      <div id="chat-messages" class="chat-messages" aria-live="polite">
+        <div class="chat-message chat-message--orb">Hallo! Wie kann ich dir helfen?</div>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" autocomplete="off" placeholder="Nachricht schreiben …" aria-label="Nachricht" />
+        <button type="submit" aria-label="Senden">➤</button>
+      </form>
+    </section>
+    <aside id="diagnostics" class="diagnostics" hidden aria-live="polite">
+      <div class="diagnostics__header">
+        <span>AI-Orb Diagnose</span>
+        <button id="diagnostics-close" type="button" aria-label="Diagnose schließen">×</button>
+      </div>
+      <div id="diagnostics-content" class="diagnostics__content">Status wird geladen …</div>
+    </aside>
+    <!--
+      Stellt ausschliesslich im normalen Browser eine lokale, nebenwirkungsfreie
+      Vorschau-Bruecke bereit. In Electron existiert window.aiOrb bereits und
+      die Datei veraendert nichts. So kann die echte WebGL-Ausgabe automatisch
+      gegen die Referenz geprueft werden, statt nur Shadertext zu testen.
+    -->
+    <script src="preview-bridge.js?v=tri-core-1"></script>
+    <!--
+      Ersetzt im normalen Browser die Electron-Bruecke: Konfiguration,
+      Ereignisse und Bewegung laufen dann ueber HTTP statt ueber den
+      Hauptprozess. In Electron bleibt die Datei wirkungslos.
+    -->
+    <script src="web-bridge.js?v=1"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

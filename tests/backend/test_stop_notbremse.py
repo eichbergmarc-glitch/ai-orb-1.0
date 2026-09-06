@@ -32,8 +32,12 @@ class _Transcriber:
 
     def __init__(self, text: str):
         self._text = text
+        self.verfallszeiten: list[float | None] = []
 
-    async def transcribe(self, path):
+    async def transcribe(self, path, *, verfallen_nach: float | None = None):
+        # Die echte Erkennung kennt eine Verfallszeit: Ein "Stop", das
+        # Sekunden in der Schlange stand, bremst nichts mehr.
+        self.verfallszeiten.append(verfallen_nach)
         return _Transcript(self._text)
 
 

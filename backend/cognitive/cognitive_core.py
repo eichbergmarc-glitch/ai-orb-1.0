@@ -41,13 +41,30 @@ from backend.config import get_config
 from backend.events.event_bus import EventBus
 from backend.memory.memory_engine import MemoryEngine
 from backend.orchestrator import intent_classifier as intent_names
+from backend.orchestrator.intent_classifier import IntentResult
 from backend.orchestrator.orchestrator import Orchestrator
 from backend.orchestrator.provider_manager import ProviderManager
 from backend.projects.project_engine import ProjectEngine
 from backend.reasoning.reasoning_engine import ReasoningEngine, ReasoningResult
 from backend.system.logging_setup import get_logger
+from backend.studium.vorlesungs_session import ist_vorlesungssegment
 
 logger = get_logger(__name__)
+
+
+def kognitiver_prueftext(text: str) -> str:
+    """Entfernt technische Regie aus der Risikoanalyse einer Vorlesung.
+
+    Der vollstaendige interne Auftrag muss spaeter beim Sprachmodell ankommen.
+    Fuer die vorgeschaltete Aktions- und Risikoanalyse ist er jedoch der
+    falsche Text: Wo dort etwa ``beende nur diesen Abschnitt`` steht, erkannte
+    der allgemeine Aufgabenanalysator eine irreversible Systemaktion. Der
+    neutrale Prueftext beschreibt dieselbe kognitive Aufgabe ohne Imperative.
+    """
+
+    if ist_vorlesungssegment(text):
+        return "Inhaltliche Fortsetzung einer laufenden gesprochenen Vorlesung."
+    return text
 
 
 @dataclass
@@ -200,6 +217,42 @@ class CognitiveCore:
         started = time.perf_counter()
         self.working_memory.append("conversation", {"role": "user", "text": text})
 
+        # Tagebuchbefehle sind Datentransaktionen, keine Denkaufgaben. Der
+        # Wortlaut eines Diktats darf weder zerlegt noch zusammengefasst oder
+        # von einem Provider neu formuliert werden. Dieser Schnellweg fuehrt
+        # direkt zum lokalen Orchestrator und seinen Tagebuchwerkzeugen.
+        from backend.orchestrator.orchestrator import parse_tagebuch_befehl
+
+        tagebuch_befehl = parse_tagebuch_befehl(text)
+        tagebuch_fortsetzung = bool(
+            getattr(self._orchestrator, "_tagebuch_diktat_ausstehend", False)
+        )
+        if (
+            tagebuch_fortsetzung
+            or (
+                tagebuch_befehl is not None
+                and tagebuch_befehl.werkzeug != "tagebuch_aenderung_start"
+            )
+        ):
+            result = await self._orchestrator.handle(
+                text, spoken=spoken, on_speech=on_speech
+            )
+            self.working_memory.append(
+                "conversation", {"role": "assistant", "text": result.response}
+            )
+            response = CognitiveResponse(
+                response=result.response,
+                intent=result.intent or "tagebuch",
+                used_llm=False,
+                provider=result.provider,
+                model=result.model,
+                engines=["tagebuch"],
+                duration_seconds=time.perf_counter() - started,
+                already_spoken=bool((result.data or {}).get("gesprochen")),
+            )
+            await self._publish("cognitive.response", response.to_dict())
+            return response
+
         project_id = self.projects.active_id()
         if project_id:
             active_project = self.project_engine.active_project() or {}
@@ -210,7 +263,28 @@ class CognitiveCore:
             )
 
         # 1. Absicht erkennen.
-        intent = self._orchestrator.classifier.classify(text)
+        #
+        # Ein Vorlesungsabschnitt ist ein interner Modellauftrag, keine neue
+        # Benutzeraktion. Seine Regieanweisung enthaelt zwangsläufig Woerter
+        # wie "beende", "rufe auf" oder "ausfuehren". Der allgemeine
+        # Klassifikator hielt das zeitweise fuer eine riskante Desktop-Aktion
+        # und beantwortete den Vortrag mit einer Sicherheitsrueckfrage. Der
+        # automatische Folgezeitgeber wiederholte diese Rueckfrage anschliessend
+        # immer wieder. Interne Vorlesungssegmente werden deshalb vor jeder
+        # heuristischen Klassifikation eindeutig als inhaltliche Antwort
+        # gekennzeichnet.
+        vorlesungssegment = ist_vorlesungssegment(text)
+        prueftext = kognitiver_prueftext(text)
+        if vorlesungssegment:
+            intent = IntentResult(
+                intent=intent_names.QUESTION,
+                confidence="hoch",
+                score=1.0,
+                requires_llm=True,
+                matched_keywords=["interner_vorlesungsabschnitt"],
+            )
+        else:
+            intent = self._orchestrator.classifier.classify(text)
 
         # 2. Aufgabenverteilung bestimmen.
         distribution = self.cognitive_orchestrator.distribute(text, intent)
@@ -219,7 +293,7 @@ class CognitiveCore:
         # 3. Vorentscheidung treffen.
         provider_available = self._providers.active_provider is not None
         decision = self.decisions.decide(
-            text,
+            prueftext,
             intent,
             has_context=bool(project_id),
             provider_available=provider_available,
@@ -243,7 +317,7 @@ class CognitiveCore:
 
         # 5. Denken.
         reasoning = self.reasoning.prepare(
-            text,
+            prueftext,
             intent,
             context=context,
             has_project=bool(project_id),
@@ -253,7 +327,10 @@ class CognitiveCore:
         )
         self._last_reasoning = reasoning
 
-        if reasoning.decision.action == "bestätigung_verlangen":
+        if (
+            reasoning.decision.action == "bestätigung_verlangen"
+            and not vorlesungssegment
+        ):
             response = CognitiveResponse(
                 response=reasoning.decision.question,
                 intent=intent.intent,
@@ -478,6 +555,27 @@ class CognitiveCore:
 
     # --- Transparenz --------------------------------------------------------
 
+    @staticmethod
+    def _auskunft_konfidenz(text: str, intent: Any) -> float:
+        """Wie sicher eine rein auskunftgebende Zuordnung sein darf.
+
+        Die Frage ist nicht, ob das Schlüsselwort im Satz steht - das steht
+        es, sonst wäre der Handler nicht aufgerufen worden. Die Frage ist,
+        ob der Satz daneben noch etwas verlangt, das dieses Modul gar nicht
+        leisten kann. Ist das so, ist die Zuordnung schwach, und der Router
+        reicht sie weiter.
+        """
+
+        from backend.orchestrator.faehigkeiten import entscheiden
+
+        entscheidung = entscheiden(text, gesprochen=False, werkzeuge_vorhanden=True)
+        if entscheidung.handlungsauftrag:
+            # Bewusst deutlich unter der Rueckfallschwelle: Hier verlangt
+            # jemand eine Handlung, und eine Statistik ist keine.
+            return 0.15
+        basis = float(getattr(intent, "score", 0.0) or 0.0)
+        return min(1.0, max(0.6, basis))
+
     def _register_transparency_handlers(self) -> None:
         """Registriert die lokalen Antworten auf Transparenzfragen.
 
@@ -492,6 +590,8 @@ class CognitiveCore:
                 handled_locally=True,
                 response=self.answer_transparency_question(text),
                 module="transparenz",
+                konfidenz=self._auskunft_konfidenz(text, intent),
+                rueckfall_erlaubt=True,
             )
 
         self._orchestrator.router.register(intent_names.TRANSPARENCY, handle_transparency)
@@ -503,12 +603,43 @@ class CognitiveCore:
                 handled_locally=True,
                 response=self.projects.summary_text(),
                 module="projects",
+                konfidenz=self._auskunft_konfidenz(text, intent),
+                rueckfall_erlaubt=True,
             )
 
         self._orchestrator.router.register(intent_names.PROJECT, handle_project)
 
+        #: Wendungen, mit denen wirklich nach der Aufgabenliste gefragt
+        #: wird. Sie sind bewusst KEIN Tor mehr, sondern nur noch das
+        #: Fachwissen dieses einen Handlers ueber seine eigene Zustaendigkeit:
+        #: Sie erhoehen die Konfidenz, sie entscheiden nichts.
+        liste_gemeint = (
+            "welche aufgabe", "welche aufgaben", "meine aufgaben",
+            "offene aufgabe", "offene aufgaben", "aufgabenliste",
+            "aufgaben liste", "todo", "to-do", "was steht an",
+            "was ist offen", "wie viele aufgaben", "stand der aufgaben",
+            "naechster schritt", "nächster schritt", "erledigt",
+        )
+
         async def handle_task(text: str, intent: Any) -> Any:
             from backend.orchestrator.task_router import RouteResult
+
+            # Das Wort "Aufgabe" in einem Satz bedeutet nicht, dass die
+            # Aufgabenliste gemeint ist.
+            #
+            # Am 31.08.2026 lautete der Satz: "Ich wiederhole die AUFGABE,
+            # suche nach einer Wohnung maximal 1100 Fr. in der Region
+            # Solothurn und zeige mir die Ergebnisse im Browser an." Ein
+            # einziges Wort machte daraus den Intent 'aufgabe', der Router
+            # beantwortete ihn lokal - und der Benutzer bekam die Statistik
+            # seiner Aufgabenliste vorgelesen: "Aufgaben insgesamt: 0".
+            # Kein Modell, kein Werkzeug, keine Suche, kein Browser.
+            #
+            # Dieser Handler entscheidet das jetzt nicht mehr selbst. Er
+            # sagt nur noch, wie sicher er sich ist; ueber den Rueckfall
+            # entscheidet der Router an einer Stelle fuer alle Module.
+            gesagt = " ".join(str(text or "").lower().split())
+            nach_liste_gefragt = any(wendung in gesagt for wendung in liste_gemeint)
 
             overview = self.tasks.overview(self.projects.active_id())
             lines = [
@@ -521,7 +652,20 @@ class CognitiveCore:
             for blocked in overview.get("blocked", []):
                 lines.append(f"Blockiert: {blocked['title']} – {blocked['reason'] or 'ohne Angabe'}")
             return RouteResult(
-                handled_locally=True, response="\n".join(lines), module="tasks"
+                handled_locally=True,
+                response="\n".join(lines),
+                module="tasks",
+                konfidenz=(
+                    0.95
+                    if nach_liste_gefragt
+                    else self._auskunft_konfidenz(text, intent)
+                ),
+                rueckfall_erlaubt=True,
+                begruendung=(
+                    "es wurde ausdruecklich nach der Aufgabenliste gefragt"
+                    if nach_liste_gefragt
+                    else "das Wort 'Aufgabe' allein belegt nicht, dass die Liste gemeint ist"
+                ),
             )
 
         self._orchestrator.router.register(intent_names.TASK, handle_task)

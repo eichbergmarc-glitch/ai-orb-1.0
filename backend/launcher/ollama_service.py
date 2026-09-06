@@ -11,7 +11,7 @@ es nicht ungefragt im Hintergrund installieren. Das wäre auch nach den
 Sicherheitsvorgaben nicht zulässig: keine automatische Installation von
 Abhängigkeiten.
 
-Ebenso beim Modell. ``llama3.1:8b`` sind rund fünf Gigabyte. Ein Programm,
+Ebenso beim Modell. ``lfm2.5:8b`` sind rund fünf Gigabyte. Ein Programm,
 das die ungefragt herunterlädt, ist ein schlechtes Programm. AI-Orb fragt,
 zeigt den Fortschritt und lässt sich abbrechen.
 """
@@ -63,21 +63,56 @@ class OllamaService:
 
     # --- Konfiguration ---------------------------------------------------------
 
-    def _fallback_section(self) -> dict[str, Any]:
+    def _ollama_section(self) -> dict[str, Any]:
+        """Der Abschnitt der Konfiguration, in dem Ollama tatsächlich steht.
+
+        Früher wurde fest unter ``ai.fallback`` nachgesehen, weil Ollama dort
+        eingetragen war: vorne ein Anbieter aus dem Netz, hinten das lokale
+        Modell. Wer auf Offline-Betrieb umstellt, tauscht die beiden – und
+        seitdem las diese Klasse den falschen Abschnitt. Sie fragte Ollama
+        dann nach ``sonnet``, fand es dort erwartungsgemäß nicht und meldete
+        beim Start eine Einschränkung, die es nicht gab: das lokale Modell
+        müsse erst geladen werden, mehrere Gigabyte. Es lag längst da.
+
+        Deshalb wird jetzt nicht nach dem Platz gesucht, sondern nach der
+        Maschine: genommen wird der Abschnitt, in dem ``engine: ollama``
+        steht, egal ob er vorn oder hinten hängt.
+        """
+
         try:
             from backend.config import get_config
 
-            section = get_config().get("ai.fallback", {}) or {}
-            return dict(section) if isinstance(section, dict) else {}
+            konfiguration = get_config()
         except Exception:  # noqa: BLE001 - vor dem Laden der Konfiguration nutzbar.
             return {}
+
+        for rolle in ("ai.primary", "ai.fallback"):
+            try:
+                abschnitt = konfiguration.get(rolle, {}) or {}
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(abschnitt, dict):
+                continue
+            if str(abschnitt.get("engine", "")).strip().lower() == "ollama":
+                return dict(abschnitt)
+
+        # Kein Abschnitt nennt Ollama - dann gilt weiterhin der Rückfall,
+        # damit Adresse und Modellname nicht ins Leere zeigen.
+        try:
+            abschnitt = konfiguration.get("ai.fallback", {}) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+        return dict(abschnitt) if isinstance(abschnitt, dict) else {}
+
+    #: Alter Name, damit vorhandene Aufrufe nichts merken.
+    _fallback_section = _ollama_section
 
     def base_url(self) -> str:
         """Die Adresse des Dienstes."""
 
         if self._base_url:
             return self._base_url
-        configured = str(self._fallback_section().get("base_url", "")).strip()
+        configured = str(self._ollama_section().get("base_url", "")).strip()
         return (configured or "http://127.0.0.1:11434").rstrip("/")
 
     def configured_model(self) -> str:
@@ -85,7 +120,7 @@ class OllamaService:
 
         if self._model:
             return self._model
-        return str(self._fallback_section().get("model", "llama3.1:8b")).strip()
+        return str(self._ollama_section().get("model", "lfm2.5:8b")).strip()
 
     # --- Auffinden ---------------------------------------------------------------
 

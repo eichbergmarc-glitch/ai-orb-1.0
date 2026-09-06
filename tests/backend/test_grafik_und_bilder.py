@@ -33,6 +33,7 @@ from backend.grafik import bildquellen
 from backend.grafik.diagramm import DiagrammFehler, Reihe, diagramm_zeichnen
 from backend.tools.grafik_tools import (
     ErzeugeBildTool,
+    ErzeugeInfografikTool,
     SucheBildTool,
     ZeichneDiagrammTool,
     _zahlen,
@@ -193,6 +194,61 @@ def test_werkzeug_versteht_mehrere_reihen(tmp_path):
     assert ergebnis.context["reihen"] == 2
 
 
+def test_infografik_entsteht_lokal_und_hochaufgeloest(tmp_path):
+    from PIL import Image
+
+    werkzeug = ErzeugeInfografikTool(_Sicherheit())
+    ziel = tmp_path / "ueberblick.png"
+    ergebnis = asyncio.run(
+        werkzeug.execute(
+            {
+                "titel": "Die Industrialisierung",
+                "inhalt": (
+                    "# Voraussetzungen\nKohle, Kapital und technische Innovationen.\n\n"
+                    "# Wandel\nFabriken veraenderten Arbeit, Staedte und Gesellschaft.\n\n"
+                    "# Folgen\nWachstum ging mit sozialen Konflikten und Umweltlasten einher."
+                ),
+                "quelle": "Fachliteratur und Quellenvergleich",
+                "pfad": str(ziel),
+            }
+        )
+    )
+
+    assert ergebnis.ok, ergebnis.error
+    with Image.open(ziel) as bild:
+        assert bild.format == "PNG"
+        assert bild.size[0] >= 1600
+        assert bild.size[1] >= 1000
+
+
+def test_konzeptlayout_entsteht_als_vernetzte_uebersicht(tmp_path):
+    from PIL import Image
+
+    werkzeug = ErzeugeInfografikTool(_Sicherheit())
+    ziel = tmp_path / "konzept.png"
+    ergebnis = asyncio.run(
+        werkzeug.execute(
+            {
+                "titel": "Keilschrift in Sumer",
+                "inhalt": (
+                    "## Kernzusammenhang\nSchrift entstand aus Verwaltung.\n\n"
+                    "## Zeitliche Einordnung\nUm 3300 v. u. Z.\n\n"
+                    "## Raum & Akteure\nSumer und Uruk.\n\n"
+                    "## Quellenlage\nErhaltene Tontafeln.\n\n"
+                    "## Bedeutung & Folge\nDauerhafte Herrschaftserinnerung."
+                ),
+                "layout": "konzept",
+                "pfad": str(ziel),
+            }
+        )
+    )
+
+    assert ergebnis.ok, ergebnis.error
+    with Image.open(ziel) as bild:
+        assert bild.size == (1600, 1000)
+        assert len(bild.convert("RGB").getcolors(maxcolors=100000) or []) > 20
+
+
 def test_werkzeug_sagt_was_fehlt_statt_leer_zu_scheitern(tmp_path):
     werkzeug = ZeichneDiagrammTool(_Sicherheit())
     ohne_zahlen = asyncio.run(werkzeug.execute({"titel": "X", "kategorien": ["A"]}))
@@ -220,8 +276,21 @@ class _Dienst:
         def _png() -> bytes:
             from PIL import Image
 
+            # Bewusst gross und nicht einfarbig.
+            #
+            # Vorher stand hier eine einfarbige Flaeche von 200x120. Die
+            # komprimiert auf 392 Byte - und ist damit genau das, was seit
+            # dem 26.08.2026 als unbrauchbar verworfen wird: zu klein fuer
+            # das Vorlesungsfenster. Der Pruefling muss aussehen wie das,
+            # was im Betrieb ankommt, sonst prueft er das Falsche.
             puffer = io.BytesIO()
-            Image.new("RGB", (200, 120), (200, 80, 40)).save(puffer, format="PNG")
+            bild = Image.new("RGB", (1200, 900))
+            bild.putdata([
+                ((x * 7) % 256, (y * 5) % 256, (x + y) % 256)
+                for y in range(900)
+                for x in range(1200)
+            ])
+            bild.save(puffer, format="PNG")
             return puffer.getvalue()
 
         class Handler(BaseHTTPRequestHandler):
@@ -259,7 +328,7 @@ class _Dienst:
                             "mime": "image/jpeg",
                             "thumburl": f"http://127.0.0.1:{gegenstand.port}/bild.png",
                             "descriptionurl": "https://commons.wikimedia.org/wiki/File:X",
-                            "thumbwidth": 200, "thumbheight": 120,
+                            "thumbwidth": 1200, "thumbheight": 900,
                             "extmetadata": {
                                 "Artist": {"value": '<a href="#">Anna Beispiel</a>'},
                                 "LicenseShortName": {"value": "CC BY-SA 4.0"},
@@ -275,6 +344,7 @@ class _Dienst:
                         "foreign_landing_url": "https://example.org/x",
                         "creator": "Bert Beispiel",
                         "license": "cc-by", "license_version": "4.0",
+                        "width": 1200, "height": 900,
                     }]}
                     self._senden(json.dumps(daten).encode(), "application/json")
                     return

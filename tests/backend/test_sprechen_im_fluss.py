@@ -17,6 +17,7 @@ import asyncio
 from backend.memory.memory_engine import MemoryEngine
 from backend.orchestrator.orchestrator import Orchestrator
 from backend.orchestrator.providers.base_provider import ProviderResponse
+from backend.studium.vorlesungs_session import VORLESUNGS_MARKER
 
 
 class _Anbieter:
@@ -188,11 +189,50 @@ def test_ohne_schalter_bleibt_die_hauptantwort_bei_claude():
     _lauf(orch, "Kannst du mir deine neuen Funktionen erklaeren?")
 
     assert anbieter.stream_kwargs[-1]["preferred"] is None
+    # Begrenzt bleibt die Antwort in jedem Fall - nur weiter, weil in
+    # vierzig Tokens kein Werkzeugaufruf Platz hat (siehe _sprechgrenze).
+    grenze = anbieter.stream_kwargs[-1]["max_tokens"]
+    assert grenze is not None, "eine gesprochene Antwort braucht eine Obergrenze"
+    assert 40 <= grenze <= 400
+
+
+def test_offline_nimmt_fuer_kurze_sprachfrage_das_nebenmodell():
+    """Der Offline-Manager darf den schnellen lokalen Provider freigeben."""
+
+    anbieter = _Anbieter(["Das ist eine kurze lokale Antwort."])
+    anbieter.local_provider_names = ["ollama", "ollama_fast"]
+    anbieter.local_provider_for = lambda role="main": (
+        "ollama_fast" if role == "fast" else "ollama"
+    )
+    orch = _orchestrator(anbieter, _Werkzeuge())
+
+    _lauf(orch, "Nenne mir bitte eine Farbe.")
+
+    assert anbieter.stream_kwargs[-1]["preferred"] == "ollama_fast"
+
+
+def test_vorlesungsabschnitt_hat_eine_eigene_ausfuehrliche_grenze():
+    """Die normale 40-Token-Grenze darf eine Vorlesung nicht abwuergen."""
+
+    anbieter = _Anbieter(["Dies ist ein zusammenhaengender Vorlesungsabschnitt."])
+    orch = _orchestrator(anbieter, _Werkzeuge())
+
+    _lauf(
+        orch,
+        f"{VORLESUNGS_MARKER}\nFortlaufende Vorlesung, Abschnitt 2. "
+        "Fahre chronologisch mit Mesopotamien fort.",
+    )
+
+    assert anbieter.stream_kwargs[-1]["preferred"] is None
+    assert anbieter.stream_kwargs[-1]["max_tokens"] == 420
 
 
 def test_aktuelle_sprachfrage_bleibt_beim_starken_provider():
     anbieter = _Anbieter(["Das ist eine aktuelle Antwort."])
-    anbieter.local_provider_names = ["ollama"]
+    anbieter.local_provider_names = ["ollama", "ollama_fast"]
+    anbieter.local_provider_for = lambda role="main": (
+        "ollama_fast" if role == "fast" else "ollama"
+    )
     orch = _orchestrator(anbieter, _Werkzeuge())
 
     _lauf(orch, "Was sind die aktuellen Nachrichten?")
@@ -259,7 +299,7 @@ def test_letzter_satz_ohne_punkt_geht_nicht_verloren():
     assert " ".join(gesagt).endswith("ohne Punkt")
 
 
-def test_langer_einzelsatz_beginnt_vor_dem_schlusspunkt():
+def test_mittellanger_einzelsatz_wird_nicht_am_komma_zerhackt():
     text = (
         "Ein Regenbogen entsteht, wenn Sonnenlicht in vielen feinen "
         "Wassertropfen gebrochen, gespiegelt und in seine Farben zerlegt wird."
@@ -271,9 +311,11 @@ def test_langer_einzelsatz_beginnt_vor_dem_schlusspunkt():
         orch, "Erklaere mir in einem Satz, was ein Regenbogen ist."
     )
 
-    assert len(gesagt) >= 2
-    assert len(gesagt[0]) < len(text)
-    assert " ".join(gesagt).replace("  ", " ") == text
+    # Der fruehere Fruehstart teilte bereits diesen ganz normalen Satz in
+    # mehrere Audiodateien. Nach dem Komma blieb die Stimme dadurch hoerbar
+    # in der Luft haengen. Ein professioneller Vortrag spricht ihn als eine
+    # zusammenhaengende Phrase.
+    assert gesagt == [text]
 
 
 def test_ohne_rueckruf_bleibt_alles_wie_bisher():

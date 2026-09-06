@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from backend.ai.response_pipeline import is_valid_answer
 from backend.config import get_config
+from backend.events import event_types
 from backend.events.event_bus import EventBus
 from backend.evolution.live_development import parse_development_request
 from backend.memory.memory_engine import MemoryEngine
@@ -40,15 +43,299 @@ from backend.orchestrator.intent_classifier import (
     IntentClassifier,
     IntentResult,
 )
+from backend.orchestrator.faehigkeiten import (
+    Faehigkeitsentscheidung,
+    entscheiden as faehigkeiten_entscheiden,
+)
 from backend.orchestrator.provider_manager import ProviderManager
 from backend.orchestrator.providers.base_provider import ProviderError
 from backend.orchestrator.speech_stream import SpeechStream, remaining_after
 from backend.orchestrator.task_router import RouteResult, TaskRouter
+from backend.studium.vorlesungs_session import (
+    ist_vorlesungssegment,
+    lehrstoff_vervollstaendigen,
+)
+from backend.studium.vorlesungs_bilder import (
+    bild_passt,
+    bild_treffer_bewerten,
+    bildsuchbegriffe,
+    uebersichtsart,
+    uebersichtskarten,
+    vorlesungsfolie_titel,
+    vorlesungsthema,
+)
 from backend.system.logging_setup import get_logger
-from backend.system.performance_trace import mark_stage
+from backend.system.performance_trace import (
+    current_turn_trace,
+    mark_stage,
+    start_turn_trace,
+)
 from backend.system.terminal_control import parse_terminal_request
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class TagebuchBefehl:
+    """Ein ohne Sprachmodell eindeutig erkannter Tagebuchauftrag."""
+
+    werkzeug: str
+    argumente: dict[str, Any] = field(default_factory=dict)
+
+
+_TAGEBUCH_EINTRAG = re.compile(
+    r"^\s*(?:orb[,.]?\s*)?(?:"
+    r"(?:neuer|neuen|einen)\s+tagebuch\s*eintrag|"
+    r"tagebuch\s*eintrag|"
+    r"schreib(?:e)?\s+(?:das\s+)?(?:in|ins)\s+(?:mein(?:em)?\s+)?tagebuch|"
+    r"notier(?:e)?\s+(?:das\s+)?(?:in|im)\s+(?:mein(?:em)?\s+)?tagebuch"
+    r")\s*[:,-]?\s*(?P<text>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+_TAGEBUCH_AUFNAHME_START = re.compile(
+    r"^\s*(?:orb[,.]?\s*)?(?:(?:starte|beginne|mach(?:e)?|erstell(?:e)?)\s+(?:einen\s+)?"
+    r"(?:neuen\s+)?tagebuch\s*eintrag|(?:neuer|neuen|ein)\s+"
+    r"tagebuch\s*eintrag|tagebuch\s*eintrag)\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _tagebuch_sprachform(text: str) -> str:
+    """Vereinheitlicht haeufige Whisper-Formen von ``Tagebucheintrag``.
+
+    In der realen Aufnahme vom 25.08. wurde daraus ``Tagebuchintrag``. Das
+    fehlende ``e`` darf keinen mehrminuetigen freien Modellweg ausloesen:
+    Gerade der Start eines Diktats muss lokal und deterministisch sein.
+    """
+
+    knapp = " ".join(str(text or "").lower().replace("-", " ").split())
+    return re.sub(
+        r"\btagebuch\s*(?:eintrag|intrag|eitrag|beitrag)\b",
+        "tagebucheintrag",
+        knapp,
+        flags=re.IGNORECASE,
+    )
+
+
+def parse_tagebuch_befehl(text: str) -> TagebuchBefehl | None:
+    """Erkennt Diktat und Buchbefehle lokal und bewahrt den Wortlaut.
+
+    Ein Tagebucheintrag darf nicht davon abhaengen, ob ein Modell gerade
+    erreichbar ist oder ein Werkzeugformat korrekt erzeugt. Nur der klar
+    bezeichnete Vorspann wird entfernt; der eigentliche Text bleibt erhalten.
+    """
+
+    roh = str(text or "")
+    # Interne Folgeauftraege einer Vorlesung koennen den letzten gesprochenen
+    # Absatz enthalten. Stand dort zufaellig etwas ueber das Tagebuch, wurde
+    # dieser technische Kontext bislang wie ein neuer Benutzerbefehl behandelt
+    # und oeffnete das Tagebuch in einer Endlosschleife. Interne Regie ist nie
+    # ein Tagebuchauftrag.
+    if ist_vorlesungssegment(roh):
+        return None
+    start_knapp = _tagebuch_sprachform(roh)
+    # Reale Whisper-Fehlform: "Hallo Orb, erstelle ..." wurde als
+    # "Alle Orte bestellen ..." erkannt. Tagebucheintrag plus Startverb
+    # und Artikel ist trotzdem eindeutig genug fuer den lokalen Weg.
+    robuster_start = (
+        "tagebucheintrag" in start_knapp
+        and any(stamm in start_knapp for stamm in (
+            "erstell", "bestell", "starte", "beginne", "mach einen", "mache einen",
+        ))
+        and any(w in start_knapp.split() for w in ("ein", "einen", "neuen", "neuer"))
+        and not any(
+            marker in start_knapp
+            for marker in (
+                "wie man", "wie erstelle ich", "erkläre mir", "erklaere mir",
+                "beispiel für", "beispiel fuer", "was ist",
+            )
+        )
+    )
+    if _TAGEBUCH_AUFNAHME_START.match(roh) or robuster_start:
+        return TagebuchBefehl("tagebuch_diktat_start")
+    treffer = _TAGEBUCH_EINTRAG.match(roh)
+    if treffer:
+        eintrag = treffer.group("text").strip()
+        # Gesprochene Absatzmarken werden in das bereits vom Tagebuch
+        # verstandene, eindeutige Absatzzeichen uebersetzt.
+        eintrag = re.sub(
+            r"\s+(?:neuer|neue|naechster|nächster)\s+absatz\s+",
+            " | ",
+            eintrag,
+            flags=re.IGNORECASE,
+        )
+        return TagebuchBefehl("tagebuch_schreiben", {"text": eintrag})
+
+    knapp = " ".join(roh.lower().replace("-", " ").split())
+    if "tagebuch" not in knapp:
+        return None
+    if any(w in knapp for w in ("öffne", "oeffne", "zeig", "zeige", "aufschlagen")):
+        return TagebuchBefehl("tagebuch_zeigen", {})
+
+    # Gezielte Aenderungen laufen ebenfalls lokal. Der eigentliche Wortlaut
+    # darf nie zur Interpretation oder Umformulierung an ein Modell gehen.
+    ersetzen = re.match(
+        r"^\s*(?:orb[,.]?\s*)?ersetz(?:e)?\s+(?:im|in dem)\s+"
+        r"(?:(?:letzten|jüngsten|juengsten)\s+)?tagebuch\s*eintrag\s+"
+        r"(?P<alt>.+?)\s+(?:durch|mit)\s+(?P<neu>.+?)\s*[.!?]?\s*$",
+        roh, flags=re.IGNORECASE,
+    )
+    if ersetzen:
+        return TagebuchBefehl("tagebuch_aendern", {
+            "modus": "ersetzen",
+            "alt": ersetzen.group("alt").strip(" :,-"),
+            "neu": ersetzen.group("neu").strip(" :,-"),
+        })
+
+    gesamt = re.match(
+        r"^\s*(?:orb[,.]?\s*)?(?:ändere|aendere|ersetz(?:e)?)\s+"
+        r"(?:den\s+)?"
+        r"(?:(?P<lage>letzten|jüngsten|juengsten|ersten|ältesten|aeltesten)\s+)?"
+        r"tagebuch\s*eintrag\s+(?:vollständig\s+|vollstaendig\s+)?"
+        r"(?:zu|in|durch)\s*:?\s*(?P<text>.+?)\s*[.!?]?\s*$",
+        roh, flags=re.IGNORECASE,
+    )
+    if gesamt:
+        lage = (gesamt.group("lage") or "").lower()
+        return TagebuchBefehl("tagebuch_aendern", {
+            "modus": "ersetzen_gesamt",
+            "text": gesamt.group("text").strip(" :,-"),
+            "position": "erster" if lage in {"ersten", "ältesten", "aeltesten"} else "letzter",
+        })
+
+    anhaengen = re.match(
+        r"^\s*(?:orb[,.]?\s*)?(?:ergänz(?:e)?|ergaenz(?:e)?|füg(?:e)?\s+hinzu)\s+"
+        r"(?:(?:den|zum)\s+)?(?:(?:letzten|jüngsten|juengsten)\s+)?"
+        r"tagebuch\s*eintrag(?:\s+um)?\s*:?\s*(?P<text>.+?)\s*[.!?]?\s*$",
+        roh, flags=re.IGNORECASE,
+    )
+    if anhaengen:
+        zusatz = anhaengen.group("text").strip(" .!?:,-")
+        if zusatz:
+            return TagebuchBefehl("tagebuch_aendern", {
+                "modus": "anhaengen", "text": zusatz,
+            })
+
+    teil_entfernen = re.match(
+        r"^\s*(?:orb[,.]?\s*)?(?:entfern(?:e)?|lösch(?:e)?|loesch(?:e)?)\s+"
+        r"(?:bitte\s+)?(?:den\s+text\s+)?(?:aus|in)\s+(?:dem\s+)?"
+        r"(?:(?:letzten|jüngsten|juengsten)\s+)?tagebuch\s*eintrag\s*:?\s*"
+        r"(?P<text>.+?)\s*[.!?]?\s*$",
+        roh, flags=re.IGNORECASE,
+    )
+    if teil_entfernen:
+        return TagebuchBefehl("tagebuch_aendern", {
+            "modus": "entfernen",
+            "text": teil_entfernen.group("text").strip(" :,-"),
+        })
+
+    # Ohne genannten Aenderungstext beginnt ein gefuehrtes Diktat: Der Orb
+    # sagt klar, welche Fassung jetzt gesprochen werden soll.
+    aenderung_start = re.match(
+        r"^\s*(?:orb[,.]?\s*)?(?P<art>ändere|aendere|bearbeite|"
+        r"ergänze|ergaenze)\s+(?:bitte\s+)?(?:den\s+)?"
+        r"(?:(?P<lage>ersten|ältesten|aeltesten|letzten|jüngsten|juengsten)\s+)?"
+        r"tagebuch\s*eintrag\s*[.!?]?\s*$",
+        roh, flags=re.IGNORECASE,
+    )
+    if aenderung_start:
+        art = aenderung_start.group("art").lower()
+        lage = (aenderung_start.group("lage") or "").lower()
+        return TagebuchBefehl("tagebuch_aenderung_start", {
+            "modus": "anhaengen" if art in {"ergänze", "ergaenze"} else "ersetzen_gesamt",
+            "position": "erster" if lage in {"ersten", "ältesten", "aeltesten"} else "letzter",
+        })
+
+    if "letzten eintrag" in knapp and any(
+        w in knapp for w in ("streich", "lösch", "loesch", "entfern")
+    ):
+        return TagebuchBefehl("tagebuch_streichen", {})
+    entfernen = re.match(
+        r"^\s*(?:orb[,.]?\s*)?(?:lösch(?:e)?|loesch(?:e)?|entfern(?:e)?)\s+"
+        r"(?:bitte\s+)?(?:den\s+)?tagebuch\s*eintrag\s+"
+        r"(?:über|ueber|mit|vom|von)\s+"
+        r"(?:(?:den|dem|der|die|das|einen|einem|einer)\s+)?"
+        r"(?P<suchtext>.+?)\s*[.!?]?\s*$",
+        roh,
+        flags=re.IGNORECASE,
+    )
+    if entfernen:
+        suchtext = entfernen.group("suchtext").strip()
+        uhrzeit = re.search(r"\b(\d{1,2})[.:](\d{2})\b", suchtext)
+        if uhrzeit:
+            suchtext = f"{uhrzeit.group(1)} {uhrzeit.group(2)}"
+        return TagebuchBefehl(
+            "tagebuch_streichen", {"suchtext": suchtext},
+        )
+
+    # Whisper erkennt "entferne" gelegentlich als "entfene". Datum und
+    # Uhrzeit sind zur Auswahl sogar verlaesslicher als der Eintragstext.
+    loeschauftrag = any(w in knapp for w in (
+        "lösch", "loesch", "streich", "entfern", "entfen", "entfene",
+    ))
+    ganz = any(w in knapp for w in ("vollständig", "vollstaendig", "komplett", "ganzen eintrag"))
+    if loeschauftrag and ("eintrag" in knapp or "tagebuch" in knapp) and (
+        ganz or "aus dem" not in knapp
+    ):
+        if any(w in knapp for w in ("ersten", "ältesten", "aeltesten", "unteren")):
+            return TagebuchBefehl("tagebuch_streichen", {"position": "erster"})
+        uhrzeit = re.search(r"\b(\d{1,2})[.:](\d{2})\b", roh)
+        if uhrzeit:
+            return TagebuchBefehl(
+                "tagebuch_streichen",
+                {"suchtext": f"{uhrzeit.group(1)} {uhrzeit.group(2)}"},
+            )
+        if "heute" in knapp:
+            return TagebuchBefehl("tagebuch_streichen", {"suchtext": "heute"})
+        return TagebuchBefehl("tagebuch_streichen", {})
+    return None
+
+
+_ZAHLWORTE = {"eins": 1, "ein": 1, "erste": 1, "zwei": 2, "zweite": 2,
+              "drei": 3, "dritte": 3, "vier": 4, "vierte": 4,
+              "fünf": 5, "fuenf": 5, "fünfte": 5, "fuenfte": 5}
+
+
+def parse_tagebuch_bild_befehl(text: str) -> TagebuchBefehl | None:
+    """Erkennt Start und Auswahl des gefuehrten Tagebuch-Bilddialogs."""
+
+    roh = str(text or "").strip()
+    if ist_vorlesungssegment(roh):
+        return None
+    schlicht = " ".join(roh.lower().strip(" .!?").split())
+    if schlicht in {
+        "bild ins tagebuch", "bild in den tagebucheintrag",
+        "bild zum tagebucheintrag", "tagebuchbild",
+    }:
+        return TagebuchBefehl("tagebuch_bild_suche_start")
+
+    suche = re.match(
+        r"^\s*(?:orb[,.]?\s*)?(?:such(?:e)?\s+(?:mir\s+)?|zeig(?:e)?\s+(?:mir\s+)?)?"
+        r"(?:ein\s+)?bild\s+(?:von|vom|über|ueber|zu)\s+(?P<motiv>.+?)"
+        r"(?:\s+(?:für|fuer|in)\s+(?:den\s+)?(?:tagebuch(?:eintrag)?|tagebucheintrag))?"
+        r"\s*[.!?]?\s*$",
+        roh, flags=re.IGNORECASE,
+    )
+    if suche and ("tagebuch" in schlicht or schlicht.startswith(("bild ", "suche ", "such "))):
+        motiv = re.sub(
+            r"\s+(?:für|fuer|in)\s+(?:den\s+)?(?:tagebuch(?:eintrag)?|tagebucheintrag)\s*$",
+            "", suche.group("motiv"), flags=re.IGNORECASE,
+        ).strip()
+        return TagebuchBefehl("tagebuch_bild_suchen", {"begriff": motiv})
+
+    auswahl = re.match(
+        r"^\s*(?:nimm\s+|wähl(?:e)?\s+|waehl(?:e)?\s+)?(?:das\s+)?"
+        r"(?:bild\s+(?:nummer\s+)?)?(?P<nummer>[1-5]|eins|ein|erste|zwei|zweite|"
+        r"drei|dritte|vier|vierte|fünf|fuenf|fünfte|fuenfte)(?:\s*\.?)\s*$",
+        roh, flags=re.IGNORECASE,
+    )
+    if auswahl:
+        wert = auswahl.group("nummer").lower()
+        return TagebuchBefehl(
+            "tagebuch_bild_auswaehlen", {"nummer": int(wert) if wert.isdigit() else _ZAHLWORTE[wert]},
+        )
+    return None
 
 #: Wörter, die eine Frage nach dem JETZT kennzeichnen.
 #:
@@ -137,7 +424,8 @@ def provider_mode_command(text: str) -> str:
         .replace("ü", "ue")
         .replace("ß", "ss")
     )
-    words = {word.strip(".,!?;:") for word in normalized.split()}
+    wortliste = [word.strip(".,!?;:") for word in normalized.split()]
+    words = set(wortliste)
     offline_target = any(
         marker in normalized
         for marker in (
@@ -153,14 +441,73 @@ def provider_mode_command(text: str) -> str:
             "cloud modell", "automatische modellauswahl", "automatikbetrieb",
         )
     ) or "online" in words
-    action = any(
-        marker in normalized
-        for marker in (
-            "schalt", "wechsel", "wechsle", "aktivier", "geh ", "gehe ",
-            "arbeite", "nutze", "benutze", "verwende", "stell ", "stelle ",
-        )
+    # Ein Zielwort irgendwo im Satz ist noch kein Befehl. Besonders in
+    # Tagebuchtexten kommen Formulierungen wie "Im Offline-Modus läuft er"
+    # und spaeter "aktuell verwende ich ..." vor. Die alte Suche fand darin
+    # Ziel UND Verb und schaltete den Orb ungefragt um. Nur eine einleitende
+    # Imperativform gilt als Aktion.
+    befehlstext = re.sub(
+        r"^(?:(?:hallo|hey|hi)\s+)?(?:orb|orp|org)[,.]?\s*", "", normalized
     )
-    disable_offline = offline_target and any(
+    befehlstext = re.sub(r"^(?:bitte\s+)", "", befehlstext)
+    aktions_treffer = re.match(
+        r"^(?:du\s+sollst\s+)?(?:"
+        r"schalt\w*|wechsel\w*|wechsle|aktivier\w*|deaktivier\w*|"
+        r"beend\w*|verlass\w*|geh(?:e)?|"
+        r"arbeite|nutz\w*|benutz\w*|verwend\w*|stell\w*"
+        r")\b",
+        befehlstext,
+    )
+    # Modusbefehle sind kurze, eigenstaendige Anweisungen. Diese Grenze ist
+    # ein Sicherheitsgurt gegen Diktate, Zitate und Erklaerungen, in denen
+    # am Anfang zufaellig ein Imperativ und viel spaeter das Wort "offline"
+    # steht. Ein echter Umschaltbefehl braucht keine zwanzig Woerter.
+    kurz_genug = len(befehlstext.split()) <= 16
+    action = bool(aktions_treffer) and kurz_genug
+    nach_aktion = (
+        befehlstext[aktions_treffer.end():].strip()
+        if aktions_treffer is not None
+        else ""
+    )
+    # "Stell dir den Offlinebetrieb vor" und "Nutzen wir offline als
+    # Beispiel" sind keine Systembefehle. Sie beginnen nur grammatisch wie
+    # einer. Ebenso darf ein Auftrag, das WORT offline zu erklaeren oder zu
+    # notieren, den Rechner nicht umschalten.
+    if re.match(r"^(?:dir|wir|ich|man)\b", nach_aktion):
+        action = False
+    if any(
+        marker in befehlstext
+        for marker in (
+            "als beispiel", "das wort offline", "wort offline",
+            "erklaer", "beschreib", "zitier", "notier", "tagebuch",
+        )
+    ):
+        action = False
+
+    # Das Ziel muss NACH dem einleitenden Aktionswort stehen. Die alte
+    # globale Suche konnte sonst zwei unabhaengige Satzteile miteinander
+    # kombinieren: vorne "verwende", hinten "offline" - und schaltete um.
+    target_after_action = False
+    if action:
+        tail_words = {
+            word.strip(".,!?;:") for word in nach_aktion.split()
+        }
+        target_after_action = any(
+            marker in nach_aktion
+            for marker in (
+                "offlinebetrieb", "offline betrieb", "offline modus",
+                "offline mode", "of line betrieb", "lokales modell",
+                "lokale modell", "lokaler ki", "lokale ki",
+                "onlinebetrieb", "online betrieb", "online modus",
+                "online mode", "cloud modell",
+                "automatische modellauswahl", "automatikbetrieb",
+            )
+        ) or (
+            bool(tail_words & {"offline", "online"})
+            and bool(re.match(r"^(?:schalt\w*|wechsel\w*|wechsle|geh(?:e)?)\b", befehlstext))
+        )
+        action = target_after_action
+    disable_offline = action and offline_target and any(
         marker in normalized
         for marker in (
             "ausschalt", "aus schalt", "deaktivier", "beende", "verlass",
@@ -176,9 +523,13 @@ def provider_mode_command(text: str) -> str:
         return "auto"
     if offline_target and action:
         return "offline"
-    if (offline_target or online_target) and any(
+    if (
+        (offline_target or online_target)
+        and len(wortliste) <= 12
+        and any(
         marker in normalized
         for marker in ("bist du", "sind wir", "ist der", "welcher modus", "status")
+        )
     ):
         return "status"
     return ""
@@ -317,6 +668,29 @@ def will_pdf_erstellen(text: str) -> bool:
     )
 
 
+def will_pdf_mit_grafik(text: str) -> bool:
+    """Ob eine angeforderte PDF visuell erklaeren soll."""
+
+    knapp = " " + " ".join((text or "").lower().split()) + " "
+    return will_pdf_erstellen(text) and any(
+        marker in knapp
+        for marker in (
+            " grafik", "infografik", "diagramm", "visuell", "anschaulich",
+            "illustrier", " bebilder", " bild", " foto", " photo",
+        )
+    )
+
+
+def will_pdf_mit_fotos(text: str) -> bool:
+    """Ob ausdruecklich reale Fotos/Bilder statt nur Infografik gewuenscht sind."""
+
+    knapp = " " + " ".join((text or "").lower().split()) + " "
+    return will_pdf_erstellen(text) and any(
+        marker in knapp
+        for marker in (" foto", " photo", "bilder suchen", "echte bilder", "bebilder")
+    )
+
+
 def pdf_titel_aus(text: str) -> str:
     """Leitet fuer den deterministischen Rueckfall einen kurzen Titel ab."""
 
@@ -328,7 +702,8 @@ def pdf_titel_aus(text: str) -> str:
     )
     candidate = match.group(1) if match else cleaned
     candidate = _re.sub(
-        r"\b(?:erstelle?n?|mach(?:e)?|generiere?n?|pdf(?:-datei)?|mit grafiken?)\b",
+        r"\b(?:erstelle?n?|mach(?:e)?|generiere?n?|pdf(?:-datei)?|mit|grafiken?|"
+        r"infografiken?|diagrammen?|fotos?|photos?|bildern?|visuell|anschaulich)\b",
         " ",
         candidate,
         flags=_re.IGNORECASE,
@@ -691,6 +1066,12 @@ class Orchestrator:
         #: soll DEN wiederholen - nicht den Satz "wiederhole die Suche"
         #: wörtlich ins Netz schicken (belegt im Protokoll des Benutzers).
         self._letzter_suchbegriff: str = ""
+        #: Beim Tagebuchdiktat gehoeren alle folgenden Aeusserungen
+        #: wortgetreu in den Eintrag, bis "Tagebucheintrag beendet" faellt.
+        self._tagebuch_diktat_ausstehend = False
+        self._tagebuch_diktat_teile: list[str] = []
+        self._tagebuch_bild_suchwort_ausstehend = False
+        self._tagebuch_bild_kandidaten: list[dict[str, Any]] = []
 
         #: Wie viel Beigelegtes hoechstens in eine Anfrage darf.
         #:
@@ -708,6 +1089,16 @@ class Orchestrator:
         #: Die Ablaufmaschine. Wird nachgereicht wie die Werkzeugschleife –
         #: zur Bauzeit des Orchestrators gibt es sie noch nicht.
         self._workflows: Any | None = None
+        #: Bildmaterial wird parallel zum gesprochenen Abschnitt beschafft.
+        #: Die laufenden Tasks werden festgehalten, damit sie nicht vorzeitig
+        #: eingesammelt werden; die Generation verhindert veraltete Anzeigen.
+        self._vorlesungsbild_tasks: set[asyncio.Task[None]] = set()
+        self._vorlesungsbild_generation = 0
+        self._vorlesungsbild_cache: dict[str, dict[str, str]] = {}
+        #: Der Schattenlauf. Wird beim ersten Zug gebaut, wenn er an ist -
+        #: und genau einmal geprueft, wenn er aus ist.
+        self._schatten: Any | None = None
+        self._schatten_geprueft = False
 
     def attach_workflows(self, workflows: Any) -> None:
         """Schliesst die Ablaufmaschine an.
@@ -729,6 +1120,70 @@ class Orchestrator:
         """
 
         self._tool_engine = tool_engine
+
+    def attach_lernstand(self, lernstand: Any) -> None:
+        """Schliesst das Mitlesen an.
+
+        Der Benutzer hat ausdruecklich verlangt, dass der Orb seinen
+        Wissensstand aus dem GESPRAECH erkennt und nicht aus Tests. Das
+        geht nur, wenn jede Aeusserung daraufhin angesehen wird - und
+        zwar von selbst, ohne dass ein Werkzeug aufgerufen werden muss.
+        Genau hier ist die Stelle: Jede Frage kommt hier vorbei.
+        """
+
+        self._lernstand = lernstand
+
+    def _aus_dem_gespraech_lernen(self, text: str) -> str:
+        """Liest an einer Aeusserung ab, wo der Benutzer steht.
+
+        Gibt den Hinweis zurueck, der dem Sprachmodell beigelegt wird -
+        oder eine leere Zeichenkette, wenn nichts zu erkennen war. Das
+        Erkennen selbst steht in :mod:`backend.studium.mitlesen`; hier
+        wird es nur eingeholt und festgehalten.
+
+        Faellt irgendetwas davon aus, geht die Antwort trotzdem weiter:
+        Eine Vermutung ueber den Lernenden darf nie eine Auskunft
+        verhindern.
+        """
+
+        lernstand = getattr(self, "_lernstand", None)
+        if lernstand is None or not text.strip():
+            return ""
+        try:
+            lernstand.lernweg_beobachten(text)
+            lernweg = lernstand.lernprofil_hinweis()
+            from backend.studium.landkarte import thema_suchen
+            from backend.studium.mitlesen import (
+                einschaetzung_im_klartext,
+                mitlesen,
+            )
+
+            treffer = thema_suchen(text)
+            if treffer is None:
+                return lernweg
+            das_feld, das_thema = treffer
+            beobachtung = mitlesen(text, das_thema)
+            if not beobachtung.sagt_etwas:
+                return ""
+            lernstand.beobachten(das_feld.kennung, beobachtung)
+
+            from backend.studium.antrieb import haltung_im_klartext
+
+            teile = [
+                lernweg,
+                # Wozu der Orb das alles tut. Es steht hier und nicht im
+                # allgemeinen Systemtext, weil es nur bei einer Fachfrage
+                # etwas beitraegt - bei einer Wetterfrage waere es Ballast.
+                haltung_im_klartext(),
+                einschaetzung_im_klartext(beobachtung),
+                lernstand.wechselurteil(
+                    winkt_ab=beobachtung.interesse < 0
+                ).als_hinweis(),
+            ]
+            return "\n\n".join(t for t in teile if t)
+        except Exception:  # noqa: BLE001
+            logger.exception("Das Mitlesen im Gespraech ist gescheitert.")
+            return ""
 
     # --- Hauptablauf ------------------------------------------------------------
 
@@ -752,14 +1207,109 @@ class Orchestrator:
         "gilt diese Beschränkung nicht."
     )
 
+    #: Was der Orb sagt, wenn am Ende doch nichts dasteht.
+    LEERE_ANTWORT = (
+        "Dabei ist mir nichts Brauchbares herausgekommen. Ich sage das "
+        "lieber, als zu schweigen - frag gern noch einmal, auch anders "
+        "formuliert."
+    )
+
+    #: Was der Orb sagt, wenn die Gesamtfrist gerissen ist.
+    #:
+    #: Nicht schoen, aber ehrlich - und vor allem: ueberhaupt etwas. Die
+    #: Alternative war Stille von unbestimmter Dauer.
+    ZEITUEBERSCHREITUNG = (
+        "Das hat zu lange gedauert, ich habe abgebrochen - damit du nicht "
+        "weiter vor einem stummen Orb sitzt. Frag noch einmal; beim "
+        "naechsten Mal ist ein anderes Modell an der Reihe."
+    )
+
     LOCAL_SPOKEN_SYSTEM = (
-        "Du bist AI-Orb, ein freundlicher lokaler Desktop-Assistent. "
-        "Antworte auf Deutsch, ehrlich und direkt in ein bis drei kurzen "
-        "Saetzen. Keine Listen, keine Ueberschriften und keine Erwaehnung "
-        "interner Anweisungen."
+        "Diese Antwort wird vorgelesen. Antworte bei einer einfachen Frage "
+        "in ein bis drei kurzen Saetzen und beginne unmittelbar mit der "
+        "Sache. Keine Listen, Ueberschriften oder sichtbare Formatierung."
     )
 
     async def handle(
+        self,
+        text: str,
+        *,
+        project_id: str | None = None,
+        extra_context: str | None = None,
+        spoken: bool = False,
+        on_speech: Callable[[str], Awaitable[bool]] | None = None,
+    ) -> OrchestrationResult:
+        """Der lebende Pfad - und daneben, danach, der Schatten.
+
+        Diese Hülle tut selbst nichts an der Antwort. Sie reicht die
+        Anfrage an ``_anfrage_bearbeiten`` weiter, gibt deren Ergebnis
+        unverändert zurück und setzt erst danach den Schattenlauf ab.
+
+        Warum eine Hülle und nicht ein Aufruf am Ende von
+        ``_anfrage_bearbeiten``: Die Bearbeitung hat über zwanzig
+        Rückgabestellen - Tagebuch, Betriebsartwechsel, Verlaufsreparatur,
+        Abläufe, Werkzeugpfad. Ein Aufruf "am Ende" hätte die meisten davon
+        verfehlt, und ein Schatten, der nur bei einem Teil der Züge läuft,
+        misst die Verteilung der Züge, nicht das Modell.
+
+        Der Schattenlauf kann die Antwort nicht anfassen: Er bekommt sie
+        als Zeichenkette, gibt nichts zurück, und läuft in einer eigenen
+        Aufgabe mit eigener Zeitgrenze. Fällt er aus, merkt der Benutzer
+        nichts - was ausgefallen ist, steht im Zähler.
+        """
+
+        ergebnis = await self._anfrage_bearbeiten(
+            text,
+            project_id=project_id,
+            extra_context=extra_context,
+            spoken=spoken,
+            on_speech=on_speech,
+        )
+
+        waechter = self._schattenwaechter()
+        if waechter is not None:
+            try:
+                waechter.starten(
+                    text=text,
+                    live_antwort=ergebnis.response,
+                    kategorie=str(ergebnis.data.get("faehigkeit", "") or ergebnis.intent),
+                    werkzeuge_live=list(ergebnis.data.get("werkzeuge", []) or []),
+                )
+            except Exception:  # noqa: BLE001 - der Schatten darf den Zug nicht beruehren.
+                logger.debug("Der Schattenlauf liess sich nicht absetzen.", exc_info=True)
+
+        return ergebnis
+
+    def _schattenwaechter(self) -> Any | None:
+        """Baut den Wächter beim ersten Bedarf - und nur, wenn er an ist.
+
+        Ist der Schattenlauf aus (Vorgabe), bleibt es bei einem einzigen
+        Konfigurationszugriff und einem ``None``; es entsteht kein Objekt,
+        keine Aufgabe, kein Zähler.
+        """
+
+        if self._schatten is not None:
+            return self._schatten
+        if self._schatten_geprueft:
+            return None
+        self._schatten_geprueft = True
+        try:
+            from backend.lernen.schattenpfad import Schattenwaechter
+
+            waechter = Schattenwaechter(
+                provider_manager=self._providers, event_bus=self._event_bus
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Der Schattenwaechter liess sich nicht bauen.", exc_info=True)
+            return None
+        if not waechter.aktiv:
+            logger.debug("Der Schattenlauf ist abgeschaltet.")
+            return None
+        self._schatten = waechter
+        logger.info("Der Schattenlauf ist aktiv: %s", waechter.status())
+        return waechter
+
+    async def _anfrage_bearbeiten(
         self,
         text: str,
         *,
@@ -786,7 +1336,21 @@ class Orchestrator:
 
         started = time.perf_counter()
         mark_stage("orchestrator_received")
+        # Jede Anfrage bekommt eine Korrelations-Kennung, auch die getippte.
+        #
+        # Die Sprachpipeline legt fuer gesprochene Zuege laengst eine an;
+        # ueber die Oberflaeche kam bisher keine, und genau diese Zuege
+        # liessen sich im Protokoll nicht verfolgen. Der Marker wird am
+        # Ende dieses Zuges wieder zurueckgesetzt.
+        if current_turn_trace() is None:
+            # Kein Zuruecksetzen noetig: Jede Anfrage laeuft in einer
+            # eigenen asyncio-Aufgabe, und die bekommt eine eigene Kopie
+            # des Kontexts. Die Kennung endet also mit diesem Zug von
+            # selbst. Die Sprachpipeline setzt ihre eigene ausdruecklich
+            # zurueck, weil sie die Aufgabe wiederverwendet.
+            start_turn_trace()
         self._providers.begin_conversation()
+        interner_vorlesungsauftrag = ist_vorlesungssegment(text)
 
         if project_id is not None:
             self.conversations.set_project(project_id)
@@ -805,7 +1369,7 @@ class Orchestrator:
         # hoere nicht mehr damit auf. Diese Pruefung steht deshalb ganz
         # vorn: Der Satz, mit dem man das zurueckholt, darf an keiner
         # Modellwahl und keiner Werkzeugwahl scheitern.
-        if ist_reparaturbefehl(text):
+        if not interner_vorlesungsauftrag and ist_reparaturbefehl(text):
             entfernt = self.conversations.letzte_wechsel_verwerfen(STANDARD_WECHSEL)
             response = reparatur_antwort(entfernt)
             logger.info(
@@ -822,7 +1386,18 @@ class Orchestrator:
             await self._publish("ai.response", result.to_dict())
             return result
 
-        mode_command = provider_mode_command(text)
+        # Tagebuchinhalt kann die Woerter "offline", "online", "nutze" oder
+        # "verwende" enthalten, ohne eine Systemanweisung zu sein. Ein lokal
+        # erkannter Tagebuchauftrag hat deshalb absoluten Vorrang vor der
+        # Betriebsmodus-Erkennung.
+        tagebuch_vorab = parse_tagebuch_befehl(text)
+        mode_command = ""
+        if (
+            not interner_vorlesungsauftrag
+            and not self._tagebuch_diktat_ausstehend
+            and tagebuch_vorab is None
+        ):
+            mode_command = provider_mode_command(text)
         if mode_command:
             if mode_command == "status":
                 provider_status = self._providers.status()
@@ -853,12 +1428,273 @@ class Orchestrator:
             await self._publish("ai.response", result.to_dict())
             return result
 
+        # Nach der Aufnahmeaufforderung sammeln wir beliebig viele
+        # Sprachabschnitte. Erst der ausdrueckliche Schlusssatz beendet und
+        # speichert das Diktat; normale Sprechpausen tun das gerade nicht.
+        if self._tagebuch_diktat_ausstehend and not interner_vorlesungsauftrag:
+            roh_diktat = str(text or "").strip()
+            ende = re.search(
+                r"(?:^|\s)(?:"
+                r"tagebuch(?:eintrag|eitrag)\s+beendet|"
+                r"ende\s+des\s+(?:tagebuch\s*)?eintrag(?:s|es)|"
+                r"(?:tagebuch\s*)?eintrag\s+ende"
+                r")[.!?]*\s*$",
+                roh_diktat,
+                flags=re.IGNORECASE,
+            )
+            abschnitt = roh_diktat[:ende.start()].strip() if ende else roh_diktat
+            if abschnitt:
+                self._tagebuch_diktat_teile.append(abschnitt)
+
+            if not ende:
+                response = (
+                    "Der Abschnitt ist aufgenommen. Zum Abschluss sage: "
+                    "Ende des Eintrages. Möchtest du weiter diktieren?"
+                )
+                self.conversations.add_user_message(text)
+                self.conversations.add_assistant_message(response)
+                result = OrchestrationResult(
+                    response=response, intent="tagebuch", used_llm=False,
+                    module="tagebuch",
+                    data={"ok": True, "wartet_auf_diktat": True,
+                          "abschnitte": len(self._tagebuch_diktat_teile)},
+                    duration_seconds=time.perf_counter() - started,
+                )
+                await self._publish("ai.response", result.to_dict())
+                return result
+
+            if self._tool_engine is not None and self._tool_engine.enabled:
+                if not self._tagebuch_diktat_teile:
+                    response = (
+                        "Es wurde noch kein Text aufgenommen. Diktiere deinen Text "
+                        "und sage danach: Ende des Eintrages."
+                    )
+                    result = OrchestrationResult(
+                        response=response, intent="tagebuch", used_llm=False,
+                        module="tagebuch",
+                        data={"ok": False, "wartet_auf_diktat": True},
+                        duration_seconds=time.perf_counter() - started,
+                    )
+                    await self._publish("ai.response", result.to_dict())
+                    return result
+                self._tagebuch_diktat_ausstehend = False
+                gesamtdiktat = " ".join(self._tagebuch_diktat_teile)
+                self._tagebuch_diktat_teile = []
+                diktat = re.sub(
+                    r"\s+(?:neuer|neue|naechster|nächster)\s+absatz\s+",
+                    " | ",
+                    gesamtdiktat,
+                    flags=re.IGNORECASE,
+                )
+                run = await self._tool_engine.direkt_ausfuehren(
+                    "tagebuch_schreiben", {"text": diktat},
+                    actor="tagebuch_sprachbefehl",
+                )
+                geoeffnet = False
+                if run.result.ok:
+                    auf = await self._tool_engine.direkt_ausfuehren(
+                        "tagebuch_zeigen", {}, actor="tagebuch_sprachbefehl",
+                    )
+                    geoeffnet = bool(auf.result.ok)
+                    response = (
+                        "Der Tagebucheintrag ist fertig und gespeichert. "
+                        + ("Ich habe ihn jetzt im Tagebuch geöffnet."
+                           if geoeffnet else
+                           "Das Tagebuch konnte ich diesmal nicht automatisch öffnen.")
+                    )
+                else:
+                    response = run.result.error or "Der Tagebucheintrag konnte nicht gespeichert werden."
+                self.conversations.add_user_message(text)
+                self.conversations.add_assistant_message(response)
+                result = OrchestrationResult(
+                    response=response, intent="tagebuch", used_llm=False,
+                    module="tagebuch",
+                    data={"ok": run.result.ok, "geoeffnet": geoeffnet, **run.result.context},
+                    duration_seconds=time.perf_counter() - started,
+                )
+                await self._publish("ai.response", result.to_dict())
+                return result
+
+        # Der Bilddialog ist ebenfalls lokal gesteuert: Motiv erfragen,
+        # freie Bilder suchen und zeigen, danach die gesprochene Nummer in
+        # den juengsten Eintrag uebernehmen und das Buch oeffnen.
+        bild_befehl = parse_tagebuch_bild_befehl(text)
+        if self._tagebuch_bild_suchwort_ausstehend and not interner_vorlesungsauftrag:
+            self._tagebuch_bild_suchwort_ausstehend = False
+            bild_befehl = TagebuchBefehl(
+                "tagebuch_bild_suchen", {"begriff": str(text or "").strip()}
+            )
+
+        if bild_befehl is not None and bild_befehl.werkzeug == "tagebuch_bild_suche_start":
+            self._tagebuch_bild_suchwort_ausstehend = True
+            response = "Welches Bild soll ich für den Tagebucheintrag suchen?"
+            result = OrchestrationResult(
+                response=response, intent="tagebuch_bild", used_llm=False,
+                module="tagebuch", data={"ok": True, "wartet_auf_bildmotiv": True},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
+        if (
+            bild_befehl is not None
+            and bild_befehl.werkzeug == "tagebuch_bild_suchen"
+            and self._tool_engine is not None and self._tool_engine.enabled
+        ):
+            suche = await self._tool_engine.direkt_ausfuehren(
+                "bild_suchen", {"begriff": bild_befehl.argumente["begriff"], "anzahl": 5},
+                actor="tagebuch_bilddialog",
+            )
+            if suche.result.ok:
+                self._tagebuch_bild_kandidaten = list(
+                    suche.result.context.get("bilder", []) or []
+                )[:5]
+                pfade = "\n".join(str(b.get("pfad", "")) for b in self._tagebuch_bild_kandidaten)
+                zeigen = await self._tool_engine.direkt_ausfuehren(
+                    "bild_zeigen",
+                    {"pfade": pfade, "titel": f"Bilder: {bild_befehl.argumente['begriff']}"},
+                    actor="tagebuch_bilddialog",
+                )
+                response = (
+                    f"Ich zeige dir {len(self._tagebuch_bild_kandidaten)} Bilder. "
+                    "Sage zum Beispiel: Bild zwei. Welches Bild soll ich einfügen?"
+                    if zeigen.result.ok else
+                    "Die Bilder wurden gefunden, konnten aber nicht geöffnet werden."
+                )
+            else:
+                self._tagebuch_bild_kandidaten = []
+                response = suche.result.error or "Ich habe dazu keine Bilder gefunden."
+            result = OrchestrationResult(
+                response=response, intent="tagebuch_bild", used_llm=False,
+                module="tagebuch",
+                data={"ok": suche.result.ok, "bilder": len(self._tagebuch_bild_kandidaten)},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
+        if (
+            bild_befehl is not None
+            and bild_befehl.werkzeug == "tagebuch_bild_auswaehlen"
+            and self._tagebuch_bild_kandidaten
+            and self._tool_engine is not None and self._tool_engine.enabled
+        ):
+            nummer = int(bild_befehl.argumente["nummer"])
+            if not 1 <= nummer <= len(self._tagebuch_bild_kandidaten):
+                response = f"Bitte wähle eine Nummer von eins bis {len(self._tagebuch_bild_kandidaten)}."
+                ok = False
+            else:
+                bild = self._tagebuch_bild_kandidaten[nummer - 1]
+                einfuegen = await self._tool_engine.direkt_ausfuehren(
+                    "tagebuch_bild_einfuegen",
+                    {"pfad": str(bild.get("pfad", "")),
+                     "nachweis": str(bild.get("nachweis", ""))},
+                    actor="tagebuch_bilddialog",
+                )
+                ok = bool(einfuegen.result.ok)
+                if ok:
+                    self._tagebuch_bild_kandidaten = []
+                    auf = await self._tool_engine.direkt_ausfuehren(
+                        "tagebuch_zeigen", {}, actor="tagebuch_bilddialog",
+                    )
+                    response = (
+                        "Das ausgewählte Bild ist eingefügt. Ich habe den Eintrag im Tagebuch geöffnet."
+                        if auf.result.ok else
+                        "Das ausgewählte Bild ist eingefügt, aber das Tagebuch konnte nicht geöffnet werden."
+                    )
+                else:
+                    response = einfuegen.result.error or "Das Bild konnte nicht eingefügt werden."
+            result = OrchestrationResult(
+                response=response, intent="tagebuch_bild", used_llm=False,
+                module="tagebuch", data={"ok": ok, "nummer": nummer},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
+        # Ein diktiertes Tagebuch ist persoenlicher Originaltext. Deshalb
+        # laeuft dieser klar erkennbare Auftrag direkt zum Tagebuchwerkzeug:
+        # kein Cloud-Modell, keine Umformulierung und kein Risiko, dass ein
+        # Providerausfall den Eintrag verschluckt. Oeffnen und das Streichen
+        # des letzten Fehldiktats folgen demselben verlaesslichen Weg.
+        tagebuch_befehl = tagebuch_vorab
+        if tagebuch_befehl is not None and tagebuch_befehl.werkzeug == "tagebuch_diktat_start":
+            self._tagebuch_diktat_ausstehend = True
+            self._tagebuch_diktat_teile = []
+            response = (
+                "Beginne jetzt mit dem Diktieren. "
+                "Beende mit dem Satz: Ende des Eintrages."
+            )
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response, intent="tagebuch", used_llm=False,
+                module="tagebuch", data={"ok": True, "wartet_auf_diktat": True},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+        if (
+            tagebuch_befehl is not None
+            and self._tool_engine is not None
+            and self._tool_engine.enabled
+        ):
+            run = await self._tool_engine.direkt_ausfuehren(
+                tagebuch_befehl.werkzeug,
+                tagebuch_befehl.argumente,
+                actor="tagebuch_sprachbefehl",
+            )
+            response = run.result.output if run.result.ok else run.result.error
+            geoeffnet = False
+            if run.result.ok and tagebuch_befehl.werkzeug in {
+                "tagebuch_schreiben", "tagebuch_streichen", "tagebuch_aendern",
+            }:
+                auf = await self._tool_engine.direkt_ausfuehren(
+                    "tagebuch_zeigen", {}, actor="tagebuch_sprachbefehl",
+                )
+                geoeffnet = bool(auf.result.ok)
+                if tagebuch_befehl.werkzeug == "tagebuch_schreiben":
+                    aktion = "Der Tagebucheintrag ist vollständig gespeichert."
+                elif tagebuch_befehl.werkzeug == "tagebuch_streichen":
+                    aktion = "Der gewünschte Tagebucheintrag ist entfernt."
+                else:
+                    aktion = "Der Tagebucheintrag ist geändert und gespeichert."
+                response = aktion + (
+                    " Ich habe das Tagebuch jetzt geöffnet."
+                    if geoeffnet else
+                    " Das Tagebuch konnte ich diesmal nicht automatisch öffnen."
+                )
+            response = response or (
+                "Der Tagebucheintrag ist festgehalten."
+                if run.result.ok
+                else "Der Tagebuchauftrag ist fehlgeschlagen."
+            )
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response,
+                intent="tagebuch",
+                used_llm=False,
+                module="tagebuch",
+                data={
+                    "werkzeug": tagebuch_befehl.werkzeug,
+                    "ok": run.result.ok,
+                    "geoeffnet": geoeffnet,
+                    **run.result.context,
+                },
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
         # Ein ausdruecklich genannter CMD-/PowerShell-Auftrag ist bereits
         # vollstaendig bestimmt. Das Modell soll weder den Befehl umschreiben
         # noch bloss behaupten, es habe ihn ausgefuehrt. Die Werkzeugmaschine
         # uebernimmt deterministisch; Validierung, Zustimmung und Protokoll
         # bleiben dabei identisch mit jedem modellgesteuerten Werkzeugaufruf.
-        terminal_request = parse_terminal_request(text)
+        terminal_request = (
+            None if interner_vorlesungsauftrag else parse_terminal_request(text)
+        )
         if (
             terminal_request is not None
             and self._tool_engine is not None
@@ -904,7 +1740,9 @@ class Orchestrator:
         # Ein klarer Entwicklungsauftrag wird nicht dem Zufall überlassen,
         # ob das Gesprächsmodell das richtige Werkzeug auswählt. Derselbe
         # Satz funktioniert dadurch im Chat und über die Sprachsteuerung.
-        development_request = parse_development_request(text)
+        development_request = (
+            None if interner_vorlesungsauftrag else parse_development_request(text)
+        )
         if (
             development_request is not None
             and self._tool_engine is not None
@@ -935,7 +1773,22 @@ class Orchestrator:
             await self._publish("ai.response", result.to_dict())
             return result
 
-        intent = self.classifier.classify(text)
+        vorlesungssegment = interner_vorlesungsauftrag
+        if vorlesungssegment:
+            # Zweite und entscheidende Schranke: Das Cognitive Core markiert
+            # Vorlesungen bereits als Frage, doch ``handle`` klassifiziert
+            # normalerweise selbst noch einmal. Dabei wurde die technische
+            # Regie "beende nur diesen Abschnitt" als PROGRAMM_SCHLIESSEN
+            # gelesen und lokal mit "welches Programm?" beantwortet.
+            intent = IntentResult(
+                intent=QUESTION,
+                confidence="hoch",
+                score=1.0,
+                requires_llm=True,
+                matched_keywords=["interner_vorlesungsabschnitt"],
+            )
+        else:
+            intent = self.classifier.classify(text)
         mark_stage("intent_ready")
         await self._publish("ai.intent.classified", intent.to_dict())
 
@@ -946,7 +1799,7 @@ class Orchestrator:
         # starten – also über die Oberfläche, nie im Gespräch. Ein Ablauf,
         # den man nur mit seiner Nummer aufrufen kann, ist keine
         # Automatisierung, sondern ein Menüpunkt.
-        ablauf = await self._ablauf_versuchen(text)
+        ablauf = None if vorlesungssegment else await self._ablauf_versuchen(text)
         if ablauf is not None:
             ablauf.duration_seconds = time.perf_counter() - started
             await self._publish("ai.response", ablauf.to_dict())
@@ -962,7 +1815,9 @@ class Orchestrator:
             "at": time.time(),
         }
 
-        if route.handled_locally and not route.requires_llm:
+        # ist_endgueltig statt handled_locally: Eine unsichere lokale
+        # Zuordnung beendet den Zug nicht mehr (siehe RouteResult).
+        if route.ist_endgueltig and not route.requires_llm:
             self.conversations.add_user_message(text)
             self.conversations.add_assistant_message(route.response)
             result = OrchestrationResult(
@@ -977,22 +1832,72 @@ class Orchestrator:
             await self._publish("ai.response", result.to_dict())
             return result
 
+        aufruf = self._answer_with_model(
+            text,
+            intent=intent,
+            route=route,
+            project_id=project_id,
+            extra_context=extra_context,
+            spoken=spoken,
+            on_speech=on_speech,
+        )
+        frist = self._antwortfrist(text)
         try:
-            result = await self._answer_with_model(
-                text,
-                intent=intent,
-                route=route,
-                project_id=project_id,
-                extra_context=extra_context,
-                spoken=spoken,
-                on_speech=on_speech,
+            if frist > 0:
+                result = await asyncio.wait_for(aufruf, timeout=frist)
+            else:
+                result = await aufruf
+        except asyncio.TimeoutError:
+            # Der Zug ist abgebrochen; die unbeantwortete Frage darf nicht
+            # im Verlauf stehenbleiben, sonst antwortet das Modell beim
+            # naechsten Mal auf zwei Fragen gleichzeitig.
+            self.conversations.discard_unanswered_user_message(text)
+            logger.warning(
+                "Gesamtfrist von %.0f s ueberschritten - der Zug wurde "
+                "abgebrochen. Ohne diese Grenze waere die Wartezeit die "
+                "Summe der Zeitlimits aller Anbieter.",
+                frist,
             )
+            result = OrchestrationResult(
+                response=self.ZEITUEBERSCHREITUNG,
+                intent=intent.intent,
+                used_llm=False,
+                module="orchestrator",
+                data={"abbruch": "zeitueberschreitung", "frist_sekunden": frist},
+            )
+            result.duration_seconds = time.perf_counter() - started
+            await self._publish("ai.response", result.to_dict())
+            return result
         except asyncio.CancelledError:
             self.conversations.discard_unanswered_user_message(text)
             logger.info("Abgebrochenen Gespraechszug aus dem Kontext entfernt.")
             raise
+        result = self._niemals_stumm(result)
         result.duration_seconds = time.perf_counter() - started
         await self._publish("ai.response", result.to_dict())
+        return result
+
+    def _niemals_stumm(self, result: OrchestrationResult) -> OrchestrationResult:
+        """Das letzte Netz: Eine leere Antwort verlässt den Orchestrator nicht.
+
+        Das Netz gab es längst. ``is_valid_answer`` in response_pipeline.py
+        prüft genau das - leer, Platzhalter, nur Satzzeichen. Nur rief es
+        niemand: Die ResponsePipeline wurde beim Start gebaut und danach nie
+        benutzt. Ein Sicherheitsnetz, das keiner aufspannt, fängt nichts.
+
+        Hier hängt es jetzt, an der einen Stelle, an der jede Antwort
+        vorbeikommt.
+        """
+
+        gueltig, grund = is_valid_answer(result.response)
+        if gueltig:
+            return result
+
+        logger.warning(
+            "Eine leere oder unbrauchbare Antwort wurde abgefangen: %s", grund
+        )
+        result.response = self.LEERE_ANTWORT
+        result.data = {**(result.data or {}), "leere_antwort": grund}
         return result
 
     async def _ablauf_versuchen(self, text: str) -> OrchestrationResult | None:
@@ -1044,6 +1949,102 @@ class Orchestrator:
             },
         )
 
+    @staticmethod
+    def _kennung() -> str:
+        """Die Korrelations-Kennung dieses Zuges.
+
+        Es gibt sie laengst: ``TurnTrace.turn_id`` wird in der
+        Sprachpipeline erzeugt und liegt als Kontextvariable an. Sie wurde
+        nur nirgends mitgeschrieben - deshalb liess sich ein Zug im
+        Protokoll nicht von Anfang bis Ende verfolgen. Hier wird sie
+        gelesen, nicht neu erfunden.
+        """
+
+        trace = current_turn_trace()
+        return getattr(trace, "turn_id", "-") if trace is not None else "-"
+
+    def _faehigkeit_bestimmen(
+        self,
+        text: str,
+        *,
+        gesprochen: bool,
+        vorlesungssegment: bool,
+        werkzeuge_vorhanden: bool,
+    ) -> Faehigkeitsentscheidung:
+        """Fragt die zentrale Faehigkeitsentscheidung mit den eigenen Werten."""
+
+        namen: list[str] = []
+        if self._tool_engine is not None:
+            with contextlib.suppress(Exception):
+                namen = list(self._tool_engine.registry.names())
+
+        return faehigkeiten_entscheiden(
+            text,
+            gesprochen=gesprochen,
+            vorlesungssegment=vorlesungssegment,
+            werkzeuge_vorhanden=werkzeuge_vorhanden,
+            werkzeugnamen=namen,
+            schwelle=float(
+                self._config.get("routing.werkzeug_schwelle", 0.45) or 0.45
+            ),
+            im_zweifel_werkzeuge=bool(
+                self._config.get("routing.werkzeuge_im_zweifel", True)
+            ),
+        )
+
+    def _sprechgrenze(
+        self, *, vorlesungssegment: bool, gesprochen: bool, mit_werkzeugen: bool
+    ) -> int | None:
+        """Wie lang eine gesprochene Antwort höchstens werden darf.
+
+        Vorher hing das an den Werkzeugen: Ein gesprochener Zug MIT
+        Werkzeugen bekam gar keine Grenze. Der Gedanke dahinter ist
+        richtig - in vierzig Tokens passt kein Werkzeugaufruf. Seit die
+        Fähigkeitsentscheidung im Zweifel Werkzeuge gibt, bekämen aber
+        auch gewöhnliche Sprachzüge keine Grenze mehr, und der Orb
+        hielte wieder Vorträge.
+
+        Deshalb jetzt zwei Grenzen statt einer Grenze und keiner: eine
+        knappe fürs blosse Sprechen, eine weitere, wenn ein Werkzeugaufruf
+        hineinpassen muss.
+        """
+
+        if vorlesungssegment:
+            return int(
+                self._config.get("voice.vorlesung.abschnitt_max_tokens", 420)
+            )
+        if not gesprochen:
+            return None
+        if mit_werkzeugen:
+            return int(
+                self._config.get("voice.spoken_max_tokens_mit_werkzeugen", 320)
+            )
+        return int(self._config.get("voice.spoken_max_tokens", 96))
+
+    def _antwortfrist(self, text: str) -> float:
+        """Die Gesamtfrist fuer einen Zug in Sekunden. ``0`` hebt sie auf.
+
+        Ohne diese Frist ist die Dauer einer Frage die SUMME der Zeitlimits
+        aller Kandidaten: erst die Cloud, dann das lokale Modell, dann das
+        kleine - in der jetzigen Konfiguration ueber drei Minuten, ohne dass
+        irgendwo etwas abbricht. Der Providerwechsel hilft dagegen nicht, er
+        ist der Grund.
+
+        Ein Vorlesungsabschnitt bekommt mehr Zeit: Er erzeugt absichtlich
+        viel Text. Die Frist ist eine Notbremse gegen Haenger und keine
+        Laengenbegrenzung.
+        """
+
+        frist = float(self._config.get("ai.answer_timeout_seconds", 180) or 0)
+        if frist <= 0:
+            return 0.0
+        if ist_vorlesungssegment(text):
+            faktor = float(
+                self._config.get("ai.answer_timeout_lecture_factor", 3.0) or 3.0
+            )
+            frist *= max(1.0, faktor)
+        return max(10.0, frist)
+
     async def _answer_with_model(
         self,
         text: str,
@@ -1057,15 +2058,38 @@ class Orchestrator:
     ) -> OrchestrationResult:
         """Beantwortet eine Anfrage mit Hilfe eines Sprachmodells."""
 
-        self.conversations.add_user_message(text)
+        vorlesungssegment = ist_vorlesungssegment(text)
+        # Der vollstaendige Abschnittsauftrag gehoert in den temporaeren
+        # Kontext, nicht 24-mal in den dauerhaften Gespraechsverlauf. Dort
+        # reicht die semantische Benutzerhandlung. Das haelt Folgeabschnitte
+        # schnell und verhindert, dass die Vorlesung ihren eigenen Kontext
+        # mit wiederholten Regieanweisungen verdraengt.
+        gespraechstext = (
+            "Fahre mit dem naechsten Abschnitt der laufenden Vorlesung fort."
+            if vorlesungssegment
+            else text
+        )
+        self.conversations.add_user_message(gespraechstext)
         await self.conversations.maybe_compress()
 
-        memory_context = self._memory.context_for(text, project_id=project_id)
+        memory_context = self._memory.context_for(gespraechstext, project_id=project_id)
+        if vorlesungssegment:
+            extra_context = "\n\n".join(
+                part for part in (extra_context, text) if part
+            )
         context_block = self._format_context(memory_context, extra_context)
+
+        # Am Gesagten ablesen, wo der Benutzer steht - und es dem Modell
+        # beilegen. Kein Test, kein Werkzeugaufruf: einfach zuhoeren.
+        anhaltspunkt = self._aus_dem_gespraech_lernen(text)
+        if anhaltspunkt:
+            context_block = "\n\n".join(
+                part for part in (context_block, anhaltspunkt) if part
+            )
 
         # Gesprochene Antworten kurz halten – gemessen der grösste Hebel
         # gegen lange Wartezeiten.
-        if spoken:
+        if spoken and not vorlesungssegment:
             context_block = "\n\n".join(
                 part for part in (context_block, self.SPOKEN_BREVITY) if part
             )
@@ -1097,7 +2121,28 @@ class Orchestrator:
         # da gibt es nichts zu entscheiden. Also wird gesucht, und das
         # Ergebnis liegt dem Modell vor, wenn es zu denken anfängt.
         tools_available = self._tool_engine is not None and self._tool_engine.enabled
-        model_tools_available = tools_available and preferred_spoken is None
+        # Eine einfache gesprochene Wissens- oder Gespraechsfrage braucht
+        # keine Beschreibung aller (derzeit 59) Werkzeuge. Diese Liste
+        # machte aus einem kurzen Zug 15.000 bis 22.000 Zeichen Kontext und
+        # wurde trotzdem bei jedem Satz mitgeschickt. Handlungsauftraege
+        # behalten den vollstaendigen Werkzeugweg; nur eindeutig werkzeuglose
+        # Sprachzuege werden davon befreit.
+        # Eine Entscheidung fuer den ganzen Zug, an einer Stelle getroffen.
+        #
+        # Hier stand ein Schluesselwort-Tor: Ein gesprochener Zug bekam nur
+        # dann Werkzeuge, wenn im Satz eines von rund fuenfzig Verben
+        # vorkam. "Gut, meine Vorlieben, es muss im ersten Stock sein …" -
+        # die Fortsetzung eines Suchauftrags ohne eigenes Verb - fiel
+        # durch, und der Orb konnte nicht suchen, ohne dass irgendwo stand
+        # warum. Die Voreinstellung ist jetzt umgedreht: im Zweifel mit
+        # Werkzeugen. Der Vorlesungsabschnitt behaelt sein Verhalten.
+        faehigkeit = self._faehigkeit_bestimmen(
+            text,
+            gesprochen=spoken,
+            vorlesungssegment=vorlesungssegment,
+            werkzeuge_vorhanden=tools_available,
+        )
+        model_tools_available = faehigkeit.werkzeuge and preferred_spoken is None
         # Bereits deterministisch ausgefuehrte Werkzeuge merken. Das Modell
         # bekommt deren Ergebnis weiter unten als Kontext. Fordert es dasselbe
         # Werkzeug trotzdem noch einmal an, darf daraus kein zweiter, teurer
@@ -1108,7 +2153,7 @@ class Orchestrator:
         # und führe eine Suche durch" löste vorher acht Suchläufe mit dem
         # wörtlichen Befehlssatz aus - alle leer, und für den Benutzer sah
         # das aus wie "die Suche ist kaputt".
-        if tools_available and braucht_aktuelles(text) and not ist_browser_befehl(text):
+        if tools_available and faehigkeit.aktualitaet and not ist_browser_befehl(text):
             frisch = await self._vorab_suchen(text)
             if frisch:
                 vorab_suchkontext = frisch
@@ -1223,6 +2268,7 @@ class Orchestrator:
         # Forschungsfrage weiterhin wie vorgesehen benutzt.
         if (
             tools_available
+            and not vorlesungssegment
             and not will_bildschirm(text)
             and self._ist_fachfrage(text, extra_context)
         ):
@@ -1231,11 +2277,14 @@ class Orchestrator:
                 context_block = "\n\n".join(
                     part for part in (context_block, eigenes) if part
                 )
+        instructions = ""
         if model_tools_available:
-            instructions = self._tool_engine.system_instructions()
-            context_block = "\n\n".join(
-                part for part in (context_block, instructions) if part
-            )
+            try:
+                instructions = self._tool_engine.system_instructions(text=text)
+            except TypeError:
+                # Kompatibel mit Plugins und kleinen Test-Doubles, die noch
+                # die fruehere parameterlose Signatur anbieten.
+                instructions = self._tool_engine.system_instructions()
 
         # Das Netz unter dem Netz: eine Obergrenze fuer alles Beigelegte.
         #
@@ -1251,28 +2300,57 @@ class Orchestrator:
         # Benutzerangaben, hinten die Werkzeuganleitung und die Fundstuecke.
         # Was wegfaellt, kann das Modell mit einem Werkzeug nachholen -
         # was vorn steht, nicht.
-        if context_block and len(context_block) > self._kontext_hoechstens:
-            gekuerzt = context_block[: self._kontext_hoechstens].rsplit("\n", 1)[0]
+        # Fuer die konkrete Werkzeuganleitung Platz RESERVIEREN. Vorher wurde
+        # sie hinten angehaengt und danach der Gesamtblock von vorn gekappt;
+        # bei langen Erinnerungen fiel damit ausgerechnet die Werkzeugliste
+        # weg. Das erklaert, warum die Einzeltests fuer Bilder/PDF bestanden,
+        # der Orb die Faehigkeiten im echten Gespraech aber nicht verband.
+        grundgrenze = max(
+            2500,
+            self._kontext_hoechstens - len(instructions) - (2 if instructions else 0),
+        )
+        if context_block and len(context_block) > grundgrenze:
+            gekuerzt = context_block[:grundgrenze].rsplit("\n", 1)[0]
             logger.info(
                 "Kontext von %d auf %d Zeichen gekuerzt (Grenze %d).",
-                len(context_block), len(gekuerzt), self._kontext_hoechstens,
+                len(context_block), len(gekuerzt), grundgrenze,
             )
             context_block = (
                 gekuerzt
                 + "\n\n[Gekürzt. Brauchst du mehr, hol es dir mit einem Werkzeug.]"
             )
+        if instructions:
+            context_block = "\n\n".join(
+                part for part in (context_block, instructions) if part
+            )
+
+        spoken_system = None
+        if preferred_spoken:
+            # Der lokale Schnellweg darf den persoenlichen Grundprompt nicht
+            # ersetzen. Genau das geschah zuvor: online Mentor, offline ein
+            # austauschbarer Assistent. Der kurze Zusatz begrenzt nur die
+            # Laenge der gesprochenen Antwort.
+            base_system = str(self._config.get("conversation.system_prompt", "")).strip()
+            spoken_system = "\n\n".join(
+                part for part in (base_system, self.LOCAL_SPOKEN_SYSTEM) if part
+            )
 
         messages = self.conversations.build_messages(
             extra_context=context_block,
-            system_prompt=(self.LOCAL_SPOKEN_SYSTEM if preferred_spoken else None),
+            system_prompt=spoken_system,
             recent_limit=(2 if preferred_spoken else None),
         )
         logger.info(
-            "Modellkontext: %d Nachrichten, %d Zeichen, Wunschprovider=%s, Werkzeuge=%s.",
+            "[%s] Tor 6 Modellkontext: %d Nachrichten, %d Zeichen, "
+            "Wunschprovider=%s, Werkzeuge=%s (%s, Konfidenz %.2f, Signale: %s).",
+            self._kennung(),
             len(messages),
             sum(len(message.content) for message in messages),
             preferred_spoken or "standard",
             model_tools_available,
+            faehigkeit.begruendung,
+            faehigkeit.konfidenz,
+            ", ".join(faehigkeit.signale) or "keine",
         )
         mark_stage("model_context_ready")
 
@@ -1287,12 +2365,13 @@ class Orchestrator:
         #: verzichtete darauf, sie noch einmal zu sprechen. Der Orb dachte,
         #: antwortete, hielt es für erledigt und blieb stumm.
         wirklich_gesprochen = False
+        bild_geplant = False
 
         try:
             if on_speech is not None:
 
                 async def _sprich(satz: str) -> bool:
-                    nonlocal wirklich_gesprochen
+                    nonlocal wirklich_gesprochen, bild_geplant
                     gehoert = bool(await on_speech(satz))
                     wirklich_gesprochen = wirklich_gesprochen or gehoert
                     return gehoert
@@ -1301,6 +2380,11 @@ class Orchestrator:
                     messages,
                     _sprich,
                     preferred=preferred_spoken,
+                    max_tokens=self._sprechgrenze(
+                        vorlesungssegment=vorlesungssegment,
+                        gesprochen=spoken,
+                        mit_werkzeugen=model_tools_available,
+                    ),
                 )
             else:
                 response = await self._providers.chat(messages)
@@ -1322,8 +2406,24 @@ class Orchestrator:
                 data={"error": str(error)},
             )
 
-        answer_text = response.text
+        answer_text = (
+            lehrstoff_vervollstaendigen(response.text)
+            if vorlesungssegment
+            else response.text
+        )
+        if vorlesungssegment:
+            # Genau eine Suche mit dem vollstaendigen Abschnitt. Der alte
+            # Fruehstart wurde unmittelbar danach durch eine neue Generation
+            # entwertet und lud Bilder doppelt, ohne sie sichtbar zu machen.
+            # Da das Audio zu diesem Zeitpunkt noch laeuft, begleitet die
+            # Lehrtafel den Vortrag trotzdem rechtzeitig.
+            self._vorlesungsbild_planen(answer_text, text, infografik_erlaubt=True)
+            bild_geplant = True
         tool_runs = 0
+        #: Welche Werkzeuge wirklich liefen. Die blosse Anzahl genuegte
+        #: der Anzeige, aber nicht dem Schattenlauf: Der vergleicht die
+        #: WAHL des Werkzeugs, und dafuer braucht er Namen.
+        werkzeugnamen: list[str] = []
         if model_tools_available:
             # Enthält die Antwort Werkzeugaufrufe, hier ausführen – mit
             # Sicherheitsprüfung und Prüfprotokoll, im selben Gespräch.
@@ -1334,6 +2434,7 @@ class Orchestrator:
                 preexecuted=vorab_ergebnisse,
             )
             tool_runs = len(runs)
+            werkzeugnamen = [str(getattr(lauf, "tool", "")) for lauf in runs]
 
             # Letzte Zuverlaessigkeitsschicht fuer PDF-Auftraege: Manche
             # Modelle liefern nach Recherche bereits einen vollstaendigen,
@@ -1344,11 +2445,53 @@ class Orchestrator:
             # Einige Integrationen/Test-Doubles liefern fuer einen Lauf nur
             # einen opaken Marker. Solche Eintraege sind kein PDF-Erfolg, duerfen
             # aber die normale Werkzeugantwort auch nicht abbrechen.
-            pdf_done = any(
-                getattr(run, "tool", "") == "pdf_erstellen"
-                and bool(getattr(getattr(run, "result", None), "ok", False))
+            pdf_runs = [
+                run
                 for run in runs
-            )
+                if getattr(run, "tool", "") == "pdf_erstellen"
+                and bool(getattr(getattr(run, "result", None), "ok", False))
+            ]
+            pdf_done = bool(pdf_runs)
+            bildhinweise: list[str] = []
+
+            # Hat das Modell die PDF bereits erzeugt, aber den ausdruecklich
+            # verlangten Bildteil vergessen, wird genau dieses Dokument
+            # nachgeruestet. Die Einzelwerkzeuge konnten Bilder schon laenger;
+            # die fehlende garantierte Verkettung war der eigentliche Fehler.
+            if will_pdf_mit_grafik(text) and pdf_runs:
+                letzter_pdf_lauf = pdf_runs[-1]
+                bildzahl = int(
+                    getattr(getattr(letzter_pdf_lauf, "result", None), "context", {}).get(
+                        "images", 0
+                    )
+                    or 0
+                )
+                if bildzahl < 1:
+                    pdf_argumente = dict(getattr(letzter_pdf_lauf, "arguments", {}) or {})
+                    pdf_inhalt = str(pdf_argumente.get("inhalt", "") or "")
+                    pdf_quellen = str(pdf_argumente.get("quellen", "") or "")
+                    bilder, bildhinweise = await self._pdf_bilder_beschaffen(
+                        text, pdf_inhalt, pdf_quellen
+                    )
+                    if bilder:
+                        vorhandene = pdf_argumente.get("bilder") or []
+                        if not isinstance(vorhandene, list):
+                            vorhandene = [vorhandene]
+                        pdf_argumente["bilder"] = [*vorhandene, *bilder]
+                        pdf_argumente["pfad"] = str(
+                            getattr(letzter_pdf_lauf.result, "context", {}).get("path", "")
+                            or pdf_argumente.get("pfad", "")
+                        )
+                        pdf_argumente["ueberschreiben"] = True
+                        lauf = await self._tool_engine.direkt_ausfuehren(
+                            "pdf_erstellen", pdf_argumente, actor="pdf-grafik-nachruestung"
+                        )
+                        runs.append(lauf)
+                        tool_runs = len(runs)
+                        werkzeugnamen = [str(getattr(r, "tool", "")) for r in runs]
+                        if lauf.result.ok:
+                            answer_text = str(lauf.result.output)
+                            pdf_done = True
             lowered_answer = answer_text.lower()
             pdf_excuse = any(
                 marker in lowered_answer
@@ -1365,25 +2508,40 @@ class Orchestrator:
                 and len(answer_text.strip()) >= 120
             ):
                 urls = _re.findall(r"https?://[^\s<>]+", vorab_suchkontext)
+                quellen = "\n".join(dict.fromkeys(url.rstrip(".,)") for url in urls))
+                bilder: list[dict[str, str]] = []
+                if will_pdf_mit_grafik(text):
+                    bilder, bildhinweise = await self._pdf_bilder_beschaffen(
+                        text, answer_text, quellen
+                    )
                 lauf = await self._tool_engine.direkt_ausfuehren(
                     "pdf_erstellen",
                     {
                         "titel": pdf_titel_aus(text),
                         "inhalt": answer_text,
-                        "quellen": "\n".join(dict.fromkeys(url.rstrip(".,)") for url in urls)),
+                        "quellen": quellen,
+                        "bilder": bilder,
                     },
                     actor="pdf-auftrag",
                 )
                 runs.append(lauf)
                 tool_runs = len(runs)
+                werkzeugnamen = [str(getattr(r, "tool", "")) for r in runs]
                 if lauf.result.ok:
                     answer_text = str(lauf.result.output)
+                    if bildhinweise:
+                        answer_text += " " + " ".join(bildhinweise)
                 else:
                     answer_text = (
                         answer_text
                         + "\n\nDie PDF-Datei konnte nicht gespeichert werden: "
                         + str(lauf.result.error or "unbekannter Fehler")
                     )
+
+            if pdf_done and bildhinweise and answer_text:
+                fehlende_hinweise = [hinweis for hinweis in bildhinweise if hinweis not in answer_text]
+                if fehlende_hinweise:
+                    answer_text += " " + " ".join(fehlende_hinweise)
 
         # Was während des Denkens schon gesprochen wurde, darf nicht noch
         # einmal kommen. Nach einem Werkzeugaufruf steht meist eine ganz
@@ -1396,6 +2554,10 @@ class Orchestrator:
                     wirklich_gesprochen = True
 
         self.conversations.add_assistant_message(answer_text)
+        lernstand = getattr(self, "_lernstand", None)
+        if lernstand is not None:
+            with contextlib.suppress(Exception):
+                lernstand.lehrweg_notieren(answer_text)
         self._wortwechsel_merken(text, answer_text, project_id)
 
         return OrchestrationResult(
@@ -1408,6 +2570,7 @@ class Orchestrator:
             data={
                 "latency": round(response.latency_seconds, 3),
                 "werkzeugaufrufe": tool_runs,
+                "werkzeuge": werkzeugnamen,
                 # Sagt der Sprachschicht: Diese Antwort war wirklich zu
                 # hören. Ohne diesen Vermerk käme sie ein zweites Mal – mit
                 # einem falschen gar nicht.
@@ -1415,12 +2578,207 @@ class Orchestrator:
             },
         )
 
+    def _vorlesungsbild_planen(
+        self,
+        abschnitt: str,
+        auftrag: str,
+        *,
+        infografik_erlaubt: bool = True,
+    ) -> None:
+        """Startet eine Bildsuche, ohne Sprechen oder Folgezuege aufzuhalten."""
+
+        if (
+            not str(abschnitt or "").strip()
+            or self._event_bus is None
+            or self._tool_engine is None
+            or not self._tool_engine.enabled
+        ):
+            return
+        self._vorlesungsbild_generation += 1
+        generation = self._vorlesungsbild_generation
+        task = asyncio.create_task(
+            self._vorlesungsbild_aktualisieren(
+                abschnitt,
+                auftrag,
+                generation,
+                infografik_erlaubt=infografik_erlaubt,
+            ),
+            name=f"vorlesungsbild-{generation}",
+        )
+        self._vorlesungsbild_tasks.add(task)
+        task.add_done_callback(self._vorlesungsbild_tasks.discard)
+
+    async def _vorlesungsbild_aktualisieren(
+        self,
+        abschnitt: str,
+        auftrag: str,
+        generation: int,
+        *,
+        infografik_erlaubt: bool = True,
+    ) -> None:
+        """Sucht ein passendes Bild und meldet es an die Desktop-Lehrtafel.
+
+        Foto und Orientierung sind keine Alternativen mehr: Ein passendes
+        reales Bild bleibt gross sichtbar, daneben stehen wenige responsive
+        Orientierungskarten. Gibt es kein belastbares Foto, bleibt die
+        Uebersicht allein sichtbar, statt ein schwer lesbares Rasterbild zu
+        erzeugen.
+        """
+
+        try:
+            begriffe = bildsuchbegriffe(abschnitt, auftrag)
+            bild: dict[str, str] | None = None
+            for begriff in begriffe:
+                schluessel = begriff.casefold()
+                bild = self._vorlesungsbild_cache.get(schluessel)
+                if bild is None:
+                    lauf = await self._tool_engine.direkt_ausfuehren(
+                        "bild_suchen",
+                        {"begriff": begriff, "anzahl": 3, "relevanz": begriff},
+                        actor="vorlesung-bild",
+                    )
+                    if not lauf.result.ok:
+                        continue
+                    eintraege = list(lauf.result.context.get("bilder", []) or [])
+                    if not eintraege:
+                        continue
+                    passende = [
+                        treffer
+                        for treffer in eintraege
+                        if bild_passt(begriff, treffer)
+                    ]
+                    eintrag = (
+                        max(
+                            passende,
+                            key=lambda treffer: bild_treffer_bewerten(begriff, treffer),
+                        )
+                        if passende
+                        else None
+                    )
+                    if eintrag is None:
+                        logger.info(
+                            "Bildtreffer zu '%s' verworfen: Metadaten passen nicht.",
+                            begriff,
+                        )
+                        continue
+                    pfad = str(eintrag.get("pfad", "") or "").strip()
+                    if not pfad:
+                        continue
+                    bild = {
+                        "path": pfad,
+                        "caption": str(
+                            eintrag.get("nachweis", "Freies Bild") or "Freies Bild"
+                        ),
+                        "kind": "photo",
+                    }
+                    self._vorlesungsbild_cache[schluessel] = bild
+                break
+
+            # Ein langsamer alter Abruf darf die Tafel des inzwischen
+            # begonnenen Folgeabschnitts nicht wieder ueberschreiben.
+            if generation != self._vorlesungsbild_generation:
+                return
+            if not infografik_erlaubt:
+                return
+            karten = uebersichtskarten(abschnitt)
+            titel = vorlesungsfolie_titel(abschnitt, auftrag)
+            await self._publish(
+                event_types.LECTURE_VISUAL_CHANGED,
+                {
+                    **(bild or {}),
+                    "path": str((bild or {}).get("path", "")),
+                    "caption": str((bild or {}).get("caption", "")),
+                    "kind": "photo-overview" if bild else "overview",
+                    "title": titel,
+                    "topic": vorlesungsthema(auftrag),
+                    "summary": karten,
+                    "layout": uebersichtsart(abschnitt),
+                    "generation": generation,
+                },
+            )
+            logger.info(
+                "Vorlesungstafel %d aktualisiert (%s, %d Orientierungskarten).",
+                generation,
+                "Foto" if bild else "ohne Foto",
+                len(karten),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - Bildmaterial darf den Vortrag nie stoppen.
+            logger.exception("Das Vorlesungsbild konnte nicht beschafft werden.")
+
+    async def _pdf_bilder_beschaffen(
+        self, text: str, inhalt: str, quellen: str = ""
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        """Erzeugt die fuer eine visuelle PDF verlangten Bilddateien.
+
+        Eine lokale Infografik ist der verlaessliche Grundstock. Reale Fotos
+        werden nur bei ausdruecklichem Wunsch gesucht und behalten ihren
+        Lizenznachweis als Bildunterschrift. Ein ausgefallener Bilddienst
+        verhindert die PDF nicht.
+        """
+
+        if self._tool_engine is None or not self._tool_engine.enabled:
+            return [], ["Grafiken waren angefordert, die Werkzeuge sind aber deaktiviert."]
+
+        titel = pdf_titel_aus(text)
+        bilder: list[dict[str, str]] = []
+        hinweise: list[str] = []
+        quelle = next((zeile.strip() for zeile in quellen.splitlines() if zeile.strip()), "")
+
+        infografik = await self._tool_engine.direkt_ausfuehren(
+            "infografik_erstellen",
+            {"titel": titel, "inhalt": inhalt, "quelle": quelle},
+            actor="pdf-grafik",
+        )
+        if infografik.result.ok:
+            pfad = str(infografik.result.context.get("pfad", "") or "")
+            if pfad:
+                bilder.append(
+                    {
+                        "pfad": pfad,
+                        "beschriftung": str(
+                            infografik.result.context.get("nachweis", "Infografik: AI-Orb")
+                        ),
+                    }
+                )
+        else:
+            hinweise.append(
+                "Die lokale Infografik konnte nicht erstellt werden: "
+                + str(infografik.result.error or "unbekannter Fehler")
+            )
+
+        if will_pdf_mit_fotos(text):
+            fotos = await self._tool_engine.direkt_ausfuehren(
+                "bild_suchen", {"begriff": titel, "anzahl": 2}, actor="pdf-fotos"
+            )
+            if fotos.result.ok:
+                for eintrag in list(fotos.result.context.get("bilder", []) or [])[:2]:
+                    pfad = str(eintrag.get("pfad", "") or "")
+                    if pfad:
+                        bilder.append(
+                            {
+                                "pfad": pfad,
+                                "beschriftung": str(
+                                    eintrag.get("nachweis", "Freies Foto") or "Freies Foto"
+                                ),
+                            }
+                        )
+            else:
+                hinweise.append(
+                    "Freie Fotos waren angefordert, der Bilddienst lieferte aber keine: "
+                    + str(fotos.result.error or "unbekannter Fehler")
+                )
+
+        return bilder, hinweise
+
     async def _stream_and_speak(
         self,
         messages: list[Any],
         on_speech: Callable[[str], Awaitable[bool]],
         *,
         preferred: str | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[Any, SpeechStream]:
         """Holt die Antwort stückweise und spricht jeden fertigen Satz sofort.
 
@@ -1447,7 +2805,9 @@ class Orchestrator:
                 messages,
                 preferred=preferred,
                 max_tokens=(
-                    int(self._config.get("voice.spoken_max_tokens", 96))
+                    max_tokens
+                    if max_tokens is not None
+                    else int(self._config.get("voice.spoken_max_tokens", 96))
                     if preferred
                     else None
                 ),
@@ -1488,6 +2848,14 @@ class Orchestrator:
         nicht erst dessen Prozessfrist abwarten, obwohl Ollama bereits laeuft.
         """
 
+        # Im Offlinebetrieb darf das kleine Nebenmodell kurze, klar
+        # werkzeuglose Sprachzuege uebernehmen. Der Provider-Manager gibt
+        # diesen Namen nur bei bewusstem Offlinebetrieb oder nach einem
+        # echten Netz-/Cloud-Ausfall heraus. Online bleibt Claude damit
+        # unveraendert der Hauptprovider.
+        local_selector = getattr(self._providers, "local_provider_for", None)
+        offline_fast = local_selector("fast") if callable(local_selector) else None
+
         # Standardmaessig AUS - Claude bleibt der Hauptprovider.
         #
         # Der Benutzer hat das ausdruecklich verlangt: "der Wunschprovider
@@ -1504,7 +2872,9 @@ class Orchestrator:
         # kleine Modell brauchte im Protokoll 40 Sekunden fuer eine
         # Antwort, die Claude in vier lieferte. Wer sie dennoch will,
         # schaltet sie hier ein.
-        if not bool(self._config.get("ai.lokal_fuer_alltag", False)):
+        if not offline_fast and not bool(
+            self._config.get("ai.lokal_fuer_alltag", False)
+        ):
             return None
 
         local = list(getattr(self._providers, "local_provider_names", []) or [])
@@ -1532,7 +2902,7 @@ class Orchestrator:
             or self._ist_fachfrage(stripped, extra_context)
         ):
             return None
-        return local[0]
+        return str(offline_fast or local[0])
 
     def _ist_fachfrage(self, text: str, extra_context: str | None) -> bool:
         """Ob in den eigenen Quellen des Benutzers zu suchen ist.
@@ -1589,7 +2959,13 @@ class Orchestrator:
             return True
         # Der Professor baut den Systemprompt, wenn er übernimmt. Steht er
         # im Zusatzkontext, hat er sich für zuständig erklärt.
-        if not (bool(extra_context) and "Geschichtsprofessor" in str(extra_context)):
+        if not (
+            bool(extra_context)
+            and any(
+                marker in str(extra_context)
+                for marker in ("Geschichtsprofessor", "Fachprofessor", "FACH:")
+            )
+        ):
             return False
         # Der Professor darf Eigennamen auffangen, die keine Wortliste kennen
         # kann. Dafuer muss es aber eine inhaltliche Frage oder ein
@@ -2200,8 +3576,13 @@ class Orchestrator:
     def status(self) -> dict[str, Any]:
         """Statusübersicht des Orchestrators."""
 
-        return {
+        uebersicht: dict[str, Any] = {
             "conversation": self.conversations.status(),
             "providers": self._providers.status(),
             "known_intents": self.classifier.intents,
         }
+        # Der Beleg, dass live UND Schatten gelaufen sind, gehoert dorthin,
+        # wo man ihn im Betrieb auch nachsieht.
+        if self._schatten is not None:
+            uebersicht["schattenlauf"] = self._schatten.status()
+        return uebersicht

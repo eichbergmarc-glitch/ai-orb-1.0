@@ -151,9 +151,14 @@ class _Erkennung:
     def __init__(self, verzoegerung: float = 0.0, load_failed: bool = False):
         self.verzoegerung = verzoegerung
         self.gelesen: list[str] = []
+        self.verfallszeiten: list[float | None] = []
         self.load_failed = load_failed
 
-    async def transcribe(self, pfad: Path):
+    async def transcribe(self, pfad: Path, *, verfallen_nach: float | None = None):
+        # Die echte Erkennung nimmt eine Verfallszeit entgegen: Ein Fenster,
+        # das in der Schlange alt geworden ist, wird verworfen statt
+        # erkannt. Hier wird sie nur mitgeschrieben.
+        self.verfallszeiten.append(verfallen_nach)
         # Genau das war der Fehler: Die Datei war schon geloescht, als die
         # Erkennung sie oeffnen wollte.
         text = pfad.read_text(encoding="utf-8")
@@ -297,22 +302,45 @@ def test_keine_dateien_bleiben_liegen(tmp_path: Path):
     assert list(tmp_path.iterdir()) == [], "es blieben Hoerfenster liegen"
 
 
-def test_ohne_kleines_modell_uebernimmt_das_grosse(tmp_path: Path):
-    """Faellt das kleine Modell aus, darf das Stop-Wort nicht ausfallen.
+def test_ohne_kleines_modell_wird_das_grosse_nicht_missbraucht(tmp_path: Path):
+    """Faellt das kleine Modell aus, bleibt der Spaeher stumm.
 
-    Lieber spaet hinhoeren als gar nicht: Dann uebernimmt die grosse
-    Erkennung, auch wenn sie langsamer ist.
+    Hier stand die Regel andersherum: "lieber spaet hinhoeren als gar
+    nicht", also uebernahm die grosse Erkennung. Der Gedanke war richtig,
+    die Rechnung nicht. Das grosse Modell teilt sich die Warteschlange mit
+    den Saetzen des Benutzers, und in eine einzige lange Antwort fallen
+    dutzende Hoerfenster - ueberwiegend mit der eigenen Lautsprecherstimme
+    darin. Genau so entstand der Stau vom 17.08.2026: erkannt wurde der
+    Orb selbst, gewartet hat der Benutzer, und sein Satz kam nie an.
+
+    Ein spaetes "stop" ist nicht besser als keines, wenn es die naechste
+    Frage um Minuten verzoegert. Die Notbremse fuer ein kurz gerufenes
+    "Stop" als eigene Aeusserung bleibt davon unberuehrt.
     """
 
     klein = _Erkennung(load_failed=True)
     gross = _Erkennung()
     späher = _Späher(klein, gross=gross)
+    fenster = _fenster(tmp_path, "a.txt", "stop")
 
-    asyncio.run(späher._check_stop_window(_fenster(tmp_path, "a.txt", "stop")))
+    asyncio.run(späher._check_stop_window(fenster))
 
     assert klein.gelesen == [], "das ausgefallene Modell wurde trotzdem gefragt"
-    assert gross.gelesen == ["stop"]
-    assert späher.unterbrochen == 1
+    assert gross.gelesen == [], "das grosse Modell gehoert nicht in diese Schlange"
+    assert späher.unterbrochen == 0
+    assert not fenster.exists(), "das Hoerfenster blieb liegen"
+
+
+def test_hoerfenster_bekommen_eine_verfallszeit(tmp_path: Path):
+    """Ein Fenster, das in der Schlange alt wurde, ist kein "stop" mehr."""
+
+    erkennung = _Erkennung()
+    späher = _Späher(erkennung)
+    späher._stop_fenster_verfall = 2.5
+
+    asyncio.run(späher._check_stop_window(_fenster(tmp_path, "a.txt", "harmlos")))
+
+    assert erkennung.verfallszeiten == [2.5]
 
 
 def test_dazwischenreden_beendet_die_ausgabe(tmp_path: Path):

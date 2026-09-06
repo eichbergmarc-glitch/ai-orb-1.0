@@ -170,6 +170,7 @@ class _Transport:
         self.eintraege: dict[str, dict[str, Any]] = {}
         self.rufe: list[tuple[str, str]] = []
         self._zaehler = 0
+        self.zeitzone = "Europe/Zurich"
 
     def _neu_id(self):
         self._zaehler += 1
@@ -201,7 +202,7 @@ class _Transport:
                     continue
                 passend.append(eintrag)
             passend.sort(key=lambda e: e["start"]["dateTime"])
-            return {"items": passend}
+            return {"items": passend, "timeZone": self.zeitzone}
 
         kennung = pfad.lstrip("/").split("?")[0]
         if method == "GET":
@@ -275,6 +276,76 @@ def test_wiederkehrende_termine_werden_einzeln_abgefragt():
     assert "singleEvents=true" in transport.rufe[-1][1]
 
 
+def test_google_utc_wird_in_der_kalender_ortszeit_angezeigt():
+    client, transport = _client()
+    transport.eintraege["utc-termin"] = {
+        "id": "utc-termin",
+        "summary": "Bewährungshilfe",
+        "start": {"dateTime": "2026-09-02T13:00:00Z"},
+        "end": {"dateTime": "2026-09-02T14:00:00Z"},
+    }
+
+    termin = client.holen("utc-termin")
+
+    assert termin.beginn.hour == 15
+    assert str(termin.beginn.tzinfo) == "Europe/Zurich"
+    assert "15 Uhr" in termin.zum_vorlesen(jetzt=JETZT)
+
+
+def test_eigene_terminzone_ist_staerker_als_die_kalenderzone():
+    client, transport = _client()
+    transport.eintraege["reise"] = {
+        "id": "reise",
+        "summary": "Videotermin in UTC",
+        "start": {
+            "dateTime": "2026-09-02T17:00:00+02:00",
+            "timeZone": "UTC",
+        },
+        "end": {
+            "dateTime": "2026-09-02T18:00:00+02:00",
+            "timeZone": "UTC",
+        },
+    }
+
+    termin = client.holen("reise")
+
+    assert termin.beginn.hour == 15
+    assert termin.zeitzone == "UTC"
+    assert "15 Uhr" in termin.zum_vorlesen(jetzt=JETZT)
+
+
+def test_google_abgleich_uebernimmt_die_kalenderzone_fuer_schreibzugriffe():
+    client, transport = _client()
+    client.termine(von=JETZT, bis=JETZT + timedelta(days=1))
+    assert client.zustand()["zeitzone"] == "Europe/Zurich"
+    assert "timeZone=" not in transport.rufe[-1][1]
+
+    termin = _eintragen(client, "Ortszeit", JETZT + timedelta(hours=2))
+    eintrag = transport.eintraege[termin.id]
+    assert eintrag["start"]["timeZone"] == "Europe/Zurich"
+    assert eintrag["end"]["timeZone"] == "Europe/Zurich"
+
+
+def test_eine_geaenderte_google_kalenderzone_wird_dynamisch_uebernommen():
+    client, transport = _client()
+    transport.zeitzone = "UTC"
+    transport.eintraege["utc-kalender"] = {
+        "id": "utc-kalender",
+        "summary": "UTC-Kalender",
+        "start": {"dateTime": "2026-08-16T15:00:00Z"},
+        "end": {"dateTime": "2026-08-16T16:00:00Z"},
+    }
+
+    termine = client.termine(
+        von=datetime(2026, 8, 16, 0, tzinfo=timezone.utc),
+        bis=datetime(2026, 8, 17, 0, tzinfo=timezone.utc),
+    )
+
+    assert termine[0].beginn.hour == 15
+    assert str(termine[0].beginn.tzinfo) == "UTC"
+    assert client.zustand()["zeitzone"] == "UTC"
+
+
 def test_ein_termin_ohne_ende_dauert_eine_stunde():
     client, _ = _client()
     termin = client.anlegen(titel="Kurz", beginn=JETZT + timedelta(hours=1))
@@ -331,8 +402,12 @@ def test_ein_termin_laesst_sich_vorlesen():
 
 def test_werkzeug_zeigt_was_heute_ansteht():
     client, _ = _client()
-    _eintragen(client, "Heute etwas", datetime.now().astimezone() + timedelta(hours=2))
-    _eintragen(client, "In zwei Wochen", datetime.now().astimezone() + timedelta(days=14))
+    jetzt = datetime.now().astimezone()
+    # Ein fester Zeitpunkt am heutigen Kalendertag. ``jetzt + 2 Stunden``
+    # wird nach 22 Uhr bereits morgen und machte den Test uhrzeitabhaengig.
+    heute = jetzt.replace(hour=12, minute=0, second=0, microsecond=0)
+    _eintragen(client, "Heute etwas", heute)
+    _eintragen(client, "In zwei Wochen", heute + timedelta(days=14))
     ergebnis = asyncio.run(TermineAnsehenTool(client).execute({"zeitraum": "heute"}))
     assert ergebnis.ok
     assert ergebnis.context["anzahl"] == 1

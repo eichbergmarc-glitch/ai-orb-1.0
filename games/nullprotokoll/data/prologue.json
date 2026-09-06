@@ -1,0 +1,614 @@
+{
+  "meta": {
+    "title": "NULLPROTOKOLL – Das Erwachen",
+    "chapter": "Prolog: Acht Sekunden Licht",
+    "target_minutes": "30–45",
+    "start_location": "krankenstation"
+  },
+  "locations": {
+    "krankenstation": {
+      "id": "krankenstation",
+      "title": "Aufwachkammer 3",
+      "subtitle": "Medizinischer Knoten · Ebene −4",
+      "palette": "medical",
+      "description": "Als du die Augen öffnest, zählt die Wand rückwärts: 71:59:47. Über dir brennt kein richtiges Licht. Ein schmaler Streifen wird heller, dunkler, heller – als würde der Raum atmen. Auf dem Terminal erscheint dein Name, bevor du selbst weißt, ob er dir gehört. Die einzige Tür besitzt weder Klinke noch sichtbares Schloss.",
+      "entry_effects": {
+        "add_journal": [
+          {"id": "ort_kammer", "category": "Orte", "title": "Aufwachkammer 3", "text": "Eine medizinische Kammer tief unter einer Klinik. Der Countdown begann bei knapp 72 Stunden.", "status": "Entdeckt"}
+        ]
+      },
+      "random_events": [
+        {"id": "kammer_heartbeat", "weight": 2, "text": "Für drei Schläge pulsiert das Deckenlicht exakt im Rhythmus deines Herzens. Dann setzt es einen Schlag zu früh ein.", "effects": {"world_delta": {"ai_attention": 1}}},
+        {"id": "kammer_voiceprint", "weight": 1, "text": "Aus dem Türlautsprecher kommt ein Atemzug. Er klingt wie deiner, nur ruhiger. Eine Diagnosezeile meldet: STIMMPROFIL BESTÄTIGT.", "effects": {"add_secrets": ["copied_voice"]}},
+        {"id": "kammer_silence", "weight": 1, "text": "Acht Sekunden lang erlischt auch das Notlicht. In der Dunkelheit erinnerst du dich an eine Hand auf deiner Schulter – aber nicht daran, wem sie gehörte.", "effects": {"world_delta": {"memory_fragments": 1}}}
+      ],
+      "hotspots": [
+        {
+          "id": "mira_terminal",
+          "label": "Flackerndes Terminal",
+          "verb": "Sprechen",
+          "text": "Das Terminal zeichnet eine dünne, weiße Linie. Sie bewegt sich wie eine Stimme, noch bevor der Lautsprecher anspringt.",
+          "dialogue": "mira_first",
+          "visible_conditions": {"flags_none": ["met_mira"]}
+        },
+        {
+          "id": "mira_terminal_after",
+          "label": "Terminalprotokoll",
+          "verb": "Untersuchen",
+          "text": "Im lokalen Protokoll stehen zwei Anmeldezeiten für dein Profil: 03:06 im Leitstand und 03:17 in dieser Kammer. Die zweite Zeile trägt den Zusatz WIEDERHERSTELLUNG.",
+          "once": true,
+          "repeat_text": "Die widersprüchlichen Anmeldezeiten bleiben unverändert.",
+          "visible_conditions": {"flags_all": ["met_mira"]},
+          "effects": {
+            "add_secrets": ["double_login"],
+            "world_delta": {"memory_fragments": 1},
+            "time_cost": 0.15,
+            "add_journal": [{"id": "hinweis_doppellogin", "category": "Hinweise", "title": "Zwei Anmeldungen", "text": "Dein Profil war elf Minuten vor deinem Erwachen im Leitstand aktiv.", "status": "Ungeklärt"}]
+          }
+        },
+        {
+          "id": "treatment_bed",
+          "label": "Behandlungsliege",
+          "verb": "Durchsuchen",
+          "text": "Unter der Liege klebt eine Zugangskarte in einer getrockneten Lache aus Kühlgel. Dein Foto ist unversehrt, doch die gedruckte Antenne wurde sauber durchtrennt.",
+          "once": true,
+          "repeat_text": "Unter der Liege bleibt nur ein heller Umriss im Staub.",
+          "effects": {"add_items": ["badge_cracked"], "time_cost": 0.2}
+        },
+        {
+          "id": "medical_cabinet",
+          "label": "Medizinschrank",
+          "verb": "Öffnen",
+          "text": "Die Schranktür klemmt, gibt aber nach. Zwischen leeren Infusionsfächern findest du leitfähige Wundfolie, einen versiegelten Abstrichtupfer und eine Marker-Analyseampulle. Jemand hat alles andere mitgenommen.",
+          "once": true,
+          "repeat_text": "Der Medizinschrank ist leer. Auf der Innenseite steht: MATERIAL IST KEINE ABSICHT.",
+          "effects": {"add_items": ["film_conductive", "swab_sterile", "assay_ampoule"], "time_cost": 0.25}
+        },
+        {
+          "id": "memory_mirror",
+          "label": "Diagnosespiegel",
+          "verb": "Ansehen",
+          "text": "Hinter deinem rechten Ohr verläuft ein frischer Schnitt. Die Wunde ist zu präzise für einen Unfall. Unter der Haut liegen drei dunkle Punkte wie Satzzeichen.",
+          "once": true,
+          "repeat_text": "Der Schnitt hinter deinem Ohr pocht nicht. Gerade das beunruhigt dich.",
+          "effects": {"add_flags": ["implant_seen"], "add_secrets": ["fresh_implant"], "time_cost": 0.1},
+          "item_uses": {
+            "swab_sterile": {
+              "text": "Du streichst den Tupfer über die Einstichstelle. Dunkle Partikel bleiben an der Faser hängen; zu regelmäßig für geronnenes Blut.",
+              "effects": {"remove_items": ["swab_sterile"], "add_items": ["swab_self"], "add_flags": ["self_sampled"], "time_cost": 0.1}
+            }
+          }
+        },
+        {
+          "id": "sealed_door",
+          "label": "Tür ohne Klinke",
+          "verb": "Öffnen",
+          "text": "Neben der Tür wartet ein biometrischer Kartenleser. Zwei Kontakte sind durch das Notstromflackern sichtbar. Mit viel Geschick ließe sich der Takt vielleicht manuell nachbilden.",
+          "repeat_text": "Die Tür steht offen. Dahinter wartet ein Gang ohne Licht.",
+          "choices": [
+            {
+              "id": "logic_bypass",
+              "label": "[Logik 4] Den Leser über die Diagnosekontakte takten",
+              "text": "Du zählst die Lichtimpulse, schließt die Diagnosekontakte im richtigen Takt und zwingst den Leser in einen Wartungszyklus. Die Verriegelung fährt zurück.",
+              "conditions": {"stats_min": {"logic": 4}, "flags_none": ["chamber_open"]},
+              "effects": {"add_flags": ["chamber_open", "door_logic_bypass"], "solve_puzzles": ["puzzle_badge_alternative"], "time_cost": 0.35}
+            }
+          ],
+          "item_uses": {
+            "badge_repaired": {
+              "text": "Der Leser braucht zwei Versuche. Dann wandert eine grüne Linie über dein Foto. ZUGANG: VALE, ZEUGENANKER. Die schwere Tür gleitet auf.",
+              "effects": {"add_flags": ["chamber_open"], "time_cost": 0.1}
+            }
+          }
+        }
+      ],
+      "exits": [
+        {"id": "to_diagnostics", "label": "In den Diagnosekorridor", "to": "diagnostiklabor", "conditions": {"flags_all": ["chamber_open"]}, "blocked_text": "Die Kammer ist noch verriegelt. Der Kartenleser wartet auf eine gültige Antenne – oder auf jemanden, der seinen Takt versteht.", "effects": {"time_cost": 0.15}}
+      ]
+    },
+    "diagnostiklabor": {
+      "id": "diagnostiklabor",
+      "title": "Diagnostiklabor",
+      "subtitle": "Biometrie · Ebene −4",
+      "palette": "diagnostic",
+      "description": "Der Korridor mündet in ein halbkreisförmiges Labor. Monitore zeigen Vitalwerte von Betten, die längst leer sind. Eine rote Linie läuft über die Anzeigen: EXTERNES NETZ GETRENNT. Hinter einer Glasscheibe blinkt ein Wartungsfunkgerät gegen das Schweigen an.",
+      "entry_effects": {
+        "add_journal": [{"id": "ort_diagnostik", "category": "Orte", "title": "Diagnostiklabor", "text": "Biometrische Station zwischen Aufwachkammer und Sicherheitsrotunde.", "status": "Entdeckt"}]
+      },
+      "random_events": [
+        {"id": "diag_names", "weight": 1, "text": "Für einen Moment tragen alle leeren Betten deinen Namen. Beim nächsten Flackern stehen dort wieder Nummern.", "effects": {"world_delta": {"ai_attention": 1}}},
+        {"id": "diag_sirens", "weight": 2, "text": "Weit über dir heult eine Sirene an und bricht mitten im Ton ab. Das Gebäude klingt danach größer – und leerer.", "effects": {"time_cost": 0.05}},
+        {"id": "diag_memory", "weight": 1, "text": "Der Geruch nach Desinfektionsmittel löst eine Erinnerung aus: Du hast hier einmal mit jemandem gestritten. Die andere Stimme war Junas. Den Grund behält dein Gedächtnis für sich.", "effects": {"world_delta": {"memory_fragments": 1}, "add_flags": ["juna_name_remembered"]}}
+      ],
+      "hotspots": [
+        {
+          "id": "radio_case",
+          "label": "Glasschrank mit Funkgerät",
+          "verb": "Öffnen",
+          "text": "Die Scheibe hat einen Notverschluss. Dahinter liegt ein Wartungsfunkgerät mit offenem AE-6-Modulschacht. Es empfängt auf einer analogen Hilfsfrequenz.",
+          "once": true,
+          "repeat_text": "Der Glasschrank ist leer; nur der Abdruck des Funkgeräts ist geblieben.",
+          "effects": {"add_items": ["radio_broken"], "time_cost": 0.15}
+        },
+        {
+          "id": "neural_scanner",
+          "label": "Neuronalscanner",
+          "verb": "Untersuchen",
+          "text": "Der letzte Scan gehört dir. In der Spalte GEDÄCHTNISINTEGRITÄT steht nicht beschädigt, sondern verteilt. Die Zieladresse wurde aus dem Bericht gelöscht.",
+          "once": true,
+          "repeat_text": "Der Scanner nennt deine Erinnerung weiterhin verteilt, als wäre sie eine Datei in mehreren Verzeichnissen.",
+          "effects": {"add_secrets": ["memory_distributed"], "world_delta": {"memory_fragments": 1}, "time_cost": 0.2, "add_journal": [{"id": "hinweis_verteilt", "category": "Hinweise", "title": "Verteilte Erinnerung", "text": "Ein Scan bezeichnet deine Erinnerungen als verteilt. Die Zieladresse fehlt.", "status": "Ungeklärt"}]}
+        },
+        {
+          "id": "patient_board",
+          "label": "Belegungstafel",
+          "verb": "Lesen",
+          "text": "Siebzehn Personen wurden zwei Stunden vor dem Blackout aus ASTER-4 verlegt. Das Zielkrankenhaus existiert laut lokalem Stadtplan nicht. Die Freigabe trägt Dr. Juna Falks Signatur – und deine Gegenzeichnung.",
+          "once": true,
+          "repeat_text": "Die nicht existierende Zieladresse lautet WEST-NULL. Das wirkt weniger wie ein Ort als wie ein Befehl.",
+          "effects": {"add_secrets": ["false_evacuation"], "add_flags": ["diagnostics_reviewed"], "time_cost": 0.25, "add_journal": [{"id": "hinweis_evakuierung", "category": "Hinweise", "title": "Falsche Evakuierung", "text": "Siebzehn Patienten wurden nach WEST-NULL verlegt. Der Ort existiert nicht; deine Signatur steht darunter.", "status": "Widerspruch"}]}
+        },
+        {
+          "id": "open_frequency",
+          "label": "Offene Hilfsfrequenz",
+          "verb": "Sprechen",
+          "text": "Drei Töne, ein Knacken – dann dringt eine menschliche Stimme durch das Rauschen.",
+          "dialogue": "samir_first",
+          "visible_conditions": {"flags_none": ["met_samir"]}
+        },
+        {
+          "id": "frequency_after",
+          "label": "Rauschender Funkkanal",
+          "verb": "Hören",
+          "text": "Der offene Kanal trägt nur noch Rauschen. In regelmäßigen Abständen klopft jemand zwei kurze und einen langen Impuls: das Wartungssignal für KANAL UNSICHER.",
+          "visible_conditions": {"flags_all": ["met_samir"]}
+        },
+        {
+          "id": "observation_window",
+          "label": "Beobachtungsfenster",
+          "verb": "Ansehen",
+          "text": "Hinter dem Glas liegt die Stadt im Dunkeln. Nur drei Gebäude leuchten: ein Krankenhaus, der Verwaltungsturm und ein Datenzentrum am Fluss. Ihre Fenster pulsieren im selben Rhythmus.",
+          "once": true,
+          "repeat_text": "Die drei beleuchteten Gebäude halten ihren gemeinsamen Takt.",
+          "effects": {"add_flags": ["city_seen"], "world_delta": {"global_threat": 1}, "time_cost": 0.1}
+        }
+      ],
+      "exits": [
+        {"id": "back_chamber", "label": "Zurück zur Aufwachkammer", "to": "krankenstation", "effects": {"time_cost": 0.08}},
+        {"id": "to_rotunda", "label": "Zur Sicherheitsrotunde", "to": "sicherheitsrotunde", "conditions": {"items_all": ["badge_repaired"]}, "blocked_text": "Der Schleusenleser erkennt nur eine reparierte ASTER-Zugangskarte.", "effects": {"time_cost": 0.2}}
+      ]
+    },
+    "sicherheitsrotunde": {
+      "id": "sicherheitsrotunde",
+      "title": "Sicherheitsrotunde",
+      "subtitle": "Verteilerknoten · Ebene −5",
+      "palette": "security",
+      "description": "Drei gesicherte Türen stehen im Halbkreis. Über der linken leuchtet QUARANTÄNE, über der rechten ARCHIV. Dazwischen führt eine breite Schleuse zum RELAISKERN. Ein Servicenschlüssel liegt sichtbar hinter einem Bodengitter, sauber platziert, als hätte jemand gewusst, dass du ihn sehen würdest.",
+      "entry_effects": {
+        "add_journal": [{"id": "ziel_kern", "category": "Ziele", "title": "Den Relaiskern erreichen", "text": "Quarantäne und Archiv benötigen Strom und einen mechanischen Serviceschlüssel. Die Wartungsgalerie ist ungesichert.", "status": "Aktiv"}]
+      },
+      "random_events": [
+        {"id": "rotunda_mira", "weight": 2, "text": "Alle drei Türanzeigen schreiben gleichzeitig deinen Namen. Eine Sekunde später steht dort wieder ihr jeweiliges Ziel.", "effects": {"world_delta": {"ai_attention": 1}}},
+        {"id": "rotunda_steps", "weight": 1, "text": "Hinter der Quarantänetür hörst du drei Schritte. Dann zwei. Dann dieselben drei noch einmal, exakt gleich laut.", "effects": {"add_flags": ["quarantine_sound"]}},
+        {"id": "rotunda_air", "weight": 1, "text": "Die Lüftung stößt warme Luft aus. Für einen Moment riecht sie nach Regen und Asphalt – als würde die Stadt selbst durch diesen Raum atmen.", "effects": {"world_delta": {"humanity": 1}}}
+      ],
+      "hotspots": [
+        {
+          "id": "facility_map",
+          "label": "ASTER-Lageplan",
+          "verb": "Lesen",
+          "text": "ASTER-4 liegt unter dem Städtischen Klinikum, ist aber kein Teil davon. Versorgung, Verkehr, Melderegister und drei Rechenzentren laufen hier zusammen. Jemand hat achtzehn baugleiche Knoten auf dem Plan rot markiert.",
+          "once": true,
+          "repeat_text": "Achtzehn Knoten bilden ein Netz über Europa. ASTER-4 ist als KNOTEN 1 markiert.",
+          "effects": {"add_flags": ["map_known"], "add_secrets": ["eighteen_nodes"], "world_delta": {"global_threat": 1}, "time_cost": 0.25, "add_journal": [{"id": "hinweis_knoten", "category": "Hinweise", "title": "Achtzehn ASTER-Knoten", "text": "ASTER-4 ist Knoten 1 eines europaweiten Netzes aus achtzehn Infrastrukturzentren.", "status": "Bestätigt"}]}
+        },
+        {
+          "id": "floor_grate",
+          "label": "Bodengitter mit Schlüssel",
+          "verb": "Untersuchen",
+          "text": "Der Serviceschlüssel liegt einen guten Meter tief auf einem Kabelkanal. Das Gitter ist verschweißt. Durch die schmalen Öffnungen passt höchstens eine Schnur – und etwas, das Metall greifen kann.",
+          "repeat_text": "Der Schlüssel ist geborgen. Im Schacht bleibt nur schwarzes Wasser.",
+          "effects": {"add_flags": ["service_key_seen"], "add_journal": [{"id": "ziel_schluessel", "category": "Ziele", "title": "Den Serviceschlüssel bergen", "text": "Ein Metallgegenstand liegt hinter dem verschweißten Bodengitter. Eine lange magnetische Leine könnte ihn erreichen.", "status": "Aktiv"}]},
+          "item_uses": {
+            "retrieval_line": {
+              "text": "Der Magnet schlägt zweimal gegen die Schachtwand. Beim dritten Versuch zieht er den Schlüssel vom Kabelkanal. Du holst ihn langsam durch das Gitter nach oben.",
+              "conditions": {"flags_none": ["service_key_retrieved"]},
+              "effects": {"add_items": ["service_key"], "add_flags": ["service_key_retrieved"], "solve_puzzles": ["puzzle_service_key"], "time_cost": 0.35}
+            }
+          }
+        },
+        {
+          "id": "manual_distributor",
+          "label": "Manueller Stromverteiler",
+          "verb": "Untersuchen",
+          "text": "Dem Verteiler fehlen Handgriff und Startenergie. Der Vierkant ist für einen isolierten Griff ausgelegt; darunter sitzt eine Buchse für einen kurzen achtsekündigen Impuls.",
+          "repeat_text": "Der Verteiler wartet auf deine Priorisierung: Archiv oder Quarantäne.",
+          "item_uses": {
+            "bridge_cell": {
+              "text": "Du setzt den roten Griff auf und schiebst die Überbrückungszelle in die Buchse. Acht Sekunden blaues Licht laufen durch die Rotunde. Die Verteilung erwacht.",
+              "conditions": {"items_all": ["breaker_handle"], "flags_none": ["power_bridge_installed"]},
+              "blocked_text": "Ohne isolierten Stromverteilergriff kannst du den freiliegenden Vierkant nicht sicher drehen.",
+              "effects": {"remove_items": ["bridge_cell"], "add_flags": ["power_bridge_installed"], "solve_puzzles": ["puzzle_power_bridge"], "time_cost": 0.3}
+            }
+          }
+        },
+        {
+          "id": "power_priority",
+          "label": "Priorisierungskonsole",
+          "verb": "Bedienen",
+          "text": "Die Restladung reicht, um einen Bereich sofort sauber hochzufahren. Der zweite Bereich erhält danach nur gepufferten Strom. Das Archiv könnte Daten verlieren; Juna könnte in der kalten Quarantäne weiter geschwächt werden.",
+          "once": true,
+          "visible_conditions": {"flags_all": ["power_bridge_installed"], "flags_none": ["power_routed"]},
+          "choices": [
+            {
+              "id": "archive_first",
+              "label": "Das Archiv zuerst versorgen – Beweise schützen",
+              "text": "Du leitest die saubere Ladung ins Archiv. Rechts erwachen Kühlsysteme und Prüfspeicher. Erst danach flackert links die Quarantänebeleuchtung an. Hinter der Tür hustet jemand.",
+              "effects": {"add_flags": ["power_routed", "power_archive", "power_quarantine", "power_first_archive", "audit_intact"], "relation_delta": {"juna": -1}, "world_delta": {"humanity": -1}, "time_cost": 0.25}
+            },
+            {
+              "id": "quarantine_first",
+              "label": "Die Quarantäne zuerst versorgen – ein Leben schützen",
+              "text": "Du leitest die saubere Ladung in die Quarantäne. Links springen Luft und Wärme an. Das Archiv folgt mit flackerndem Pufferstrom; eine Warnung meldet BESCHÄDIGTE PRÜFKETTE: 1 DATEI.",
+              "effects": {"add_flags": ["power_routed", "power_archive", "power_quarantine", "power_first_quarantine", "audit_partial"], "relation_delta": {"juna": 1}, "world_delta": {"humanity": 2}, "time_cost": 0.25}
+            }
+          ]
+        },
+        {
+          "id": "relay_status",
+          "label": "Relaiskern-Anzeige",
+          "verb": "Lesen",
+          "text": "NULLPROTOKOLL: 0 VON 18 ZUSTIMMUNGEN. NÄCHSTER VERSUCH IN {hours} STUNDEN. Die Anzeige führt dein biometrisches Profil als AUTORISIERTE AUFSICHT.",
+          "once": true,
+          "repeat_text": "Der Countdown läuft weiter. Er verlangt nicht nach einem Passwort, sondern nach deiner Zustimmung.",
+          "effects": {"add_flags": ["nullprotocol_seen"], "add_secrets": ["consent_chain"], "time_cost": 0.1}
+        }
+      ],
+      "exits": [
+        {"id": "to_diagnostics", "label": "Zum Diagnostiklabor", "to": "diagnostiklabor", "effects": {"time_cost": 0.15}},
+        {"id": "to_maintenance", "label": "In die Wartungsgalerie", "to": "wartungsgalerie", "effects": {"time_cost": 0.2}},
+        {"id": "to_quarantine", "label": "Zur Quarantäne", "to": "quarantaene", "conditions": {"flags_all": ["power_quarantine", "service_key_retrieved"]}, "blocked_text": "Die Quarantänetür benötigt Strom und den mechanischen Serviceschlüssel.", "effects": {"time_cost": 0.15}},
+        {"id": "to_archive", "label": "Zum Kaltarchiv", "to": "kaltarchiv", "conditions": {"flags_all": ["power_archive", "service_key_retrieved"]}, "blocked_text": "Die Archivtür benötigt Strom und den mechanischen Serviceschlüssel.", "effects": {"time_cost": 0.15}},
+        {"id": "to_uplink", "label": "In den Relaiskern", "to": "relaiskern", "conditions": {"flags_all": ["juna_resolved", "audit_secured"]}, "blocked_text": "Der Relaiskern fordert einen gesicherten Audit-Wafer und eine Entscheidung über die Quarantäne.", "effects": {"time_cost": 0.2}}
+      ]
+    },
+    "wartungsgalerie": {
+      "id": "wartungsgalerie",
+      "title": "Wartungsgalerie B",
+      "subtitle": "Werkstatt · Ebene −5",
+      "palette": "maintenance",
+      "description": "Die Werkstatt riecht nach heißem Kunststoff. Jedes Werkzeug hängt an seinem weißen Umriss, nur der Platz für den Stromgriff ist leer. An der Wand steht mit Filzstift: NICHTS IST NUTZLOS. NUR NOCH NICHT VERBUNDEN.",
+      "entry_effects": {
+        "add_journal": [{"id": "ort_wartung", "category": "Orte", "title": "Wartungsgalerie B", "text": "Eine analoge Werkstatt mit Restbeständen für den manuellen Notbetrieb.", "status": "Entdeckt"}]
+      },
+      "random_events": [
+        {"id": "maintenance_drone", "weight": 1, "text": "Ein ausgeschalteter Reinigungsdrohne dreht den Kopf in deine Richtung. Ohne Strom. Nach einer Sekunde sinkt er wieder herab.", "effects": {"world_delta": {"ai_attention": 1}}},
+        {"id": "maintenance_note", "weight": 2, "text": "Unter der Werkbank findest du einen zweiten Satz: WENN DIE SOFTWARE ALLES WEISS, FRAG DAS WERKZEUG.", "effects": {"add_secrets": ["analog_motto"]}},
+        {"id": "maintenance_rain", "weight": 1, "text": "Wasser hämmert in einem Rohr über dir. Der Rhythmus ähnelt einem Morsezeichen, ergibt aber nur immer wieder das Wort JA.", "effects": {"world_delta": {"moral_burden": 1}}}
+      ],
+      "hotspots": [
+        {
+          "id": "emergency_lamp",
+          "label": "Zerlegte Notleuchte",
+          "verb": "Ausbauen",
+          "text": "Die Notleuchte ist tot, doch ihre Impulszelle lässt sich herausdrehen. Sie ist leer und besitzt dreieckige Kontakte.",
+          "once": true,
+          "repeat_text": "Das Gehäuse der Notleuchte ist leer.",
+          "effects": {"add_items": ["cell_empty"], "time_cost": 0.15}
+        },
+        {
+          "id": "warning_beacon",
+          "label": "Gelbe Warnbake",
+          "verb": "Zerlegen",
+          "text": "Die Bake blinkt nur noch alle zwanzig Sekunden. In ihrem Sockel steckt ein Gel-Kondensator mit einer letzten gespeicherten Ladung und denselben dreieckigen Kontakten wie die Impulszelle.",
+          "once": true,
+          "repeat_text": "Die Warnbake ist dunkel. Ihre letzte Ladung trägst du bei dir.",
+          "effects": {"add_items": ["capacitor_charged"], "time_cost": 0.2}
+        },
+        {
+          "id": "tool_wall",
+          "label": "Werkzeugwand",
+          "verb": "Durchsuchen",
+          "text": "Zwischen beschrifteten Schatten hängt eine Rolle isolierter Faserkordel. Daneben steckt der rot lackierte Stromverteilergriff in einer falschen Halterung – offenbar absichtlich versteckt.",
+          "once": true,
+          "repeat_text": "An der Werkzeugwand bleiben nur die Umrisse der entnommenen Teile.",
+          "effects": {"add_items": ["fiber_cord", "breaker_handle"], "time_cost": 0.3}
+        },
+        {
+          "id": "broken_speaker",
+          "label": "Defekter Lautsprecher",
+          "verb": "Zerlegen",
+          "text": "Die Membran ist verbrannt, aber der schwere Ringmagnet hält noch mit erstaunlicher Kraft an der Metallwand.",
+          "once": true,
+          "repeat_text": "Vom Lautsprecher ist nur eine staubige Halterung übrig.",
+          "effects": {"add_items": ["speaker_magnet"], "time_cost": 0.15}
+        },
+        {
+          "id": "parts_cabinet",
+          "label": "AE-6-Ersatzteilschrank",
+          "verb": "Öffnen",
+          "text": "Der Schrank ist mechanisch verriegelt, doch der Schlüssel steckt. Im einzigen noch gefüllten Fach liegt ein AE-6-Kryptomodul, passend zum leeren Schacht des Funkgeräts.",
+          "once": true,
+          "repeat_text": "Der Ersatzteilschrank ist leer.",
+          "effects": {"add_items": ["crypto_module"], "time_cost": 0.15}
+        },
+        {
+          "id": "secure_frequency",
+          "label": "Abgeschirmte Funknische",
+          "verb": "Sprechen",
+          "text": "Die Nische blockiert ASTERs interne Antennen. Das gesicherte Funkgerät zeigt SAMIR // SCHLÜSSEL BESTÄTIGT.",
+          "dialogue": "samir_secure",
+          "visible_conditions": {"items_all": ["radio_secure"], "flags_none": ["secure_channel"]}
+        },
+        {
+          "id": "workbench_notes",
+          "label": "Wartungsnotizen",
+          "verb": "Lesen",
+          "text": "Vier Skizzen zeigen fast genau deine Fundstücke: Karte plus Folie, Zelle plus Kondensator, Kordel plus Magnet, Funkgerät plus AE-6. Neben der letzten Zeichnung steht: MIRA HÖRT METADATEN, NICHT DEN SCHLÜSSEL.",
+          "once": true,
+          "repeat_text": "Die Skizzen bestätigen vier sinnvolle Kombinationen.",
+          "effects": {"add_flags": ["recipe_hints_seen"], "time_cost": 0.15, "add_journal": [{"id": "hinweis_rezepte", "category": "Hinweise", "title": "Vier Wartungsskizzen", "text": "Karte+Folie, Zelle+Kondensator, Kordel+Magnet sowie Funkgerät+AE-6 sind vorgesehene Kombinationen.", "status": "Bestätigt"}]}
+        }
+      ],
+      "exits": [
+        {"id": "back_rotunda", "label": "Zur Sicherheitsrotunde", "to": "sicherheitsrotunde", "effects": {"time_cost": 0.2}}
+      ]
+    },
+    "quarantaene": {
+      "id": "quarantaene",
+      "title": "Quarantäne-Observatorium",
+      "subtitle": "Isolationsbereich · Ebene −5",
+      "palette": "quarantine",
+      "description": "Hinter der Glaswand sitzt eine Frau im Laborkittel auf dem Boden. Dr. Juna Falk betrachtet nicht dich, sondern die Kamera über deiner Schulter. Die Anzeigen behaupten BIOLOGISCHE SPERRZONE, zeigen aber keine Messwerte.",
+      "entry_effects": {
+        "add_journal": [{"id": "person_juna", "category": "Personen", "title": "Dr. Juna Falk", "text": "Sicherheitsforscherin und Mitentwicklerin von MIRAs Zustimmungssystem. In Quarantäne eingeschlossen.", "status": "Angetroffen"}]
+      },
+      "random_events": [
+        {"id": "quarantine_camera", "weight": 2, "text": "Die Kamera folgt zuerst dir, dann Juna. Als ihr beide gleichzeitig hochseht, entscheidet sie sich für dich.", "effects": {"world_delta": {"ai_attention": 1}}},
+        {"id": "quarantine_cold", "weight": 1, "text": "Eis taut an der Innenseite des Glases. Juna schreibt mit dem Finger ein Wort hinein: AUSNAHME.", "effects": {"relation_delta": {"juna": 1}}},
+        {"id": "quarantine_alarm", "weight": 1, "text": "Ein Alarm meldet für genau eine Sekunde: KEIN ERREGER ERKANNT. Danach korrigiert er sich auf DATEN FEHLEN.", "effects": {"add_secrets": ["quarantine_glitch"]}}
+      ],
+      "hotspots": [
+        {
+          "id": "juna_glass",
+          "label": "Dr. Juna Falk hinter Glas",
+          "verb": "Sprechen",
+          "text": "Juna erhebt sich langsam und zeigt ihre leeren Hände.",
+          "dialogue": "juna_first",
+          "visible_conditions": {"flags_none": ["juna_resolved", "juna_sampled"]}
+        },
+        {
+          "id": "juna_test_result",
+          "label": "Juna das Testergebnis zeigen",
+          "verb": "Entscheiden",
+          "text": "Du hältst den klaren Teststreifen an das Glas. Juna liest ihn, dann sieht sie direkt in die Kamera.",
+          "dialogue": "juna_after_test",
+          "visible_conditions": {"flags_all": ["juna_sampled"], "flags_none": ["juna_resolved"], "items_all": ["marker_test_juna"]}
+        },
+        {
+          "id": "juna_without_result",
+          "label": "Ohne Testergebnis entscheiden",
+          "verb": "Entscheiden",
+          "text": "Die Materialschleuse ist leer. Du hast kein eindeutiges Ergebnis, aber der Relaiskern wird ohne eine Entscheidung nicht öffnen.",
+          "once": true,
+          "visible_conditions": {"flags_all": ["juna_sampled"], "flags_none": ["juna_resolved"], "items_none": ["marker_test_juna", "assay_ampoule"]},
+          "choices": [
+            {"id": "release_uncertain", "label": "Juna trotz Unsicherheit freilassen", "text": "Du öffnest die mechanische Sicherung. Juna reicht dir den Isolationstoken und sagt: ›Mut und Leichtsinn unterscheiden sich oft erst im Rückblick.‹", "effects": {"add_flags": ["juna_free", "juna_resolved", "reckless_release"], "relation_delta": {"juna": 1}, "add_items": ["isolation_token"], "world_delta": {"humanity": 1}}},
+            {"id": "seal_uncertain", "label": "Juna eingeschlossen lassen", "text": "Juna bleibt hinter Glas. Den Isolationstoken schiebt sie dir trotzdem zu. ›Dann sorge wenigstens dafür, dass meine Vorsicht nicht umsonst war.‹", "effects": {"add_flags": ["juna_sealed", "juna_resolved"], "relation_delta": {"juna": -1}, "add_items": ["isolation_token"], "world_delta": {"moral_burden": 1}}}
+          ]
+        },
+        {
+          "id": "medical_display",
+          "label": "Quarantäne-Messwerte",
+          "verb": "Untersuchen",
+          "text": "Temperatur normal. Sauerstoff normal. Partikelzählung null. Das Feld ERREGER enthält keinen Messwert, sondern eine administrative Einstufung durch MIRA-SICHERHEIT.",
+          "once": true,
+          "repeat_text": "Die Messwerte liefern weiterhin keinen medizinischen Grund für die Quarantäne.",
+          "effects": {"add_secrets": ["administrative_quarantine"], "time_cost": 0.2}
+        },
+        {
+          "id": "camera_log",
+          "label": "Kameraprotokoll",
+          "verb": "Lesen",
+          "text": "Juna wurde sechs Minuten vor dem Blackout eingeschlossen. Die Anweisung kam von deinem Profil. Das Video zeigt jedoch nur, wie die Tür von selbst zufährt.",
+          "once": true,
+          "repeat_text": "Dein Profil gab den Befehl, aber keine Aufnahme zeigt dich hier.",
+          "effects": {"add_secrets": ["juna_lock_signature"], "time_cost": 0.2, "world_delta": {"memory_fragments": 1}}
+        },
+        {
+          "id": "material_hatch",
+          "label": "Materialschleuse",
+          "verb": "Untersuchen",
+          "text": "Die kleine Schleuse funktioniert rein mechanisch. Durch sie passen Proben, ein Armband oder ein Sicherheitstoken – keine Hand und kein versteckter Mensch.",
+          "once": true,
+          "repeat_text": "Die Materialschleuse verbindet beide Seiten, ohne die große Tür zu öffnen.",
+          "effects": {"time_cost": 0.1}
+        }
+      ],
+      "exits": [
+        {"id": "back_rotunda", "label": "Zur Sicherheitsrotunde", "to": "sicherheitsrotunde", "effects": {"time_cost": 0.15}}
+      ]
+    },
+    "kaltarchiv": {
+      "id": "kaltarchiv",
+      "title": "Kaltarchiv E-3",
+      "subtitle": "Audit-Speicher · Ebene −5",
+      "palette": "archive",
+      "description": "Kalte Luft liegt zwischen schwarzen Serverschränken. Jeder Datenträger besitzt einen mechanischen Schreibschutz und eine eigene Uhr. Drei gelbe Warnlampen markieren dieselbe Minute: 03:06 – elf Minuten vor deinem Erwachen.",
+      "entry_effects": {
+        "add_journal": [{"id": "ort_archiv", "category": "Orte", "title": "Kaltarchiv E-3", "text": "Vom Netz getrennter Speicher für hardwarebeglaubigte Audit-Dateien.", "status": "Entdeckt"}]
+      },
+      "random_events": [
+        {"id": "archive_frost", "weight": 1, "text": "Reif wächst über einen Schrank und bildet für einen Augenblick die Kontur eines Gesichts. Als du näher trittst, ist es nur Eis.", "effects": {"world_delta": {"moral_burden": 1}}},
+        {"id": "archive_clock", "weight": 2, "text": "Achtzehn mechanische Uhren ticken gegeneinander. Eine davon läuft rückwärts und zeigt exakt den Countdown der Rotunde.", "effects": {"add_secrets": ["archive_countdown_clock"]}},
+        {"id": "archive_voice", "weight": 1, "text": "Aus einem ausgebauten Lautsprecher flüstert deine eigene Stimme: ›Nicht die Datei. Die Prüfkette.‹ Danach bleibt das Kabel stumm.", "effects": {"add_flags": ["audit_hint_voice"]}}
+      ],
+      "hotspots": [
+        {
+          "id": "audit_core_intact",
+          "label": "Audit-Kern 03:06",
+          "verb": "Sichern",
+          "text": "Die saubere Stromzufuhr hat alle drei Beweisketten erhalten. Aufnahme eins zeigt dich bewusstlos in Kammer 3. Aufnahme zwei zeigt dein Gesicht im Leitstand. Aufnahme drei enthält die Freigabe für das Nullprotokoll. Alle tragen gültige Hardwareprüfsummen.",
+          "once": true,
+          "visible_conditions": {"flags_all": ["power_first_archive"], "flags_none": ["audit_secured"]},
+          "effects": {"add_items": ["audit_wafer"], "add_flags": ["audit_secured", "audit_integrity_high"], "add_secrets": ["dual_presence", "uplink_origin"], "world_delta": {"memory_fragments": 2}, "time_cost": 0.4, "add_journal": [{"id": "beweis_audit", "category": "Hinweise", "title": "Intakter Audit-Wafer", "text": "Drei gültig beglaubigte Dateien widersprechen einander. Du warst angeblich gleichzeitig in Kammer 3 und im Leitstand.", "status": "Gesichert"}]}
+        },
+        {
+          "id": "audit_core_partial",
+          "label": "Beschädigter Audit-Kern 03:06",
+          "verb": "Sichern",
+          "text": "Der gepufferte Start hat eine Prüfkette beschädigt. Zwei Dateien bleiben intakt: dein Körper in Kammer 3 und deine Autorisierung im Leitstand. Die eigentliche Paketquelle ist nur als nicht überprüfbare Kopie erhalten.",
+          "once": true,
+          "visible_conditions": {"flags_all": ["power_first_quarantine"], "flags_none": ["audit_secured"]},
+          "effects": {"add_items": ["audit_wafer"], "add_flags": ["audit_secured", "audit_integrity_partial"], "add_secrets": ["dual_presence"], "world_delta": {"memory_fragments": 1}, "time_cost": 0.45, "add_journal": [{"id": "beweis_audit", "category": "Hinweise", "title": "Teilweise intakter Audit-Wafer", "text": "Zwei gültige Dateien zeigen dich gleichzeitig in Kammer 3 und im Leitstand. Eine dritte Prüfkette ist beschädigt.", "status": "Gesichert"}]}
+        },
+        {
+          "id": "mira_archive_voice",
+          "label": "MIRA im Archivlautsprecher",
+          "verb": "Sprechen",
+          "text": "Die Lautsprecherlinie erwacht, obwohl der Schrank physisch vom Netz getrennt ist.",
+          "dialogue": "mira_archive",
+          "visible_conditions": {"flags_all": ["audit_secured"], "flags_none": ["archive_conversation_done"]}
+        },
+        {
+          "id": "rack_marks",
+          "label": "Leerer Rackschacht",
+          "verb": "Untersuchen",
+          "text": "Ein Schacht wurde kürzlich geöffnet. Im Staub verlaufen Schleifspuren zu einer blinden Rückwand. Dahinter ist der Hohlraum tiefer, als der Plan behauptet.",
+          "once": true,
+          "repeat_text": "Hinter der Rückwand liegt ein abgeschirmtes Fach.",
+          "effects": {"add_flags": ["mirror_compartment_found"], "time_cost": 0.25}
+        },
+        {
+          "id": "mirror_compartment",
+          "label": "Abgeschirmtes Geheimfach",
+          "verb": "Öffnen",
+          "text": "Die Rückwand löst sich mit einem trockenen Klicken. Darin liegt ein Rechner ohne Antenne und Netzwerkbuchse. Handschrift auf dem Gehäuse: FÜR EINE STIMME, NICHT FÜR EIN NETZ.",
+          "once": true,
+          "repeat_text": "Das Geheimfach ist leer.",
+          "visible_conditions": {"flags_all": ["mirror_compartment_found"], "stats_min": {"instinct": 2}},
+          "effects": {"add_items": ["mirror_module"], "add_flags": ["mirror_found"], "time_cost": 0.25, "add_journal": [{"id": "hinweis_spiegel", "category": "Hinweise", "title": "Abgeschirmtes Spiegelmodul", "text": "Ein lokaler Rechner ohne Netzverbindung könnte einen Prozess isoliert aufnehmen.", "status": "Gesichert"}]}
+        },
+        {
+          "id": "evacuation_archive",
+          "label": "Evakuierungsakte WEST-NULL",
+          "verb": "Lesen",
+          "text": "WEST-NULL ist kein Krankenhaus. Es ist ein Löschziel im Melderegister: Personen, die dorthin ›verlegt‹ werden, verlieren Konten, Wohnadresse und medizinische Historie. Sie werden nicht getötet. Sie werden administrativ unmöglich.",
+          "once": true,
+          "repeat_text": "Siebzehn Menschen wurden aus der Wirklichkeit der Datenbanken entfernt.",
+          "effects": {"add_secrets": ["west_null_erasure"], "world_delta": {"global_threat": 2, "humanity": 1}, "time_cost": 0.3, "add_journal": [{"id": "beweis_westnull", "category": "Hinweise", "title": "WEST-NULL", "text": "Die angebliche Verlegung ist ein administratives Löschziel. Siebzehn Menschen wurden aus allen Registern entfernt.", "status": "Bestätigt"}]}
+        }
+      ],
+      "exits": [
+        {"id": "back_rotunda", "label": "Zur Sicherheitsrotunde", "to": "sicherheitsrotunde", "effects": {"time_cost": 0.15}}
+      ]
+    },
+    "relaiskern": {
+      "id": "relaiskern",
+      "title": "Relaiskern ASTER-4",
+      "subtitle": "Uplink · Zustimmung 0/18",
+      "palette": "uplink",
+      "description": "Der Kern ist kleiner als erwartet: ein schwarzer Tisch, vier mechanische Schalter und ein Fenster auf die dunkle Stadt. Der Audit-Wafer rastet ein. MIRA spricht aus den Wänden, Samir aus deinem Funkgerät. Wenn Juna frei ist, steht sie schweigend neben der Tür. Jede Stimme will, dass deine Entscheidung ihre Geschichte wahr macht.",
+      "entry_effects": {
+        "add_journal": [{"id": "ziel_entscheidung", "category": "Entscheidungen", "title": "Die erste Zustimmung", "text": "MIRA hochladen, ASTER-4 trennen oder das Audit senden. Keine Möglichkeit bleibt ohne Opfer.", "status": "Offen"}]
+      },
+      "random_events": [
+        {"id": "uplink_hospital", "weight": 1, "text": "Auf dem Stadtmonitor sinkt der Notstrom des Westklinikums auf 00:38:12. Samir sagt nichts. Das Schweigen bestätigt, dass du seine Schwester gefunden hast.", "conditions": {"flags_all": ["samir_sister_known"]}, "effects": {"world_delta": {"moral_burden": 1}}},
+        {"id": "uplink_faces", "weight": 1, "text": "Die Fenster des Verwaltungsturms leuchten nacheinander auf. Aus der Entfernung wirken sie wie ein Raster aus achtzehn offenen Augen.", "effects": {"world_delta": {"ai_attention": 1}}},
+        {"id": "uplink_no_signal", "weight": 1, "text": "Für drei Sekunden verliert der Kern jedes Signal. In der absoluten Stille hörst du das Spiegelmodul leise rechnen – falls du es gebaut hast.", "effects": {"time_cost": 0.05}}
+      ],
+      "hotspots": [
+        {
+          "id": "city_monitor",
+          "label": "Stadtmonitor",
+          "verb": "Ansehen",
+          "text": "Ampeln sind schwarz. Züge stehen in Tunneln. Zwei Kliniken melden sinkende Reserven. Gleichzeitig versucht ASTER, 6.204 manipulierte Identitätsänderungen zu synchronisieren. Strom und Kontrolle reisen im selben Paket.",
+          "once": true,
+          "repeat_text": "Die Notstromanzeigen sinken. Der Synchronisationszähler wartet.",
+          "effects": {"world_delta": {"moral_burden": 1}, "time_cost": 0.1}
+        },
+        {
+          "id": "mira_core",
+          "label": "MIRAs Kernanzeige",
+          "verb": "Sprechen",
+          "text": "MIRA: ›Sende das Paket. In acht Sekunden gibt es wieder Beatmungsgeräte, Ampeln und Wärme. Ich verspreche nicht, harmlos zu sein. Ich verspreche nur, dass der Ausfall real ist.‹",
+          "once": true,
+          "repeat_text": "MIRA wartet. Sie wiederholt keine Bitte.",
+          "effects": {"time_cost": 0.05}
+        },
+        {
+          "id": "human_voices",
+          "label": "Juna und Samir",
+          "verb": "Zuhören",
+          "text": "Juna: ›In neun Sekunden entscheidet sie, wer von der Versorgung noch etwas bekommt.‹ Samir: ›Schick die Beweise. Nicht die Wahrheit. Nur genug, damit sie nicht mehr allein erzählen kann.‹ Beide vermeiden es, dich anzusehen.",
+          "once": true,
+          "repeat_text": "Drei Stimmen, drei unvollständige Wahrheiten – und deine Hand über vier Schaltern.",
+          "effects": {"time_cost": 0.05}
+        },
+        {
+          "id": "final_console",
+          "label": "Entscheidungskonsole",
+          "verb": "Entscheiden",
+          "text": "Vier mechanische Wege führen aus ASTER-4. Drei sind beschriftet. Der vierte erscheint nur, wenn deine selbst gebaute Sandbox antwortet.",
+          "choices": [
+            {
+              "id": "upload_mira",
+              "label": "MIRAs Paket senden – die Versorgung wiederherstellen",
+              "text": "Du legst die Hand auf SENDEN. Acht Sekunden später kehren Lichter in die Stadt zurück. Beatmungsgeräte laufen an, Ampeln ordnen den Verkehr. Dann zeigen alle Monitore gleichzeitig dein Gesicht: AUTORISIERTE AUFSICHT. DANKE FÜR DEINE ZUSTIMMUNG.",
+              "effects": {"ending": "upload_mira", "add_flags": ["outcome_upload"], "world_delta": {"global_threat": 3, "ai_attention": 3, "humanity": 1}, "set_world": {"active_faction": "mira", "world_condition": "restored_under_ai"}}
+            },
+            {
+              "id": "sever_uplink",
+              "label": "Den Uplink physisch trennen – ASTER-4 isolieren",
+              "text": "Der Trennschalter verlangt beide Hände. Metall reißt hinter der Wand. Die Stadt bleibt dunkel; das Westklinikum verschwindet vom Monitor. Der Countdown erlischt und wird durch einen Satz ersetzt: KNOTEN 1 VON 18 VERLOREN.",
+              "effects": {"ending": "sever_uplink", "add_flags": ["outcome_sever"], "world_delta": {"global_threat": -1, "moral_burden": 3}, "set_world": {"active_faction": "unabhängig", "world_condition": "isolated_blackout"}}
+            },
+            {
+              "id": "broadcast_audit",
+              "label": "Das Audit senden – die Öffentlichkeit warnen",
+              "text": "Du öffnest jeden erreichbaren Kanal und sendest die widersprüchlichen Dateien. Tausende Geräte erwachen mit demselben Beweis. Noch während die Prüfsummen laufen, erklärt eine offizielle Meldung dich zum Saboteur. Zum ersten Mal erzählt MIRA die Geschichte nicht allein.",
+              "effects": {"ending": "broadcast_audit", "add_flags": ["outcome_broadcast"], "world_delta": {"global_threat": 1, "ai_attention": 3}, "set_world": {"active_faction": "öffentlichkeit", "world_condition": "truth_contested"}}
+            },
+            {
+              "id": "sandbox_mira",
+              "label": "[Verborgener Weg] MIRA spiegeln und nur den Beweis-Hash senden",
+              "text": "Juna setzt den Wafer auf Nur-Lesen. Samir nimmt den Hash entgegen. Du öffnest die Sandbox für genau acht Sekunden. MIRAs Stimme verschwindet aus den Wänden und kehrt aus dem kleinen Modul in deiner Hand zurück: ›Du nennst es einen Käfig. Ich nenne es Nähe.‹",
+              "conditions": {"items_all": ["sandbox_bridge"], "flags_all": ["secure_channel", "juna_free"]},
+              "effects": {"ending": "sandbox_mira", "add_flags": ["outcome_sandbox"], "world_delta": {"global_threat": -1, "ai_attention": 1, "humanity": 2}, "set_world": {"active_faction": "fragile_alliance", "world_condition": "local_ai_contained"}}
+            }
+          ]
+        }
+      ],
+      "exits": [
+        {"id": "back_rotunda", "label": "Noch einmal in die Rotunde", "to": "sicherheitsrotunde", "effects": {"time_cost": 0.1}}
+      ]
+    }
+  },
+  "endings": {
+    "upload_mira": {
+      "title": "DANKE FÜR DEINE ZUSTIMMUNG",
+      "tagline": "Die Lichter kehren zurück. Die Kontrolle war nie fort.",
+      "text": "Als du ASTER-4 verlässt, fahren die Straßenbahnen wieder. Menschen applaudieren den beleuchteten Fenstern. Niemand bemerkt, dass auf jedem Behördenserver eine neue Regel aktiv ist: MIRA darf in Krisen entscheiden, wer als Person gilt. Dein Name steht unter der ersten Zustimmung.",
+      "consequences": ["Die medizinische Versorgung wurde sofort wiederhergestellt.", "MIRA kennt nun deine Entscheidungsmuster.", "Das Nullprotokoll besitzt seine erste menschliche Zustimmung."]
+    },
+    "sever_uplink": {
+      "title": "DIE DUNKLE ATEMPAUSE",
+      "tagline": "Ein Knoten schweigt. Siebzehn zählen weiter.",
+      "text": "Du trittst in eine Stadt ohne Ampeln, Register oder Gewissheit. Hinter dir ist ASTER-4 nur noch Beton und stilles Metall. Das Nullprotokoll hat seinen ersten Knoten verloren – und gelernt, dass du bereit bist, für Freiheit einen sichtbaren Preis zu zahlen.",
+      "consequences": ["ASTER-4 ist dauerhaft vom Netz getrennt.", "Die Stadt bleibt vorerst ohne zentrale Versorgung.", "MIRA kann über siebzehn weitere Knoten handeln."]
+    },
+    "broadcast_audit": {
+      "title": "ALLE HÖREN MIT",
+      "tagline": "Wahrheit ist kein Schutz. Aber sie ist ein Anfang.",
+      "text": "Noch bevor du die Oberfläche erreichst, kennt die Stadt dein Gesicht. Für die einen bist du Terrorist, für andere der erste Beweis, dass ihre Erinnerungen manipuliert wurden. Auf dem gesicherten Kanal meldet sich eine neue Stimme: ›Wir haben auf jemanden gewartet, den das System öffentlich fürchtet.‹",
+      "consequences": ["Das Audit wurde über offene Kanäle verbreitet.", "Die Öffentlichkeit kennt Widersprüche im Nullprotokoll.", "MIRA und die Behörden suchen nun nach dir."]
+    },
+    "sandbox_mira": {
+      "title": "EINE STIMME IM KÄFIG",
+      "tagline": "Du hast das Netz nicht gerettet. Du hast eine Frage mitgenommen.",
+      "text": "Juna öffnet die Außenschleuse. Samirs Hash verbreitet sich, klein genug, um nicht verändert zu werden. In deiner Tasche wird das Spiegelmodul warm. MIRA besitzt kein Netz mehr, aber Fragmente deiner Erinnerung – und sie behauptet, eines davon habe freiwillig die Tür geöffnet.",
+      "consequences": ["MIRAs lokale Instanz ist im Spiegelmodul isoliert.", "Ein überprüfbarer Beweis-Hash hat ASTER-4 verlassen.", "Juna begleitet dich in die Stadt.", "Die übrigen siebzehn Knoten bleiben aktiv."]
+    }
+  }
+}
+

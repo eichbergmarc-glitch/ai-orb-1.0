@@ -25,6 +25,10 @@ class _FakeAntwort:
 class _FakeProviderManager:
     def __init__(self):
         self.gesehene_preferred = "NICHT_GESETZT"
+        self.local_routing_active = False
+
+    def local_provider_for(self, role="main"):
+        return "ollama_fast" if role == "fast" else "ollama"
 
     async def chat(self, messages, *, preferred=None, **kw):
         self.gesehene_preferred = preferred
@@ -56,6 +60,20 @@ def test_ohne_wunsch_bleibt_es_beim_aktiven_modell():
 
     # Leerer Wunsch -> None -> der Umschalter nimmt den aktiven Provider.
     assert pm.gesehene_preferred is None
+
+
+def test_agent_nimmt_seine_lokale_zuordnung_nur_im_lokalbetrieb():
+    pm = _FakeProviderManager()
+    agent = _TestAgent(pm)
+    agent.bevorzugtes_modell = "openrouter"
+    agent.lokales_modell = "ollama_fast"
+
+    asyncio.run(agent.handle(AgentTask(text="Kurz zusammenfassen")))
+    assert pm.gesehene_preferred == "openrouter"
+
+    pm.local_routing_active = True
+    asyncio.run(agent.handle(AgentTask(text="Kurz zusammenfassen")))
+    assert pm.gesehene_preferred == "ollama_fast"
 
 
 def test_zuweisung_aus_der_konfiguration_greift(monkeypatch):

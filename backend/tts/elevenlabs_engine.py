@@ -26,6 +26,7 @@ Beschränkung wie im ganzen Projekt.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import urllib.error
 import urllib.request
@@ -75,16 +76,24 @@ class ElevenLabsEngine(TtsEngine):
         self._api_key_env = str(self.option("api_key_env", "ELEVENLABS_API_KEY"))
         self._voice_id = str(self.option("voice_id", "")).strip()
 
-        # ``eleven_turbo_v2_5`` als Vorgabe – die preiswerte Wahl.
-        #
-        # ElevenLabs rechnet nach Zeichen ab, und die Modelle kosten
-        # unterschiedlich viel: ``eleven_multilingual_v2`` schlägt mit dem
-        # vollen Satz zu Buche, ``turbo_v2_5`` mit dem halben. Turbo
-        # beherrscht Deutsch, klingt sehr nah am großen Modell und
-        # antwortet dabei schneller – bei einer Stimme, die Satz für Satz
-        # erzeugt wird, ist das doppelt willkommen. Wer die letzte Nuance
-        # will, trägt ``eleven_multilingual_v2`` ein und zahlt das Doppelte.
-        self._model = str(self.option("model", "eleven_turbo_v2_5"))
+        # ``eleven_flash_v2_5`` ist die Echtzeit-Vorgabe. ElevenLabs fuehrt
+        # Turbo inzwischen als ueberholt und empfiehlt fuer interaktive
+        # Assistenten Flash: dieselbe deutsche Stimmenfamilie, aber deutlich
+        # geringere Modelllatenz. Die Stimme selbst wird weiterhin allein
+        # durch ``voice_id`` bestimmt; der Modellwechsel ersetzt also nicht
+        # die autorisierte ElevenLabs-Referenz durch eine andere Stimme.
+        self._model = str(self.option("model", "eleven_flash_v2_5"))
+        # Eine hoeher stabile, nicht kuenstlich ueberzeichnete Einstellung
+        # klingt bei Sachtexten sicherer. Zuvor war ``style`` direkt an die
+        # Tonhoehe der Emotion gekoppelt und lag im Normalfall bei 0.5. Das
+        # uebertrieb die Vorlagenprosodie und erzeugte lange dramatische
+        # Denkpausen. Alle Werte bleiben konfigurierbar.
+        self._stability = max(0.0, min(1.0, float(self.option("stability", 0.58))))
+        self._similarity = max(
+            0.0, min(1.0, float(self.option("similarity_boost", 0.85)))
+        )
+        self._style = max(0.0, min(1.0, float(self.option("style", 0.0))))
+        self._speaker_boost = bool(self.option("use_speaker_boost", True))
 
         #: Merker für die selbst gewählte Stimme, damit die Liste nur
         #: einmal je Sitzung abgefragt wird.
@@ -93,6 +102,22 @@ class ElevenLabsEngine(TtsEngine):
     @property
     def api_key(self) -> str:
         return os.environ.get(self._api_key_env, "").strip()
+
+    def target_path(self, request: SpeechRequest) -> Path:
+        """Bindet auch Modell, Stimme und Prosodie in den Cache ein.
+
+        Ohne diese Erweiterung wurde nach einer Aenderung der
+        Stimmeinstellungen weiterhin die alte WAV-Datei abgespielt, weil der
+        gemeinsame Cache nur Text und Tempo kannte.
+        """
+
+        einstellungen = (
+            f"{request.cache_key()}|{self._model}|{self._voice_id}|"
+            f"{self._stability:.3f}|{self._similarity:.3f}|{self._style:.3f}|"
+            f"{int(self._speaker_boost)}"
+        )
+        schluessel = hashlib.sha256(einstellungen.encode("utf-8")).hexdigest()[:24]
+        return self._output_directory / f"{self.name}-{schluessel}.wav"
 
     # --- Verfügbarkeit ---------------------------------------------------------
 
@@ -208,12 +233,13 @@ class ElevenLabsEngine(TtsEngine):
                 "text": request.text,
                 "model_id": self._model,
                 "voice_settings": {
-                    # Aus der Sprechgeschwindigkeit/Betonung des Requests
-                    # abgeleitet. „stability“ niedriger = lebendiger,
-                    # „similarity_boost“ hoch = näher an der Vorlagenstimme.
-                    "stability": 0.4,
-                    "similarity_boost": 0.85,
-                    "style": min(1.0, max(0.0, request.pitch)),
+                    "stability": self._stability,
+                    "similarity_boost": self._similarity,
+                    "style": self._style,
+                    "use_speaker_boost": self._speaker_boost,
+                    # Anders als bisher erreicht das in AI-Orb eingestellte
+                    # Tempo jetzt auch die Cloud-Stimme.
+                    "speed": max(0.7, min(1.2, request.speed)),
                 },
             }
         ).encode("utf-8")
@@ -260,6 +286,10 @@ class ElevenLabsEngine(TtsEngine):
                 error=(
                     f"ElevenLabs antwortete mit {error.code}: {hinweis or detail}"
                 ),
+                # Ein abgelehnter Schluessel wird waehrend derselben
+                # Sitzung nicht ploetzlich gueltig. Ohne dieses Merkmal
+                # wartete jede neue Antwort erneut auf denselben Fehler.
+                context={"fatal_for_session": error.code in (401, 403)},
             )
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             return SpeechResult(engine=self.name, error=f"ElevenLabs nicht erreichbar: {error}")
@@ -288,3 +318,14 @@ class ElevenLabsEngine(TtsEngine):
     def voices(self) -> list[dict[str, str]]:
         gewaehlt = self._voice_id or self._resolved_voice
         return [{"engine": self.name, "voice": gewaehlt or "(wird beim ersten Sprechen gewählt)"}]
+
+    def status(self) -> dict[str, Any]:
+        status = super().status()
+        status.update(
+            {
+                "voice_id": self._voice_id or self._resolved_voice,
+                "model": self._model,
+                "low_latency": self._model.startswith("eleven_flash_"),
+            }
+        )
+        return status

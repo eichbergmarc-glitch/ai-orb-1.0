@@ -1,0 +1,394 @@
+###KONSTANTEN###
+#: Wie lange EINE Netzanfrage der Websuche hoechstens dauern darf.
+#:
+#: Zwoelf Sekunden fielen nicht auf, solange die Maschinen nacheinander
+#: gefragt wurden und meist schon die erste antwortete. Im schlechten Fall
+#: ergaben zwei Maschinen mal zwei Anfragevarianten mal zwoelf Sekunden
+#: aber achtundvierzig Sekunden, in denen der Benutzer eine stumme Kugel
+#: ansieht. Acht genuegen: Was eine Suchmaschine nach acht Sekunden nicht
+#: geliefert hat, liefert sie meist gar nicht mehr.
+_ANFRAGE_ZEITLIMIT = 8.0
+
+#: Wie viel eine einzelne Antwort hoechstens umfassen darf.
+#:
+#: Ohne diese Grenze war die Suche nicht nur langsam, sondern konnte
+#: wirklich haengen bleiben. ``response.read()`` ohne Groessenangabe liest,
+#: solange die Gegenseite sendet, und das Zeitlimit von ``urlopen`` gilt je
+#: Datenpaket, nicht fuer die ganze Uebertragung. Eine Gegenstelle, die
+#: langsam tropft statt zu schweigen, haelt den Faden damit beliebig lange
+#: fest - kein Zeitlimit der Welt greift dort, weil formal nie etwas
+#: ausbleibt.
+_ANTWORT_HOECHSTENS = 3_000_000
+
+#: Wie lange eine besser platzierte Maschine noch nachkommen darf.
+#:
+#: Die Rangfolge der Maschinen soll erhalten bleiben - aber nicht um jeden
+#: Preis. Haengt die erste und antwortet die zweite sofort, waere es
+#: unsinnig, die fertige Antwort zurueckzuhalten, bis die haengende ihre
+#: volle Frist ausgeschoepft hat. Also: Sobald eine Maschine etwas
+#: Brauchbares hat, bekommen die besser platzierten noch diese Frist - und
+#: dann wird geliefert, was da ist.
+_RANGFRIST = 2.5
+
+#: Wie lange die GESAMTE Websuche hoechstens dauern darf.
+#:
+#: Die Zahl ist die eigentliche Zusage an den Benutzer: Nach dieser Zeit
+#: kommt eine Antwort - notfalls die, dass nichts zu finden war. Vorher gab
+#: es diese Zusage nicht, sondern nur eine Kette von Einzelfristen, die
+#: sich addierten.
+_SUCH_GESAMTBUDGET = 20.0
+###ENDE###
+
+###_fetch###
+def _fetch(
+    url: str,
+    *,
+    data: bytes | None = None,
+    timeout: float = _ANFRAGE_ZEITLIMIT,
+    hoechstens: int = _ANTWORT_HOECHSTENS,
+) -> bytes:
+    """Holt eine Adresse und gibt die rohen Bytes zurueck.
+
+    Zwei Grenzen, die vorher fehlten: eine Frist fuer die GESAMTE
+    Uebertragung und eine Obergrenze fuer ihre Groesse. Das Zeitlimit von
+    ``urlopen`` allein genuegt nicht - es gilt je Datenpaket. Wer langsam
+    tropft statt zu schweigen, kommt daran vorbei.
+    """
+
+    # Ein vollstaendiger Satz Browser-Kopfzeilen. Mojeek und Ecosia wiesen
+    # die Anfrage mit 403 ab, wenn nur User-Agent und Sprache mitkamen: Eine
+    # Anfrage ohne "Accept" und ohne die "Sec-Fetch"-Angaben sieht nicht aus
+    # wie ein Browser, der eine Seite oeffnet, sondern wie ein Skript.
+    kopf = {
+        "User-Agent": _USER_AGENT,
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Accept-Language": "de-DE,de;q=0.9,en;q=0.5",
+        "Accept-Encoding": "gzip",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "DNT": "1",
+    }
+    if data is not None:
+        # POST-Suchen (DuckDuckGo) schicken ein Formular ab; dann passt der
+        # Formular-Kopf besser als "ich oeffne eine Seite frisch".
+        kopf["Content-Type"] = "application/x-www-form-urlencoded"
+        kopf["Sec-Fetch-Site"] = "same-origin"
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers=kopf,
+        method="POST" if data is not None else "GET",
+    )
+
+    frist = time.monotonic() + max(1.0, float(timeout))
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        verpackt = str(response.headers.get("Content-Encoding", "")).lower()
+        stuecke: list[bytes] = []
+        gelesen = 0
+        while gelesen < hoechstens:
+            if time.monotonic() >= frist:
+                # Bewusst OSError-Verwandtschaft: Die Aufrufer behandeln das
+                # als "nicht erreichbar" und gehen zur naechsten Quelle.
+                raise TimeoutError(
+                    "Die Antwort kam nicht vollstaendig in "
+                    f"{float(timeout):.0f} Sekunden an."
+                )
+            # ``read1`` statt ``read``: ``read`` liefert erst zurueck, wenn
+            # die verlangte Menge beisammen ist - eine Gegenstelle, die
+            # tropft, haelt einen einzigen Aufruf damit stundenlang fest,
+            # und die Fristpruefung hier oben kaeme nie an die Reihe.
+            # ``read1`` gibt zurueck, was gerade da ist.
+            lesen = getattr(response, "read1", response.read)
+            brocken = lesen(min(65536, hoechstens - gelesen))
+            if not brocken:
+                break
+            stuecke.append(brocken)
+            gelesen += len(brocken)
+    roh = b"".join(stuecke)
+
+    if verpackt == "gzip" and roh:
+        # ``decompressobj`` statt ``GzipFile``: Wurde oben an der Groessen-
+        # grenze abgeschnitten, liefert es den entpackten Anfang, statt an
+        # einem unvollstaendigen Strom zu scheitern.
+        entpacker = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        try:
+            roh = entpacker.decompress(roh, hoechstens)
+        except zlib.error as fehler:
+            raise OSError(f"Antwort war nicht zu entpacken ({fehler})") from fehler
+    return roh
+###ENDE###
+
+###search_web###
+def search_web(query: str, *, limit: int = 6) -> list[dict[str, str]]:
+    """Sucht im Internet und gibt Titel, Adresse und Beschreibung zurueck.
+
+    Die Suche hat jetzt ein Gesamtbudget: Nach ``_SUCH_GESAMTBUDGET``
+    Sekunden kommt eine Antwort - notfalls die, dass nichts zu finden war.
+    Vorher gab es diese Zusage nicht. Die Zugaenge wurden nacheinander
+    versucht, jeder mit eigener Frist, und die Fristen addierten sich: zwei
+    Maschinen mal zwei Anfragevarianten mal zwoelf Sekunden. Genau das
+    erlebt der Benutzer als Haenger.
+
+    Scheitern alle Zugaenge, wird der Fehler mit der Art des Scheiterns
+    geworfen, damit der Aufrufer sagen kann, woran es liegt.
+    """
+
+    query = suchbegriff_aus(query, hoechstens=180)
+    begonnen = time.monotonic()
+    ende = begonnen + _SUCH_GESAMTBUDGET
+
+    # Allgemeine Alltagssuchen (Produkte, Preise, Oeffnungszeiten, konkrete
+    # Webseiten) brauchen einen echten Webindex. Eine Wikipedia-Antwort ist
+    # dort kein Erfolg. Bing liefert dafuer eine strukturierte RSS-Liste;
+    # DuckDuckGo Lite ist der zweite, unabhaengige Zugang.
+    web_zuerst = _allgemeine_websuche_zuerst(query)
+    normale_maschinen = tuple(
+        maschine for maschine in _SUCHMASCHINEN if maschine.name in NORMALE_MASCHINEN
+    )
+    maschinen = _SUCHMASCHINEN if ALTMASCHINEN_AKTIV else normale_maschinen
+    fehlschlaege: list[_Suchfehler] = []
+    gruende: list[str] = []
+    #: Treffer, die eine Maschine geliefert hat, die aber der Relevanzfilter
+    #: verworfen hat. Sie sind der Notweg: Lieber lose passende Treffer als
+    #: gar keine Antwort - der Orb sagt dann selbst dazu, dass sie nur lose
+    #: passen.
+    notweg: list[dict[str, str]] = []
+
+    def _ein_maschinenweg(
+        maschine: _Maschine,
+    ) -> tuple[str, list[dict[str, str]], _Suchfehler | None]:
+        """Eine Maschine, ihre Anfragevarianten der Reihe nach.
+
+        Die Varianten bleiben nacheinander - sie gehen an denselben Dienst,
+        und zwei gleichzeitige Anfragen an dieselbe Suchmaschine sind genau
+        das Verhalten, das dort als Automat gilt. Zwischen den Varianten
+        wird die Frist geprueft.
+        """
+
+        letzter: _Suchfehler | None = None
+        for variante in _web_anfragevarianten(query):
+            if time.monotonic() >= ende:
+                return "", [], _Suchfehler(
+                    "zu_langsam", f"{maschine.name} kam nicht mehr an die Reihe."
+                )
+            try:
+                treffer = _einmal_suchen(maschine, variante, limit)
+            except _Suchfehler as fehler:
+                letzter = fehler
+                continue
+            if treffer:
+                return variante, treffer, None
+        return "", [], letzter
+
+    def _web_suchen() -> list[dict[str, str]]:
+        """Fragt die Maschinen GLEICHZEITIG und nimmt die erste brauchbare.
+
+        Nacheinander war hier kein Gewinn - die Maschinen wissen nichts
+        voneinander, und keine wird besser dadurch, dass eine andere vorher
+        gescheitert ist. Gleichzeitig kostet das Ganze so lange wie die
+        langsamste und nie laenger als das verbleibende Budget.
+
+        Die REIHENFOLGE bleibt trotzdem erhalten: Ausgewertet wird nach der
+        Rangfolge der Maschinen, nicht danach, wer zuerst fertig war. Sonst
+        entschiede die Tagesform des Netzes, welche Quelle vorn steht.
+        """
+
+        rest = ende - time.monotonic()
+        if rest <= 0.5 or not maschinen:
+            return []
+
+        rang = [maschine.name for maschine in maschinen]
+        #: Was eine Maschine am Ende beigetragen hat: die brauchbaren
+        #: Treffer, oder eine leere Liste, wenn sie nichts Passendes hatte.
+        #: Ein Name, der hier fehlt, bedeutet: laeuft noch.
+        fertig: dict[str, list[dict[str, str]]] = {}
+
+        def _auswerten(maschine: _Maschine, variante: str,
+                       treffer: list[dict[str, str]]) -> list[dict[str, str]]:
+            relevante = _relevante_treffer(query, treffer)
+            if not relevante:
+                if treffer and not notweg:
+                    notweg.extend(treffer[:limit])
+                # Eigene Art: Die Maschine hat geantwortet UND Treffer
+                # geliefert - sie passten nur nicht. Das ist fast immer der
+                # Suchbegriff, nie eine Sperre.
+                meldung = f"{maschine.name} lieferte nur themenfremde Treffer."
+                gruende.append(meldung)
+                fehlschlaege.append(_Suchfehler("themenfremd", meldung))
+                return []
+            if variante and variante != query:
+                logger.info(
+                    "Websuche ueber %s mit bereinigter Anfrage beantwortet.",
+                    maschine.name,
+                )
+            else:
+                logger.info("Websuche ueber %s beantwortet.", maschine.name)
+            return relevante[:limit]
+
+        def _entschieden() -> list[dict[str, str]] | None:
+            """Steht das Ergebnis schon fest, ohne die Rangfolge zu brechen?
+
+            Die Rangfolge wird von vorn abgegangen. Laeuft eine Maschine
+            noch, ist nichts entschieden - eine bessere koennte noch
+            kommen. Ist sie durch und hat etwas, ist das die Antwort.
+            """
+
+            for name in rang:
+                if name not in fertig:
+                    return None
+                if fertig[name]:
+                    return fertig[name]
+            return []
+
+        pool = ThreadPoolExecutor(max_workers=min(4, len(maschinen)))
+        offen: dict[Future, _Maschine] = {}
+        try:
+            for maschine in maschinen:
+                offen[pool.submit(_ein_maschinenweg, maschine)] = maschine
+
+            grenze = ende
+            while offen and time.monotonic() < grenze:
+                getan, _ = wait(
+                    list(offen),
+                    timeout=max(0.1, grenze - time.monotonic()),
+                    return_when=FIRST_COMPLETED,
+                )
+                if not getan:
+                    break
+                for auftrag in getan:
+                    maschine = offen.pop(auftrag)
+                    try:
+                        variante, treffer, fehler = auftrag.result()
+                    except Exception as ausnahme:  # noqa: BLE001 - eine Maschine reisst die andern nicht mit.
+                        meldung = f"{maschine.name}: {ausnahme}"
+                        logger.info("Websuche abgebrochen: %s", meldung)
+                        gruende.append(meldung)
+                        fehlschlaege.append(_Suchfehler("unlesbar", meldung))
+                        fertig[maschine.name] = []
+                        continue
+                    if fehler is not None:
+                        logger.warning(
+                            "Suche ueber %s gescheitert: %s", maschine.name, fehler
+                        )
+                        gruende.append(str(fehler))
+                        fehlschlaege.append(fehler)
+                    fertig[maschine.name] = (
+                        _auswerten(maschine, variante, treffer) if treffer else []
+                    )
+
+                ergebnis = _entschieden()
+                if ergebnis:
+                    return ergebnis
+                if ergebnis == []:
+                    # Alle sind durch, keine hatte etwas.
+                    break
+                # Etwas Brauchbares liegt vor, aber eine besser platzierte
+                # Maschine laeuft noch: Ihr wird die Rangfrist eingeraeumt,
+                # nicht das ganze Budget.
+                if grenze == ende and any(fertig.get(name) for name in rang):
+                    grenze = min(ende, time.monotonic() + _RANGFRIST)
+        finally:
+            # OHNE Warten beenden. Sonst wartete der Ausstieg auf jeden noch
+            # laufenden Faden - dann waere das Budget oben nur eine
+            # Behauptung und die langsamste Maschine bestimmte doch wieder
+            # alles. Ein Nachzuegler laeuft im Hintergrund aus; laenger als
+            # das Zeitlimit einer einzelnen Anfrage kann er nicht brauchen.
+            for auftrag, maschine in offen.items():
+                auftrag.cancel()
+                meldung = f"{maschine.name} kam nicht rechtzeitig."
+                logger.info("Websuche: %s", meldung)
+                gruende.append(meldung)
+                fehlschlaege.append(_Suchfehler("zu_langsam", meldung))
+            pool.shutdown(wait=False)
+
+        # Nach Rangfolge nehmen, was angekommen ist.
+        for name in rang:
+            if fertig.get(name):
+                return fertig[name]
+        return []
+
+    def _fertig(treffer: list[dict[str, str]]) -> list[dict[str, str]]:
+        logger.info(
+            "Websuche zu %r nach %.1f s beendet: %d Treffer.",
+            query[:60], time.monotonic() - begonnen, len(treffer),
+        )
+        return treffer
+
+    if web_zuerst:
+        webtreffer = _web_suchen()
+        if webtreffer:
+            return _fertig(webtreffer)
+        # Produkt-, Preis-, Lokal- und Vergleichssuchen werden durch einen
+        # Enzyklopaedieartikel nicht gerettet. Lieber ein ehrlicher
+        # Suchfehler als eine Liste, die zur Frage nicht passt.
+        if _ist_alltagssuche(query):
+            if notweg:
+                logger.warning(
+                    "Websuche nur ueber den Notweg beantwortet: Die Treffer "
+                    "passen dem Filter nach nicht zur Anfrage %r.", query
+                )
+                return _fertig(notweg[:limit])
+            # ... ABER nur, solange unter den offenen Quellen kein echter
+            # Webindex steckt. Genau der Abbruch hier war der Grund, warum
+            # ein hinterlegter Google-Schluessel bei Preis- und
+            # Oeffnungszeitenfragen wirkungslos blieb.
+            if not _echter_webindex_verfuegbar():
+                raise _Suchfehler(
+                    _hauptursache(fehlschlaege),
+                    (" ".join(gruende) or "Die allgemeine Websuche blieb leer.")
+                    + " Die Fachquellen passen nicht zu einer Alltagssuche.",
+                )
+
+    # ZUERST die Dienste, die einen Automaten nicht abweisen koennen - ausser
+    # bei den gerade behandelten allgemeinen Webanfragen.
+    #
+    # GDELT, Wikipedia, OpenAlex und Crossref SIND fuer Programme gemacht.
+    # Sie verlangen keine Tarnung, sondern eine ehrliche Kennung. Deshalb
+    # stehen sie hier vorn und die Trefferseiten dahinter.
+    if time.monotonic() < ende - 1.0:
+        try:
+            from backend.research.offene_quellen import offene_suche
+
+            offene, benutzt = offene_suche(query, limit=limit)
+            relevante_offene = _relevante_treffer(query, offene)
+            if relevante_offene:
+                logger.info(
+                    "Suche ueber offene Quellen beantwortet (%s).", ", ".join(benutzt)
+                )
+                return _fertig(relevante_offene[:limit])
+            if offene:
+                logger.warning(
+                    "Offene Quellen lieferten nur themenfremde Treffer fuer %r.", query
+                )
+        except Exception:  # noqa: BLE001 - der alte Weg bleibt als Ausweg bestehen.
+            logger.exception("Die offenen Quellen liessen sich nicht befragen.")
+
+    # Fuer Sach-, Nachrichten- und Literaturfragen waren die offenen Quellen
+    # zuerst dran. Blieben sie leer, kommt jetzt der strukturierte
+    # Web-Fallback - sofern vom Budget noch etwas uebrig ist.
+    if not web_zuerst:
+        webtreffer = _web_suchen()
+        if webtreffer:
+            return _fertig(webtreffer)
+
+    if notweg:
+        logger.warning(
+            "Websuche nur ueber den Notweg beantwortet: Die Treffer passen "
+            "dem Filter nach nicht zur Anfrage %r.", query
+        )
+        return _fertig(notweg[:limit])
+
+    raise _Suchfehler(
+        _hauptursache(fehlschlaege),
+        (" ".join(gruende) or "Kein Zugang hat geantwortet.")
+        + " Auch die offenen Quellen (GDELT, Wikipedia, OpenAlex) haben nichts "
+        "geliefert. Womit das zusammenhaengt, zeigt SUCHE-PRUEFEN.bat: Es "
+        "fragt jede Quelle einzeln und nennt den Grund im Klartext.",
+    )
+###ENDE###

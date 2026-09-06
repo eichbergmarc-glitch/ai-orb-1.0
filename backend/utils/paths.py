@@ -72,23 +72,33 @@ def get_project_root() -> Path:
 
 #: Merkt sich das Ergebnis der Schreibprobe je Ordner. Die Pfadfragen werden
 #: bei jedem Protokolleintrag gestellt; die Probe muss nicht jedes Mal eine
-#: Datei anfassen.
-_write_probe_cache: dict[str, bool] = {}
+#: Datei anfassen. Mit TTL zur automatischen Invalidierung nach 10 Minuten.
+_write_probe_cache: dict[str, tuple[bool, float]] = {}
+_PROBE_CACHE_TTL: float = 600.0  # 10 Minuten
 
 
 def _directory_is_writable(directory: Path) -> bool:
     """Ob sich in einem Ordner tatsächlich schreiben lässt.
-
+    
+    Nutzt Caching mit TTL um wiederholte Prüfungen zu vermeiden.
     Windows beantwortet diese Frage verlässlich nur durch Ausprobieren –
     Zugriffsrechte theoretisch auszuwerten scheitert an UAC und
     Virtualisierung. Also wird kurz eine Probedatei angelegt und wieder
     entfernt.
     """
-
+    import time
+    
     key = str(directory)
     cached = _write_probe_cache.get(key)
+    
+    # Prüfe Cache-Gültigkeit (TTL)
     if cached is not None:
-        return cached
+        result, timestamp = cached
+        if time.time() - timestamp < _PROBE_CACHE_TTL:
+            return result
+        else:
+            # Cache abgelaufen
+            del _write_probe_cache[key]
 
     probe = directory / ".schreibprobe"
     try:
@@ -98,7 +108,7 @@ def _directory_is_writable(directory: Path) -> bool:
     except OSError:
         result = False
 
-    _write_probe_cache[key] = result
+    _write_probe_cache[key] = (result, time.time())
     return result
 
 

@@ -279,7 +279,13 @@ class MemoryEngine:
 
         for record in self._store.all():
             # Aufgaben und Benutzerangaben unterliegen nicht dem Vergessen.
-            if record.kind == "task":
+            #
+            # Publikationen auch nicht, und das war ein stiller Widerspruch:
+            # Der Aktualisierungskreislauf trug Fachliteratur ein, damit sie
+            # da ist - und das Vergessen raeumte nach der Halbwertszeit
+            # genau die Eintraege wieder weg, die nie jemand aufgerufen
+            # hatte. Eine Literaturliste, die sich selbst leert, ist keine.
+            if record.kind in {"task", "publikation"}:
                 continue
 
             age = max(0.0, now - record.updated_at)
