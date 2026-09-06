@@ -148,6 +148,39 @@ class TtsManager:
         self._failure_cooldown_seconds = max(
             5.0, float(config.get("voice.output.failure_cooldown_seconds", 90))
         )
+
+        # Die Frist auf EINEN Syntheseversuch.
+        #
+        # Sie fehlte, und das war der groesste einzelne Befund des
+        # Betriebsprotokolls: Von 694 erzeugten Antworten wurden 281 nie
+        # gesprochen - und nur 4 davon kamen ueberhaupt bis zum fertigen
+        # Ton. Der Abbruch lag also VOR der Synthese.
+        #
+        # Der Grund steht eine Seite weiter unten: ``await
+        # asyncio.to_thread(engine.synthesize_blocking, ...)`` hatte keine
+        # Frist. Ein Verfahren, das FEHLSCHLAEGT, meldet sich und das
+        # naechste uebernimmt. Ein Verfahren, das HAENGT, tat beides nicht:
+        # keine Zeile im Protokoll, kein Wechsel, kein Ton - und der Orb
+        # hielt sich weiter fuer sprechend (am 06.09. ueber eine Minute
+        # lang, nachzuzaehlen an 202 Hoerfenstern des Stop-Spaehers).
+        #
+        # Auch ein Zeitlimit auf dem Socket schuetzt davor nicht: Es gilt je
+        # Leseoperation, nicht fuer den ganzen Vorgang. Ein Dienst, der
+        # langsam tropft, laeuft nie hinein.
+        #
+        # Die Frist waechst mit der Laenge des Satzes - ein langer Satz darf
+        # laenger dauern als ein kurzer, aber nicht unbegrenzt.
+        self._synthese_frist = max(
+            5.0, float(config.get("voice.output.synthesis_timeout_seconds", 40))
+        )
+        self._synthese_frist_je_100 = max(
+            0.0, float(config.get("voice.output.synthesis_timeout_per_100_chars", 8))
+        )
+        self._synthese_frist_hoechstens = max(
+            self._synthese_frist,
+            float(config.get("voice.output.synthesis_timeout_max_seconds", 180)),
+        )
+
         self._engine_failed_until: dict[str, float] = {}
         self._engine_failure_reasons: dict[str, str] = {}
         # Ein bestaetigter Netzwerkfehler eines Sprachdienstes gilt fuer alle
@@ -521,6 +554,20 @@ class TtsManager:
             self._spoken_count += 1
         return result
 
+    def _frist_fuer(self, request: SpeechRequest) -> float:
+        """Wie lange ein einzelnes Verfahren fuer diesen Satz brauchen darf.
+
+        ``getattr`` mit Vorgabewert wie an den Nachbarstellen: Der Manager
+        wird an mehreren Stellen ueber ``__new__`` aufgebaut, und eine
+        fehlende Einstellung darf nicht die Sprachausgabe reissen - dann
+        gaebe es wieder genau die Stille, gegen die diese Frist steht.
+        """
+
+        grund = float(getattr(self, "_synthese_frist", 40.0))
+        je_100 = float(getattr(self, "_synthese_frist_je_100", 8.0))
+        hoechstens = float(getattr(self, "_synthese_frist_hoechstens", 180.0))
+        return min(hoechstens, grund + len(request.text) / 100.0 * je_100)
+
     async def _synthesize_with_fallback(
         self, request: SpeechRequest, *, bypass_cache: bool = False
     ) -> SpeechResult:
@@ -568,7 +615,23 @@ class TtsManager:
                     from_cache=True,
                 )
 
-            result = await asyncio.to_thread(engine.synthesize_blocking, request, target)
+            frist = self._frist_fuer(request)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(engine.synthesize_blocking, request, target),
+                    timeout=frist,
+                )
+            except asyncio.TimeoutError:
+                # Der Arbeitsfaden laeuft weiter - ``to_thread`` laesst sich
+                # nicht abbrechen. Das ist hinnehmbar: Er schreibt in eine
+                # eigene Zieldatei und endet von selbst. Wichtig ist, dass
+                # DIESER Weg weitergeht, statt fuer immer zu warten.
+                result = SpeechResult(
+                    error=(
+                        f"{engine.name}: hat innerhalb von {frist:.0f} s nicht "
+                        "geliefert und wurde aufgegeben."
+                    )
+                )
 
             if result.succeeded:
                 self._engine_failed_until.pop(engine.name, None)

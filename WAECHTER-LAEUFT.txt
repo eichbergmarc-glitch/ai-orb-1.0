@@ -1,5 +1,5 @@
 ﻿Der Neustart-Waechter laeuft.
-Letztes Lebenszeichen: 2026-09-06 15:42:23
+Letztes Lebenszeichen: 2026-09-06 15:54:56
 
 Neustart ausloesen:      Datei NEUSTART-BITTE.txt in diesen Ordner legen.
 Mikrofon nachsehen:      Datei MIKROFON-PRUEFEN-BITTE.txt hierher legen.

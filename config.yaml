@@ -622,6 +622,18 @@ voice:
     emotions_enabled: true
     cache_enabled: true
     failure_cooldown_seconds: 90
+    # Wie lange EIN Verfahren fuer EINEN Satz brauchen darf.
+    #
+    # Ohne diese Frist machte ein haengendes Verfahren den Orb stumm, ohne
+    # eine Zeile zu schreiben: kein Fehler, kein Stimmwechsel, kein Ton.
+    # Im Protokoll bis zum 06.09. sind das 281 von 694 Antworten.
+    #
+    # Die Frist waechst mit der Satzlaenge (Grundwert plus Zuschlag je 100
+    # Zeichen) und ist nach oben gedeckelt. Laeuft ein Verfahren hinein,
+    # gilt es als fehlgeschlagen und das naechste uebernimmt.
+    synthesis_timeout_seconds: 40
+    synthesis_timeout_per_100_chars: 8
+    synthesis_timeout_max_seconds: 180
     max_characters: 260
     warmup_text: Bereit.
     supertonic:
