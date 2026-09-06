@@ -29,6 +29,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any
 
+from backend.config import get_config
 from backend.system.logging_setup import get_logger
 from backend.tools.base_tool import Tool, ToolParameter, ToolResult
 
@@ -1451,13 +1452,56 @@ class ReadWebpageTool(Tool):
 
         import asyncio
 
+        # Zwei Fristen, und beide fehlten.
+        #
+        # Am 06.09.2026 um 15:53 kostete EIN Aufruf dieses Werkzeugs
+        # 12,1 Sekunden - fuer eine Absage:
+        #
+        #     Werkzeug 'webseite_lesen' fehlgeschlagen (12.1 s):
+        #     Die Seite meldete 403 fuer https://www.comparis.ch/telecom/
+        #
+        # Ein Drittel der gesamten Wartezeit dieser Anfrage, fuer ein
+        # "nein". Die 12,1 s sind exakt das Zeitlimit in ``_fetch`` - und
+        # das ist ein Zeitlimit JE LESEOPERATION, keine Gesamtfrist. Eine
+        # Seite, die die Verbindung annimmt und dann schweigt, schoepft es
+        # aus; eine mit Umleitungen kann es mehrfach ausschoepfen.
+        #
+        # Im gesprochenen Dialog ist eine Seite, die nicht zuegig
+        # antwortet, ohnehin verloren: Der Benutzer wartet vor dem
+        # Lautsprecher. Ein ehrliches "hat nicht geantwortet" nach ein paar
+        # Sekunden ist mehr wert als ein spaeter Volltext.
+        einstellungen = get_config()
+        verbindungsfrist = max(
+            1.0, float(einstellungen.get("tools.webseite_lesen.verbindungsfrist_sekunden", 5))
+        )
+        gesamtfrist = max(
+            verbindungsfrist,
+            float(einstellungen.get("tools.webseite_lesen.gesamtfrist_sekunden", 8)),
+        )
+
         def _read() -> str:
             extractor = _TextExtractor()
-            extractor.feed(_decode(_fetch(url)))
+            extractor.feed(_decode(_fetch(url, timeout=verbindungsfrist)))
             return extractor.text()
 
         try:
-            text = await asyncio.to_thread(_read)
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_read), timeout=gesamtfrist
+            )
+        except asyncio.TimeoutError:
+            # Der Arbeitsfaden liest zu Ende und wirft das Ergebnis weg -
+            # ``to_thread`` laesst sich nicht abbrechen. Wichtig ist, dass
+            # der Dialogzug weitergeht.
+            logger.info(
+                "Die Seite %s hat innerhalb von %.0f s nicht geantwortet; "
+                "der Zug geht ohne sie weiter.",
+                url,
+                gesamtfrist,
+            )
+            return ToolResult.failure(
+                f"Die Seite {url} hat innerhalb von {gesamtfrist:.0f} Sekunden "
+                "nicht geantwortet."
+            )
         except urllib.error.HTTPError as error:
             return ToolResult.failure(f"Die Seite meldete {error.code} für {url}.")
         except urllib.error.URLError as error:

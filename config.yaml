@@ -810,6 +810,18 @@ recherche:
 tools:
   enabled: true
   max_rounds: 4
+  webseite_lesen:
+    # Fristen fuer das Lesen EINER Seite.
+    #
+    # Am 06.09.2026 kostete ein einziger Aufruf 12,1 Sekunden fuer ein
+    # 403 - ein Drittel der Wartezeit dieser Anfrage, fuer eine Absage.
+    # Die 12 s waren das Zeitlimit je Leseoperation; eine Gesamtfrist gab
+    # es nicht.
+    #
+    # Im gesprochenen Dialog ist eine Seite, die nicht zuegig antwortet,
+    # ohnehin verloren - der Benutzer wartet vor dem Lautsprecher.
+    verbindungsfrist_sekunden: 5
+    gesamtfrist_sekunden: 8
   # Wie oft ein ungueltiger Werkzeugaufruf zur Verbesserung an das
   # Modell zurueckgeht, bevor der Zug ehrlich abgebrochen wird.
   reparatur_versuche: 1
