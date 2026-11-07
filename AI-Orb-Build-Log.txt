@@ -1,4 +1,4 @@
-﻿AI-Orb Build-Protokoll - 2026-11-03 14:50:58
+﻿AI-Orb Build-Protokoll - 2026-11-07 06:43:53
 
 --- powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\scripts\prepare-runtime.ps1 ---
 
@@ -26,7 +26,7 @@
 System.Management.Automation.RemoteException
   desktop\electron\dist\renderer\renderer.js  1.1mb
 System.Management.Automation.RemoteException
-Done in 57ms
+Done in 59ms
 System.Management.Automation.RemoteException
   desktop\electron\dist\renderer\flipper-center.js  2.2kb
 System.Management.Automation.RemoteException
@@ -64,76 +64,76 @@ Done in 4ms
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\python.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-marian-converter.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\cffi-gen-src.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-fairseq-converter.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-openai-gpt2-converter.exe
-  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
-  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\cffi-gen-src.exe
-  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
-  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opennmt-tf-converter.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-marian-converter.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opennmt-py-converter.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-transformers-converter.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opus-mt-converter.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opus-mt-converter.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-openai-gpt2-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opennmt-tf-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-transformers-converter.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\wheel.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tiny-agents.exe
-  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
-  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tqdm.exe
-  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
-  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tabulate.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\supertonic.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip3.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tiny-agents.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\piper.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tabulate.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip3.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pyav.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\piper.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip3.11.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\numpy-config.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\onnxruntime_test.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\idna.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\numpy-config.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\httpx2.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\hf.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\idna.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\httpx.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\hf.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\f2py.exe
@@ -148,40 +148,39 @@ Done in 4ms
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-arm64.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-64.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-64.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-arm64.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-32.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli-arm64.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli-arm64.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli-64.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
-  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli-32.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\w64.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\t64-arm.exe
-  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
-  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\t32.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
-  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\w64-arm.exe
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\t64-arm.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\w32.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\w64-arm.exe
   ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
   ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
   ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\t64.exe
