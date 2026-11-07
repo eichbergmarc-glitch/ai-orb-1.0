@@ -995,5 +995,10 @@ def create_server(runtime: Runtime) -> LocalApiServer:
         broker=broker,
         sse_path=str(backend_config.get("events_path", "/events")),
         static_root=_oberflaeche_finden(),
+        zugang_offen=(
+            bool(backend_config["ohne_losungswort"])
+            if "ohne_losungswort" in backend_config
+            else None
+        ),
     )
     return server

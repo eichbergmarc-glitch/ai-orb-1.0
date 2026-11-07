@@ -1,0 +1,206 @@
+﻿AI-Orb Build-Protokoll - 2026-11-03 14:50:58
+
+--- powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\scripts\prepare-runtime.ps1 ---
+
+=============================================================
+  Python-Runtime fuer AI-Orb vorbereiten
+=============================================================
+    Fassung: 3.11.9
+    Ziel:    C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\runtime\python
+    [OK] Die Runtime ist bereits vorhanden und einsatzbereit.
+    Neu anlegen mit: -Force
+
+--- npm run build ---
+
+> ai-orb@0.26.17 build
+> npm run build:main && npm run build:renderer && npm run build:assets
+
+
+> ai-orb@0.26.17 build:main
+> tsc -p tsconfig.json
+
+
+> ai-orb@0.26.17 build:renderer
+> esbuild ./desktop/renderer/main.ts --bundle --format=iife --target=es2020 --loader:.glsl=text --outfile=./desktop/electron/dist/renderer/renderer.js && esbuild ./desktop/renderer/flipper-center.ts --bundle --format=iife --target=es2020 --outfile=./desktop/electron/dist/renderer/flipper-center.js
+
+System.Management.Automation.RemoteException
+  desktop\electron\dist\renderer\renderer.js  1.1mb
+System.Management.Automation.RemoteException
+Done in 57ms
+System.Management.Automation.RemoteException
+  desktop\electron\dist\renderer\flipper-center.js  2.2kb
+System.Management.Automation.RemoteException
+Done in 4ms
+
+> ai-orb@0.26.17 build:assets
+> node scripts/copy-assets.js
+
+[copy-assets] desktop/renderer/index.html -> desktop\electron\dist\renderer\index.html
+[copy-assets] desktop/renderer/flipper-center.html -> desktop\electron\dist\renderer\flipper-center.html
+[copy-assets] desktop/renderer/preview-bridge.js -> desktop\electron\dist\renderer\preview-bridge.js
+[copy-assets] desktop/renderer/web-bridge.js -> desktop\electron\dist\renderer\web-bridge.js
+[copy-assets] desktop/renderer/manifest.webmanifest -> desktop\electron\dist\renderer\manifest.webmanifest
+[copy-assets] desktop/renderer/stimme.js -> desktop\electron\dist\renderer\stimme.js
+[copy-assets] desktop/renderer/zustimmung.js -> desktop\electron\dist\renderer\zustimmung.js
+[copy-assets] desktop/styles/orb.css -> desktop\electron\dist\renderer\styles\orb.css
+[copy-assets] desktop/styles/flipper-center.css -> desktop\electron\dist\renderer\styles\flipper-center.css
+[copy-assets] desktop/styles/themes.css -> desktop\electron\dist\renderer\styles\themes.css
+[copy-assets] desktop/assets/icons/ -> desktop\electron\dist\renderer\assets\icons/
+[copy-assets] desktop/assets/orb/ -> desktop\electron\dist\renderer\assets\orb/
+[copy-assets] Fertig.
+
+--- C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\node_modules\.bin\electron-builder.cmd --win --publish never ---
+  ÔÇó electron-builder  version=25.1.8 os=10.0.26200
+  ÔÇó loaded configuration  file=package.json ("build" field)
+  ÔÇó executing @electron/rebuild  electronVersion=33.4.11 arch=x64 buildFromSource=false appDir=./
+  ÔÇó installing native dependencies  arch=x64
+  ÔÇó completed installing native dependencies
+  ÔÇó packaging       platform=win32 arch=x64 electron=33.4.11 appOutDir=dist-installer\win-unpacked
+  ÔÇó updating asar integrity executable resource  executablePath=dist-installer\win-unpacked\AI-Orb.exe
+  ÔÇó file source doesn't exist  from=C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\.env.example
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\pythonw.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\python.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-marian-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-fairseq-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-openai-gpt2-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\cffi-gen-src.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opennmt-tf-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opennmt-py-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-transformers-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\ct2-opus-mt-converter.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\wheel.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tiny-agents.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tqdm.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\tabulate.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\supertonic.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip3.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\piper.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pyav.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\pip3.11.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\numpy-config.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\onnxruntime_test.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\idna.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\httpx2.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\hf.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\httpx.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\f2py.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\edge-playback.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Scripts\edge-tts.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-arm64.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-64.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\gui-32.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli-arm64.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli-64.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\setuptools\cli-32.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\w64.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\t64-arm.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\t32.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\w64-arm.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\w32.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\resources\app\runtime\python\Lib\site-packages\pip\_vendor\distlib\t64.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó default Electron icon is used  reason=application icon is not set
+  ÔÇó signing with signtool.exe  path=dist-installer\win-unpacked\AI-Orb.exe
+  ÔÇó deprecated field  fields=["publisherName"] reason=please move to win.signtoolOptions.<field_name>
+  ÔÇó no signing info identified, signing is skipped  signHook=false cscInfo=null
+  ÔÇó building        target=nsis file=dist-installer\AI-Orb-Setup.exe archs=x64 oneClick=false perMachine=false
+  Ô¿» cannot find specified resource "build/icon.ico", nor relative to "C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\build", neither relative to project dir ("C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main")
+
+=== FEHLGESCHLAGEN: electron-builder ist fehlgeschlagen ===
+   Das hat electron-builder gemeldet:
+   
+       Ô¿» cannot find specified resource "build/icon.ico", nor relative to "C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\build", neither relative to project dir ("C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main")
+   
+   Haeufigste Ursachen:
+     - AI-Orb laeuft noch (beenden und erneut versuchen)
+     - ein Virenschutz blockiert das Schreiben in dist-installer
+     - kein Platz auf der Festplatte (etwa 2 GB werden gebraucht)
+     - eine Datei aus extraResources fehlt (siehe Protokoll)

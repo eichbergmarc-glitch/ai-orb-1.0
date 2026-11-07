@@ -98,6 +98,7 @@ class Transcriber:
         anfangshinweis: str = "",
         vad_filter: bool = False,
         temperatur_treppe: bool = True,
+        cloud: dict[str, Any] | None = None,
     ) -> None:
         """
         Args:
@@ -136,6 +137,15 @@ class Transcriber:
         self._beam_size = max(1, beam_size)
         self._models_directory = models_directory
         self._anfangshinweis = anfangshinweis.strip()
+
+        #: Erkennung in der Cloud (OpenAI), mit der lokalen als Rueckfall.
+        #:
+        #: Seit 06.11.2026. Whisper "small" auf der CPU verstand Marc
+        #: selbst bei deutlicher Aussprache kaum ("Passen wir den
+        #: Abwaehlten des Tages zusammen") und brauchte 5-9 s pro Satz.
+        #: Die Cloud-Erkennung ist genauer und schneller; faellt sie aus
+        #: (kein Netz, Schluessel, Zeitlimit), rechnet wie bisher die lokale.
+        self._cloud = dict(cloud or {})
 
         # Sprachaktivitaetsfilter vor dem Dekodieren.
         #
@@ -365,6 +375,103 @@ class Transcriber:
         with self._reihen_sperre:
             return self._transcribe_geordnet(audio_path, abgegeben, verfallen_nach)
 
+    def _transcribe_cloud(
+        self, audio_path: Path, abgegeben: float | None
+    ) -> Transcript | None:
+        """Erkennt ueber die OpenAI-API. ``None`` heisst: lokal weitermachen."""
+
+        if not self._cloud.get("enabled"):
+            return None
+        import os
+
+        schluessel = os.environ.get(
+            str(self._cloud.get("api_key_env", "OPENAI_API_KEY")), ""
+        ).strip()
+        if not schluessel:
+            return None
+        sperre = float(getattr(self, "_cloud_pause_bis", 0.0))
+        if sperre and time.monotonic() < sperre:
+            return None
+
+        try:
+            import httpx
+        except ImportError:
+            return None
+
+        basis = str(self._cloud.get("base_url", "https://api.openai.com/v1")).rstrip("/")
+        modelle = [
+            str(m) for m in (
+                self._cloud.get("models")
+                or [self._cloud.get("model", "gpt-4o-mini-transcribe"), "whisper-1"]
+            ) if m
+        ]
+        frist = float(self._cloud.get("timeout", 8.0))
+        started = time.perf_counter()
+        try:
+            daten = audio_path.read_bytes()
+        except OSError:
+            return None
+
+        for modell in modelle:
+            felder = {"model": modell, "response_format": "json"}
+            if self._language and self._language != "auto":
+                felder["language"] = self._language
+            hinweis = str(self._cloud.get("prompt", "") or "")
+            if hinweis:
+                felder["prompt"] = hinweis
+            try:
+                antwort = httpx.post(
+                    f"{basis}/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {schluessel}"},
+                    data=felder,
+                    files={"file": (audio_path.name, daten, "audio/wav")},
+                    timeout=httpx.Timeout(frist, connect=min(frist, 4.0)),
+                )
+            except Exception as fehler:  # noqa: BLE001 - Netz weg o. ae.
+                logger.warning(
+                    "Cloud-Erkennung nicht erreichbar (%s) - die lokale uebernimmt.",
+                    fehler,
+                )
+                # Eine Minute Ruhe, damit nicht jeder Satz erst ins Leere laeuft.
+                self._cloud_pause_bis = time.monotonic() + 60.0
+                return None
+            if antwort.status_code == 404 or antwort.status_code == 400:
+                # Modell unbekannt o. ae. - das naechste versuchen.
+                logger.info(
+                    "Cloud-Erkennung mit '%s' abgelehnt (HTTP %d): %s",
+                    modell, antwort.status_code, antwort.text[:160],
+                )
+                continue
+            if antwort.status_code >= 300:
+                logger.warning(
+                    "Cloud-Erkennung fehlgeschlagen (HTTP %d): %s - die lokale "
+                    "uebernimmt.", antwort.status_code, antwort.text[:160],
+                )
+                self._cloud_pause_bis = time.monotonic() + (
+                    300.0 if antwort.status_code in (401, 402, 403, 429) else 30.0
+                )
+                return None
+            try:
+                text = str((antwort.json() or {}).get("text", "")).strip()
+            except ValueError:
+                text = antwort.text.strip()
+            rechenzeit = time.perf_counter() - started
+            wartezeit = (time.monotonic() - abgegeben) - rechenzeit if abgegeben else 0.0
+            logger.info(
+                "Erkannt in %.1f s (%.1f s gewartet, %.1f s Cloud, Modell '%s').",
+                max(0.0, wartezeit) + rechenzeit, max(0.0, wartezeit), rechenzeit, modell,
+            )
+            return Transcript(
+                text=text,
+                language=self._language,
+                processing_seconds=rechenzeit,
+                # Die API liefert keine Wahrscheinlichkeit. 0.9 liegt ueber der
+                # Nachfrage-Schwelle: Sonst fragte der Orb jeden Satz nach.
+                confidence=float(self._cloud.get("confidence", 0.9)),
+                segments=[text] if text else [],
+            )
+        return None
+
     def _transcribe_geordnet(
         self,
         audio_path: Path,
@@ -399,6 +506,10 @@ class Transcriber:
         if not audio_path.is_file():
             logger.info("Aufnahme verworfen: %s wurde bereits aufgeraeumt.", audio_path.name)
             return Transcript()
+
+        wolke = self._transcribe_cloud(audio_path, abgegeben)
+        if wolke is not None:
+            return wolke
 
         started = time.perf_counter()
         try:

@@ -305,7 +305,7 @@ class OllamaProvider(BaseProvider):
                         {
                             "role": "system",
                             "content": (
-                                "Du bist AI-Orb. Antworte auf Deutsch, direkt, "
+                                "Du bist Synapse. Antworte auf Deutsch, direkt, "
                                 "freundlich und in kurzen gesprochenen Saetzen."
                             ),
                         },

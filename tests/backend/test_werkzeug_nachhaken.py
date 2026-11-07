@@ -242,3 +242,24 @@ def test_erfolgreiche_vorab_suche_schlaegt_falsche_modellausrede():
     assert "moneyland.ch" in antwort and "comparis.ch" in antwort
     assert "http" not in antwort
     assert "keinen Zugriff" not in antwort
+
+
+def test_blosse_ankuendigung_wird_nachgehakt():
+    """06.11.2026: "Ich hole dir die Nachrichten. Einen Moment." - und dann nichts."""
+
+    from backend.tools.tool_engine import _kuendigt_nur_an
+
+    assert _kuendigt_nur_an("Ich hole dir die aktuellen Nachrichten des Tages. Einen Moment.")
+    assert not _kuendigt_nur_an("Heute: Wahl in den USA, Streik bei der Bahn, Sturm im Norden.")
+
+    provider = _FakeProvider(["Heute in den Nachrichten: Streik bei der Bahn."])
+    eng, tool = _engine(provider)
+    antwort, runs = asyncio.run(
+        eng.continue_with_tools(
+            messages=[],
+            first_reply="Ich hole dir die aktuellen Nachrichten des Tages. Einen Moment.",
+            actor="test",
+        )
+    )
+    assert provider.aufrufe == 1
+    assert "Streik" in antwort

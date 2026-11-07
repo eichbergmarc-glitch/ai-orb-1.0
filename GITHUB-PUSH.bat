@@ -3,7 +3,11 @@ chcp 65001 >nul
 setlocal EnableDelayedExpansion
 title AI-Orb - Stand auf GitHub sichern
 
-set "PROJEKT=%USERPROFILE%\AI-Orb"
+REM  Der Ordner, in dem DIESE Datei liegt - nicht mehr fest
+REM  %USERPROFILE%\AI-Orb. Der Orb liegt seit Oktober 2026 in
+REM  OneDrive\Dokumente\ai-orb-1.0-main; der feste Pfad zeigte ins Leere.
+set "PROJEKT=%~dp0"
+set "PROJEKT=%PROJEKT:~0,-1%"
 set "REMOTE=https://github.com/eichbergmarc-glitch/ai-orb-1.0.git"
 
 echo ============================================================
@@ -49,7 +53,29 @@ REM
 REM  Jetzt wird nichts umbenannt. Der aktuelle Stand wird gesichert und
 REM  gezielt nach main geschoben - gleichgueltig, wie der Zweig heisst.
 REM --------------------------------------------------------------------
-if not exist ".git" ( git init >nul & git checkout -b main >nul 2>&1 )
+REM --------------------------------------------------------------------
+REM  Noch kein Git in diesem Ordner? Dann NICHT mit leerer Geschichte
+REM  anfangen - das wuerde GitHub als fremden Stand ablehnen und nur mit
+REM  Ueberschreiben gehen. Stattdessen die Geschichte von GitHub holen
+REM  und diesen Ordner als naechsten Stand darauf setzen. Die Dateien
+REM  hier bleiben dabei unberuehrt (reset --mixed aendert nur den Index).
+REM --------------------------------------------------------------------
+if not exist ".git" (
+  echo   Dieser Ordner ist noch nicht mit GitHub verbunden - wird eingerichtet ...
+  git init >nul
+  git remote add origin "%REMOTE%"
+  git fetch origin main
+  if errorlevel 1 (
+    echo   [HINWEIS] GitHub-Stand nicht abrufbar - es wird neu begonnen.
+    git checkout -b main >nul 2>&1
+  ) else (
+    git checkout -b main >nul 2>&1
+    git reset --mixed origin/main >nul
+    git branch --set-upstream-to=origin/main main >nul 2>&1
+    echo   Mit dem GitHub-Stand verbunden. Deine Dateien wurden nicht veraendert.
+  )
+  echo.
+)
 
 for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "ZWEIG=%%b"
 if "%ZWEIG%"=="" set "ZWEIG=main"

@@ -1,6 +1,6 @@
 Pruefstand fuer den AI-Orb
-Ordner : C:\Users\info\AI-Orb
-Zeit   : 04.09.2026 00:27:34
+Ordner : C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main
+Zeit   : 26.10.2026 02:48:19
 
 --- Python --------------------------------------------------------
   [OK    ] Python 3.11.9
@@ -28,31 +28,25 @@ Zeit   : 04.09.2026 00:27:34
   [OK    ] Alle 10 Auftraege fuer eine neue Vorlesung werden erkannt.
   [OK    ] Saetze ohne Vorlesungsbezug loesen nichts aus.
   [OK    ] Das Thema wird sauber erkannt: 'Geschichtswissenschaft, Schwerpunkt Mittelalter'
-  [OK    ] 2 gespeicherte Vorlesung(en).
-           philosophie                                   Abschnitt 20
-           geschichtswissenschaft haeltst und zwar ueber Abschnitt 3
-  [HINWEIS] Der Ablagename enthaelt ein Verb: 'geschichtswissenschaft haeltst und zwar ueber das mittelalter'
-           Er stammt aus der alten Themenerkennung. Der Fortschritt
-           bleibt erhalten; du kannst die Vorlesung unter diesem
-           Namen weiter fortsetzen oder neu beginnen.
+           Noch keine gespeicherte Vorlesung.
 
 --- Protokolle der letzten 24 Stunden -----------------------------
-  [OK    ] 41 Protokolldateien wurden heute geschrieben.
-             3990725 Byte  system.log
-             2087244 Byte  backend_tools_web_tools.log
-             1385919 Byte  backend_whisper_transcriber.log
-             1331992 Byte  backend_system_performance_trace.log
-             1295480 Byte  backend_voice_voice_pipeline.log
-              679568 Byte  backend_orchestrator_providers_claude_code_provider.log
-  [HINWEIS] 1930 Fehlerzeilen in den letzten 24 Stunden.
-           2026-08-17 22:29:16 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
-           2026-08-17 23:00:15 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
-           2026-08-17 23:11:25 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
-           2026-08-18 00:04:57 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
-           2026-08-18 00:08:41 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
-           2026-08-18 00:12:45 | ERROR    | ai_orb.backend.api.http_server | Fehler in POST /ask
-           2026-08-27 13:32:51 | ERROR    | ai_orb.backend.api.http_server | Fehler in GET /stimme/ton
-           2026-08-27 13:32:52 | ERROR    | ai_orb.backend.api.http_server | Fehler in GET /stimme/ton
+  [OK    ] 148 Protokolldateien wurden heute geschrieben.
+               21610 Byte  system.log
+               11315 Byte  kern-start.log
+                5812 Byte  backend_security_security_engine.log
+                3588 Byte  backend_agents_agent_registry.log
+                2770 Byte  backend_agents_capability_registry.log
+                2404 Byte  backend_launcher_launcher.log
+  [HINWEIS] 85 Fehlerzeilen in den letzten 24 Stunden.
+           2026-10-26 02:43:22 | ERROR    | ai_orb.backend.launcher.launcher | Das Backend ließ sich nicht starten.
+           2026-10-26 02:47:15 | ERROR    | ai_orb.backend.launcher.launcher | Das Backend ließ sich nicht starten.
+           2026-10-26 02:43:20 | ERROR    | ai_orb.backend.security.security_engine | ========================================================================
+           2026-10-26 02:43:20 | ERROR    | ai_orb.backend.security.security_engine | ACHTUNG: Die Sicherheitsschicht laeuft im OFFENEN Modus.
+           2026-10-26 02:43:20 | ERROR    | ai_orb.backend.security.security_engine |   Alle 24 Berechtigungen gelten ohne Rueckfrage - auch die kritischen
+           2026-10-26 02:43:20 | ERROR    | ai_orb.backend.security.security_engine |   (system_commands, delete_files, send_email, modify_own_code).
+           2026-10-26 02:43:20 | ERROR    | ai_orb.backend.security.security_engine |   Es gibt keine Pfadsperren und keine Liste des Unerlaubten.
+           2026-10-26 02:43:20 | ERROR    | ai_orb.backend.security.security_engine |   Geaendert wird das mit 'security.mode: geschuetzt' in der config.yaml.
 
 --- Ablage --------------------------------------------------------
   [OK    ] data ist da und beschreibbar.
@@ -62,5 +56,5 @@ Zeit   : 04.09.2026 00:27:34
 Dauer  : 2.1 Sekunden
 
 ======================================================================
-  16 in Ordnung, 3 Hinweise, 0 Fehler
+  15 in Ordnung, 2 Hinweise, 0 Fehler
 ======================================================================

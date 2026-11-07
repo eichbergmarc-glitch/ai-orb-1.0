@@ -50,3 +50,6 @@ data/
 
 # Ablage fuer Zwischendateien und heruntergeladene Installer.
 tmp/
+
+# Gebaute Installer (win-unpacked ist mehrere hundert MB).
+dist-installer/

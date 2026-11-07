@@ -20,6 +20,7 @@ direkter Zugriff auf Fachmodule findet hier nicht statt.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -173,6 +174,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
     #: Das Losungswort fuer Anfragen von anderen Geraeten. ``None`` heisst:
     #: Es gibt keines - dann wird von aussen niemand hereingelassen.
     zugangstoken: str | None = None
+    #: Ohne Losungswort hereinlassen, aber nur aus privaten Netzen
+    #: (eigenes WLAN, Tailscale). Schalter: AI_ORB_ZUGANG_OFFEN=1 in der .env.
+    zugang_offen: bool = False
     server_version = "AI-Orb"
     sys_version = ""
     protocol_version = "HTTP/1.1"
@@ -399,6 +403,33 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._GESEHEN.add(adresse)
         logger.info("Ein Gerät aus dem Netz hat den Orb erreicht: %s", adresse)
 
+    #: Das Netz, das Tailscale an seine Geraete vergibt (100.64.0.0/10).
+    _TAILNETZ = ipaddress.ip_network("100.64.0.0/10")
+
+    def _aus_privatem_netz(self) -> bool:
+        """Ob die Anfrage aus dem eigenen Netz oder dem Tailnet kommt.
+
+        Hinter ``tailscale serve`` meldet sich die Verbindung von 127.0.0.1;
+        die wahre Herkunft steht dann in ``X-Forwarded-For``. Gilt nur, wenn
+        ein Absender erkennbar ist - im Zweifel wird abgewiesen. Adressen aus
+        dem oeffentlichen Internet kommen nie herein.
+        """
+
+        roh = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if not roh and self.client_address:
+            roh = self.client_address[0]
+        try:
+            adresse = ipaddress.ip_address(roh.split("%")[0])
+        except ValueError:
+            return False
+        if getattr(adresse, "ipv4_mapped", None):
+            adresse = adresse.ipv4_mapped
+        return bool(
+            adresse.is_loopback
+            or adresse.is_private
+            or (adresse.version == 4 and adresse in self._TAILNETZ)
+        )
+
     def _zugang_pruefen(self, query: str = "") -> bool:
         """Laesst herein, wer hereingehoert - und schreibt sonst 401.
 
@@ -409,6 +440,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return True
 
         self._klopfen_vermerken()
+
+        if self.zugang_offen and self._aus_privatem_netz():
+            return True
 
         if self._stimmt(self._keks_lesen(self.ZUGANG_KEKS)):
             return True
@@ -924,6 +958,7 @@ class LocalApiServer:
         sse_path: str = "/events",
         static_root: Path | None = None,
         zugangstoken: str | None = None,
+        zugang_offen: bool | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -932,6 +967,13 @@ class LocalApiServer:
         self._sse_path = sse_path
         self._static_root = static_root
         self._zugangstoken = zugangstoken or os.environ.get("AI_ORB_WEB_TOKEN") or None
+        # Die Config (backend.ohne_losungswort) entscheidet; ohne Eintrag gilt
+        # der Schalter AI_ORB_ZUGANG_OFFEN aus der .env.
+        if zugang_offen is None:
+            zugang_offen = os.environ.get("AI_ORB_ZUGANG_OFFEN", "").strip().lower() in {
+                "1", "ja", "true", "an",
+            }
+        self._zugang_offen = bool(zugang_offen)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -947,6 +989,7 @@ class LocalApiServer:
                 "sse_path": self._sse_path,
                 "static_root": self._static_root,
                 "zugangstoken": self._zugangstoken,
+                "zugang_offen": self._zugang_offen,
             },
         )
 
@@ -961,7 +1004,13 @@ class LocalApiServer:
         logger.info("Lokaler API-Server läuft auf http://%s:%s", self._host, self._port)
         self._erreichbarkeit_herstellen()
         if self._host not in ("127.0.0.1", "localhost", "::1"):
-            if self._zugangstoken:
+            if self._zugang_offen:
+                logger.warning(
+                    "Fernzugang OHNE Losungswort (AI_ORB_ZUGANG_OFFEN): Geraete aus "
+                    "dem eigenen Netz und dem Tailnet kommen ohne Passwort herein, "
+                    "das oeffentliche Internet nicht."
+                )
+            elif self._zugangstoken:
                 logger.info(
                     "Fernzugang ist offen (%s) und durch ein Losungswort geschützt.",
                     self._host,

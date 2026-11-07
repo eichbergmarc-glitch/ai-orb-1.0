@@ -72,7 +72,7 @@ class ConversationManager:
         self._system_prompt = str(
             conversation_config.get(
                 "system_prompt",
-                "Du bist AI-Orb, ein lokaler, hilfsbereiter Desktop-Assistent.",
+                "Du bist Synapse, ein lokaler, hilfsbereiter Desktop-Assistent.",
             )
         )
 

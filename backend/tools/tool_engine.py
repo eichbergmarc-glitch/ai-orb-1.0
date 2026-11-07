@@ -113,6 +113,33 @@ _AUSREDEN: tuple[str, ...] = (
 )
 
 
+#: Wendungen, mit denen ein Modell nur ANKUENDIGT, statt zu liefern.
+#:
+#: 06.11.2026, 21:19: "Fasse mir die Nachrichten des Tages zusammen" - die
+#: Nachrichten waren schon geholt und lagen im Kontext, und das Modell
+#: antwortete nur "Ich hole dir die aktuellen Nachrichten des Tages. Einen
+#: Moment." Danach kam nichts mehr: Der Orb wartete auf eine Fortsetzung,
+#: die es nie gibt. Eine kurze Antwort, die nur verspricht, ist wie eine
+#: Ausrede zu behandeln - einmal nachhaken.
+_ANKUENDIGUNGEN: tuple[str, ...] = (
+    "einen moment", "moment bitte", "einen augenblick", "augenblick bitte",
+    "ich hole dir", "ich hole die", "ich suche dir", "ich suche die",
+    "ich schaue nach", "ich schau nach", "ich sehe nach", "ich seh nach",
+    "ich pruefe das", "ich prüfe das", "ich kuemmere mich", "ich kümmere mich",
+    "gleich zurueck", "gleich zurück", "bin gleich", "ich melde mich",
+    "ich recherchiere", "lass mich nachsehen", "lass mich schauen",
+)
+
+
+def _kuendigt_nur_an(text: str) -> bool:
+    """Ob eine (kurze) Antwort nur etwas verspricht, statt es zu liefern."""
+
+    knapp = " ".join(str(text or "").lower().split())
+    if not knapp or len(knapp) > 220:
+        return False
+    return any(wendung in knapp for wendung in _ANKUENDIGUNGEN)
+
+
 def _klingt_nach_ausrede(text: str) -> bool:
     """Ob die Antwort das Nichtkoennen behauptet, statt es zu tun."""
 
@@ -1154,8 +1181,10 @@ class ToolEngine:
                     verlangt = _ausdruecklich_verlangtes_werkzeug(
                         history, self._registry.names()
                     )
+                    kuendigt_an = _kuendigt_nur_an(text)
                     if (
                         _klingt_nach_ausrede(text) or nennt_werkzeug or verlangt
+                        or kuendigt_an
                     ) and not nachgehakt:
                         # EINMAL nachhaken, statt die Ausrede weiterzureichen.
                         #
@@ -1177,6 +1206,32 @@ class ToolEngine:
                             ChatMessage,
                         )
 
+                        if kuendigt_an:
+                            logger.warning(
+                                "Das Modell hat nur angekuendigt (%r) - ich hake "
+                                "einmal nach, damit es liefert.", text[:80],
+                            )
+                            history = history + [
+                                ChatMessage(role="assistant", content=text),
+                                ChatMessage(
+                                    role="user",
+                                    content=(
+                                        "Bitte nicht ankuendigen, sondern jetzt "
+                                        "liefern. Stehen die noetigen Angaben "
+                                        "(Suchergebnisse, Nachrichten) schon oben "
+                                        "im Kontext, antworte direkt daraus. Fehlen "
+                                        "sie, rufe JETZT das passende Werkzeug im "
+                                        "vorgesehenen Format auf. Kein 'Einen "
+                                        "Moment', keine Einleitung."
+                                    ),
+                                ),
+                            ]
+                            try:
+                                response = await self._providers.chat(history)
+                                text = getattr(response, "text", str(response))
+                                continue
+                            except Exception:  # noqa: BLE001
+                                logger.exception("Das Nachhaken beim Modell ist fehlgeschlagen.")
                         history = history + [
                             ChatMessage(role="assistant", content=text),
                             ChatMessage(

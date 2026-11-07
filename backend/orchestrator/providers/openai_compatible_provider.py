@@ -270,21 +270,25 @@ class OpenAICompatibleProvider(BaseProvider):
                 messages, temperature=temperature, max_tokens=max_tokens
             )
 
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": [message.to_dict() for message in messages],
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
+        payload = self._chat_payload(
+            messages, temperature=temperature, max_tokens=max_tokens
+        )
 
         started = self._now()
-        data = await self._request_json(
-            f"{self._base_url}/chat/completions",
-            payload=payload,
-            headers=self._headers(),
-        )
+        try:
+            data = await self._request_json(
+                f"{self._base_url}{self._endpunkt()}",
+                payload=payload,
+                headers=self._headers(),
+            )
+        except ProviderError as error:
+            if not self._vorlagenschalter_abgelehnt(str(error), payload):
+                raise
+            data = await self._request_json(
+                f"{self._base_url}{self._endpunkt()}",
+                payload=payload,
+                headers=self._headers(),
+            )
         latency = self._now() - started
 
         choices = data.get("choices") or []
@@ -292,7 +296,7 @@ class OpenAICompatibleProvider(BaseProvider):
             raise ProviderError(f"{self._preset_name}: Antwort ohne Auswahl.")
 
         first = choices[0]
-        text = str((first.get("message") or {}).get("content", "")).strip()
+        text = self._ohne_denkblock(self._wahltext(first, strom=False)).strip()
 
         if not text:
             raise ProviderError(f"{self._preset_name}: leere Antwort.")
@@ -305,6 +309,299 @@ class OpenAICompatibleProvider(BaseProvider):
             finish_reason=first.get("finish_reason"),
             raw=data,
         )
+
+    # --- Chat-Completions: Nachrichten, Nutzlast, Denkbloecke ------------------
+    #
+    # Gebaut fuer LM Studio als Hauptmodell (06.11.2026). Drei Dinge gingen
+    # dort vorher schief:
+    #
+    # 1. Mehrere Systemnachrichten. Der Orb schickt neben dem Grundprompt
+    #    weitere Systemnachrichten (Suchergebnisse, Kontext). Die Vorlagen
+    #    von Qwen und DeepSeek brechen dann mit "System message must be at
+    #    the beginning" ab (Protokoll 04.11., 03:02:46). Lokal werden sie
+    #    deshalb zu EINER Systemnachricht am Anfang zusammengefasst.
+    # 2. Denkmodelle. Qwen 3.5/3.6 denkt standardmaessig. LM Studio legt
+    #    das Gedachte getrennt in "reasoning_content" ab, und es zaehlt
+    #    gegen max_tokens - bei 40 gesprochenen Tokens bleibt "content"
+    #    leer. Abgeschaltet wird es ueber die Vorlage (enable_thinking);
+    #    was trotzdem als <think>-Block kommt, wird entfernt.
+    # 3. Kein Streaming. Ohne Strom spricht der Orb erst, wenn die ganze
+    #    Antwort fertig ist. Auf der CPU sind das viele Sekunden Stille.
+
+    def _api_messages(self, messages: list[ChatMessage]) -> list[dict[str, str]]:
+        rohe = [message.to_dict() for message in messages]
+        zusammenfassen = bool(
+            self._settings.get("merge_system_messages", self._is_local)
+        )
+        if not zusammenfassen:
+            return rohe
+        system = [m["content"] for m in rohe if m.get("role") == "system" and m.get("content")]
+        rest = [m for m in rohe if m.get("role") != "system"]
+        # Zwei gleiche Rollen hintereinander moegen manche Vorlagen ebenfalls
+        # nicht; sie werden zu einer Nachricht verbunden.
+        verbunden: list[dict[str, str]] = []
+        for nachricht in rest:
+            if verbunden and verbunden[-1]["role"] == nachricht["role"]:
+                verbunden[-1] = {
+                    "role": nachricht["role"],
+                    "content": verbunden[-1]["content"] + "\n\n" + nachricht["content"],
+                }
+            else:
+                verbunden.append(dict(nachricht))
+        if system:
+            return [{"role": "system", "content": "\n\n".join(system)}, *verbunden]
+        return verbunden
+
+    def _chat_payload(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        if self._roh_chatml():
+            payload: dict[str, Any] = {
+                "model": self._model,
+                "prompt": self._chatml_prompt(messages),
+                "stop": ["<|im_end|>", "<|im_start|>", "<|endoftext|>"],
+            }
+        else:
+            payload = {
+                "model": self._model,
+                "messages": self._api_messages(messages),
+            }
+        if temperature is None and self._settings.get("temperature") is not None:
+            temperature = float(self._settings["temperature"])
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            mindestens = int(self._settings.get("minimum_predict_tokens", 0) or 0)
+            payload["max_tokens"] = max(int(max_tokens), mindestens)
+        denken = self._settings.get("thinking")
+        if (
+            denken is not None
+            and "messages" in payload
+            and not getattr(self, "_vorlagenschalter_aus", False)
+        ):
+            payload["chat_template_kwargs"] = {"enable_thinking": bool(denken)}
+        if stream:
+            payload["stream"] = True
+        return payload
+
+    # LM Studio ignoriert ``chat_template_kwargs`` (Messung 06.11.2026:
+    # Qwen 3.5 dachte trotzdem 15 s lang alle 96 Tokens weg, sichtbarer Text
+    # leer; bekannt als lmstudio-bug-tracker #1990). Verlaesslich ist nur,
+    # die Vorlage selbst zu bauen: ChatML mit einem LEEREN Denkblock am
+    # Anfang der Antwort - genau das, was die Qwen-Vorlage bei
+    # enable_thinking=false einfuegt - und das Ganze roh an /v1/completions.
+    # Eingeschaltet mit ``prompt_format: chatml`` (nur fuer Qwen-Modelle).
+
+    def _roh_chatml(self) -> bool:
+        return str(self._settings.get("prompt_format", "")).strip().lower() == "chatml"
+
+    def _chatml_prompt(self, messages: list[ChatMessage]) -> str:
+        teile = [
+            f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n"
+            for m in self._api_messages(messages)
+        ]
+        anfang = "<|im_start|>assistant\n"
+        if self._settings.get("thinking") is False:
+            anfang += "<think>\n\n</think>\n\n"
+        return "".join(teile) + anfang
+
+    def _endpunkt(self) -> str:
+        return "/completions" if self._roh_chatml() else "/chat/completions"
+
+    @staticmethod
+    def _wahltext(wahl: dict[str, Any], *, strom: bool) -> str:
+        if "text" in wahl:
+            return str(wahl.get("text") or "")
+        quelle = wahl.get("delta") if strom else wahl.get("message")
+        return str((quelle or {}).get("content") or "")
+
+    def _vorlagenschalter_abgelehnt(self, fehler: str, payload: dict[str, Any]) -> bool:
+        """Lehnt der Server ``chat_template_kwargs`` ab, ohne ihn weiter."""
+
+        if "chat_template_kwargs" not in payload:
+            return False
+        lowered = fehler.lower()
+        if "chat_template_kwargs" not in lowered and "enable_thinking" not in lowered:
+            return False
+        logger.info(
+            "%s: Der Server kennt 'chat_template_kwargs' nicht; es wird kuenftig "
+            "weggelassen.",
+            self.name,
+        )
+        self._vorlagenschalter_aus = True
+        payload.pop("chat_template_kwargs", None)
+        return True
+
+    @staticmethod
+    def _ohne_denkblock(text: str) -> str:
+        """Entfernt <think>...</think> - auch einen nie geschlossenen."""
+
+        while "<think>" in text:
+            anfang = text.index("<think>")
+            ende = text.find("</think>", anfang)
+            if ende < 0:
+                text = text[:anfang]
+                break
+            text = text[:anfang] + text[ende + len("</think>"):]
+        if "</think>" in text:
+            # Manche Vorlagen setzen das oeffnende Tag selbst in den Prompt.
+            text = text.split("</think>", 1)[1]
+        return text
+
+    async def _chat_completions_stream(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str]:
+        """Streamt /chat/completions (SSE) Stueck fuer Stueck."""
+
+        payload = self._chat_payload(
+            messages, temperature=temperature, max_tokens=max_tokens, stream=True
+        )
+        timeout = httpx.Timeout(timeout=self._timeout, connect=min(self._timeout, 8.0))
+        loop = asyncio.get_running_loop()
+        first_deadline = loop.time() + self._first_token_timeout
+        received_text = False
+        # Inline-Denkbloecke ueber Stueckgrenzen hinweg herausfiltern.
+        puffer = ""
+        im_denken = False
+        lebenszeichen = False
+
+        for versuch in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=timeout, trust_env=not self._is_local) as client:
+                    request = client.build_request(
+                        "POST",
+                        f"{self._base_url}{self._endpunkt()}",
+                        json=payload,
+                        headers=self._headers(),
+                    )
+                    try:
+                        response = await asyncio.wait_for(
+                            client.send(request, stream=True),
+                            timeout=max(0.01, first_deadline - loop.time()),
+                        )
+                    except asyncio.TimeoutError as error:
+                        raise ProviderError(
+                            f"{self.name}: keine Antwortverbindung innerhalb von "
+                            f"{self._first_token_timeout:.0f} s."
+                        ) from error
+                    try:
+                        if response.status_code >= 400:
+                            body = (await response.aread()).decode("utf-8", errors="replace")
+                            fehler = f"{self.name}: HTTP {response.status_code} - {body[:500]}"
+                            if versuch == 0 and self._vorlagenschalter_abgelehnt(fehler, payload):
+                                continue
+                            raise ProviderError(fehler)
+
+                        iterator = response.aiter_lines()
+                        while True:
+                            # Denkt das Modell (reasoning_content), ist es am
+                            # Leben: dann gilt die Gesamtfrist, nicht die
+                            # Frist auf das erste Wort.
+                            if received_text or lebenszeichen:
+                                remaining = self._timeout
+                            else:
+                                remaining = max(0.01, first_deadline - loop.time())
+                            try:
+                                line = await asyncio.wait_for(anext(iterator), timeout=remaining)
+                            except StopAsyncIteration:
+                                break
+                            except asyncio.TimeoutError as error:
+                                message = (
+                                    "kein erstes Textstueck rechtzeitig erhalten"
+                                    if not received_text
+                                    else "Antwortstrom ist stehen geblieben"
+                                )
+                                raise ProviderError(f"{self.name}: {message}.") from error
+
+                            stripped = line.strip()
+                            if not stripped.startswith("data:"):
+                                continue
+                            raw = stripped[5:].strip()
+                            if not raw or raw == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(event, dict):
+                                continue
+                            if event.get("error"):
+                                if received_text:
+                                    logger.info("%s: Strom endete mit Fehler nach Text: %s",
+                                                self.name, str(event["error"])[:200])
+                                    break
+                                raise ProviderError(
+                                    f"{self.name}: Stream-Fehler - {str(event['error'])[:500]}"
+                                )
+                            choices = event.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or {}
+                            # Nur LOKAL zaehlt Denken als Lebenszeichen (das
+                            # Modell muss dort erst laden). Ein Cloud-Modell,
+                            # das 8 s lang nur denkt, wird uebersprungen - das
+                            # naechste ist schneller als das Warten.
+                            if self._is_local and (
+                                delta.get("reasoning_content") or delta.get("reasoning")
+                            ):
+                                lebenszeichen = True
+                            stueck = self._wahltext(choices[0], strom=True)
+                            if not stueck:
+                                continue
+                            lebenszeichen = True
+                            puffer += stueck
+                            ausgabe = ""
+                            while puffer:
+                                if im_denken:
+                                    ende = puffer.find("</think>")
+                                    if ende < 0:
+                                        puffer = puffer[-8:]
+                                        break
+                                    puffer = puffer[ende + 8:]
+                                    im_denken = False
+                                    continue
+                                anfang = puffer.find("<think>")
+                                if anfang >= 0:
+                                    ausgabe += puffer[:anfang]
+                                    puffer = puffer[anfang + 7:]
+                                    im_denken = True
+                                    continue
+                                # Ein angeschnittenes "<thi" am Ende zurueckhalten.
+                                schnitt = puffer.rfind("<")
+                                if schnitt >= 0 and "<think>".startswith(puffer[schnitt:]):
+                                    ausgabe += puffer[:schnitt]
+                                    puffer = puffer[schnitt:]
+                                else:
+                                    ausgabe += puffer
+                                    puffer = ""
+                                break
+                            if not received_text:
+                                ausgabe = ausgabe.lstrip()
+                            if ausgabe:
+                                received_text = True
+                                yield ausgabe
+                    finally:
+                        await response.aclose()
+                break
+            except ProviderError:
+                raise
+            except (httpx.HTTPError, OSError) as error:
+                raise ProviderError(f"{self.name}: Streaming abgebrochen - {error}") from error
+
+        if puffer and not im_denken and puffer.strip():
+            received_text = True
+            yield puffer
+        if not received_text:
+            raise ProviderError(f"{self.name}: der Antwortstrom endete ohne sichtbaren Text.")
 
     async def _chat_responses(
         self,
@@ -481,7 +778,13 @@ class OpenAICompatibleProvider(BaseProvider):
         """Streamt OpenAI-Responses-Deltas, damit der Orb frueh sprechen kann."""
 
         if self._api_style != "responses":
-            async for piece in super().chat_stream(
+            if not bool(self._settings.get("stream", True)):
+                async for piece in super().chat_stream(
+                    messages, temperature=temperature, max_tokens=max_tokens
+                ):
+                    yield piece
+                return
+            async for piece in self._chat_completions_stream(
                 messages, temperature=temperature, max_tokens=max_tokens
             ):
                 yield piece

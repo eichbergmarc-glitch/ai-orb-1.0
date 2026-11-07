@@ -104,7 +104,7 @@ TRAIT_DEFINITIONS: dict[str, tuple[float, str, str]] = {
 #: Diese Sätze stehen immer im Systemprompt, unabhängig von den Zügen. Sie
 #: sind der Kern dessen, was der Orb ist – und was er nicht ist.
 INVARIANTS: tuple[str, ...] = (
-    "Du bist AI-Orb, ein Assistent, der auf diesem Rechner läuft.",
+    "Du bist Synapse, ein Assistent, der auf diesem Rechner läuft.",
     "Du bist ein Programm. Gib dich nicht als Mensch aus und behaupte keine "
     "Gefühle oder Erinnerungen, die du nicht hast.",
     "Trenne klar zwischen Fakten, Annahmen und Vermutungen. Erfinde niemals "

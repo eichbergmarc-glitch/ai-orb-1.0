@@ -128,7 +128,8 @@ from dataclasses import dataclass
 
 #: Der eigene Name in allen Formen, in denen Whisper ihn liefert.
 _ANREDE = (
-    "orb", "orbi", "hallo orb", "hey orb", "orb,", "ork", "orp",
+    "synapse", "synapsen", "synaps", "sinapse", "zynapse", "cynapse", "sünapse",
+    "hallo synapse", "hey synapse", "synapse,",
 )
 
 #: Imperativstämme. Geprüft wird ausschliesslich am Anfang eines
@@ -172,7 +173,7 @@ _BEFEHLSANFAENGE = (
 #: abgeschnitten, bevor der Satzanfang geprüft wird.
 _VORLAUF = frozenset((
     "bitte", "und", "dann", "jetzt", "nun", "mal", "doch", "so", "also",
-    "hey", "hallo", "orb", "ok", "okay", "ja", "nein", "aber", "noch",
+    "hey", "hallo", "synapse", "ok", "okay", "ja", "nein", "aber", "noch",
     "kurz", "gleich", "dazu", "danach", "zuerst", "erst", "einmal",
     "vielleicht", "übrigens", "uebrigens", "ähm", "aehm", "äh", "aeh",
 ))

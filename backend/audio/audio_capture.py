@@ -284,7 +284,23 @@ class AudioCapture:
         self._worker = threading.Thread(target=self._process_loop, name="ai-orb-audio", daemon=True)
         self._worker.start()
 
-        logger.info("Mikrofon aktiv (%d Hz, Blöcke à %.0f ms).", SAMPLE_RATE, BLOCK_DURATION_MS)
+        # Welches Geraet wirklich hoert. Ohne diese Zeile liess sich am
+        # 06.11.2026 nicht klaeren, ob das Headset oder das eingebaute
+        # Mikrofon aufnahm - die Erkennung lieferte nur noch "Danke fuers
+        # Zusehen", Whispers Satz fuer Stille.
+        geraetename = "unbekannt"
+        try:
+            geraetename = str(
+                sd.query_devices(
+                    geraet if geraet is not None else sd.default.device[0], "input"
+                ).get("name", "unbekannt")
+            )
+        except Exception:  # noqa: BLE001 - nur eine Protokollzeile.
+            pass
+        logger.info(
+            "Mikrofon aktiv: %s (%d Hz, Blöcke à %.0f ms).",
+            geraetename, SAMPLE_RATE, BLOCK_DURATION_MS,
+        )
         return True
 
     def stop(self) -> None:

@@ -73,7 +73,7 @@ def test_hintergrundgespraech_wird_erkannt(satz, sicherheit):
 @pytest.mark.parametrize(
     "satz",
     [
-        "Hallo Orb, gib mir die News des Tages zusammengefasst",
+        "Hallo Synapse, gib mir die News des Tages zusammengefasst",
         "Was machst du gerade?",
         "Wie geht es dir gerade?",
         "Kannst du mich jetzt verstehen?",
@@ -98,7 +98,7 @@ def test_eine_echte_anrede_kommt_durch(satz):
 def test_der_eigene_name_schlaegt_alles():
     # Auch bei maessiger Erkennung und mitten im Satz: Wer "Orb" sagt,
     # meint den Orb.
-    urteil = einschaetzen("also Orb das mit dem Ding da", sicherheit=0.55)
+    urteil = einschaetzen("also Synapse das mit dem Ding da", sicherheit=0.55)
     assert urteil.antworten
     assert "Name" in urteil.grund
 
@@ -189,7 +189,7 @@ _FREMDE_STIMME_2 = (
     "sich nicht nur umgegnenen, sie sich abschärben und auch den Antrags "
     "vorbachen. Wie das funktioniert, oder was genau dahinter steht, weiß "
     "ich selbst. Und ich finde, dass ich auch immer wieder, wie ich als "
-    "Südpaulinsist, Hallo Orb!"
+    "Südpaulinsist, Hallo Synapse!"
 )
 
 
@@ -224,8 +224,8 @@ def test_der_name_ganz_am_ende_einer_langen_fremden_rede_zaehlt_nicht():
 
 
 def test_der_name_am_ende_einer_kurzen_aeusserung_zaehlt_sehr_wohl():
-    for satz in ("Hallo Orb!", "Zeig mir bitte die Nachrichten, Orb",
-                 "Kurze Frage an dich, Orb"):
+    for satz in ("Hallo Synapse!", "Zeig mir bitte die Nachrichten, Synapse",
+                 "Kurze Frage an dich, Synapse"):
         assert einschaetzen(satz, sicherheit=0.9).antworten, satz
 
 

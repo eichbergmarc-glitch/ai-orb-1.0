@@ -1,4 +1,4 @@
-"""Erkennung des Weckworts („Hallo Orb").
+"""Erkennung des Weckworts („Hallo Synapse").
 
 Das Weckwort wird nicht auf dem Audiosignal erkannt, sondern auf dem
 transkribierten Text. Das hat zwei Vorteile: Es wird kein zusätzliches
@@ -89,7 +89,7 @@ class WakeWordDetector:
                 Satz den Orb weckt.
         """
 
-        self._phrases = [phrase for phrase in (phrases or ["hallo orb"]) if phrase.strip()]
+        self._phrases = [phrase for phrase in (phrases or ["hallo synapse"]) if phrase.strip()]
         self._threshold = threshold
         self._max_leading_words = max(0, max_leading_words)
         self._normalized = [(phrase, normalize(phrase)) for phrase in self._phrases]

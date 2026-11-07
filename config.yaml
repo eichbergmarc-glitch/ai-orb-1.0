@@ -20,6 +20,10 @@ backend:
   - http://localhost
   - file://
   ipad_automatisch: true
+  # true: iPad und Handy kommen ohne Losungswort herein - aber nur aus dem
+  # eigenen Netz und dem Tailnet, nie aus dem oeffentlichen Internet.
+  # false: das Losungswort aus der .env (AI_ORB_WEB_TOKEN) wird verlangt.
+  ohne_losungswort: true
   static_dir: ''
 window:
   frameless: true
@@ -102,26 +106,42 @@ ai:
   provider: auto
   quota_cooldown_seconds: 300
   exhausted_quota_cooldown_seconds: 21600
+  # 06.11.2026: LM Studio steht ueberall vorn. Vorher gingen kurze
+  # Alltagsfragen an ollama_fast und von dort an lfm2.5:8b - LM Studio kam
+  # erst ganz am Ende. Ergebnis im Protokoll: 22 s und 120 s bis zum ersten
+  # Wort, waehrend LM Studio nie gefragt wurde.
   subagent_fallback_order:
-  - openai_terra
+  - openai_2
   - openai
-  - ollama
-  - claude_code
+  - openrouter
+  - nous
+  - lmstudio
   dialog_fallback_order:
-  - ollama_fast
-  - ollama
+  - openai
+  - openai_2
+  - openrouter
+  - openrouter_2
+  - nous
+  - lmstudio_fast
+  - lmstudio
   capable_fallback_order:
-  - ollama
+  - openai
+  - openai_2
+  - openrouter
+  - openrouter_2
+  - nous
+  - lmstudio
   fast_dialog_max_tokens: 160
   # Gesamtfrist fuer einen Dialogzug in Sekunden. Ohne sie ist die
   # Wartezeit die Summe der Zeitlimits aller Anbieter (hier 30 + 120 +
   # 60). 0 hebt die Frist auf.
-  answer_timeout_seconds: 180
+  answer_timeout_seconds: 90
   # Die lokalen Rueckfallmodelle beim Start im Hintergrund in den Speicher
   # laden. Sie sollen einspringen koennen, wenn Claude ausfaellt - und das
   # tun sie nur schnell, wenn sie dann schon stehen. false spart
   # Arbeitsspeicher und kostet beim ersten Rueckfall eine Minute.
-  prewarm_local: true
+  prewarm_local: false   # war true: das Vorwaermen der Ollama-Modelle beim Start belastete die CPU,
+                         # waehrend Spracherkennung und LM Studio dieselben Kerne brauchten
   # Ein Vorlesungsabschnitt erzeugt absichtlich viel Text und bekommt
   # deshalb das Mehrfache dieser Frist.
   answer_timeout_lecture_factor: 3
@@ -138,23 +158,44 @@ ai:
   # Claude Code lief bis 09:09 desselben Tages fehlerfrei: Antworten in
   # 2,6 bis 4,5 Sekunden, ein vorgewaermter Prozess. Ollama bleibt der
   # Rueckfall fuer den Offlinebetrieb.
+  # LM Studio als Hauptmodell (lokal, ohne Schluessel, ohne Internet).
+  #
+  # Vorher stand hier claude_code. Das startet die Claude-Code-Kommandozeile;
+  # ist sie nicht angemeldet oder nicht installiert, scheitert jede Frage
+  # und AI-Orb antwortet nicht mehr. LM Studio laeuft dagegen als lokaler
+  # Server und braucht nur ein geladenes Modell.
+  #
+  # Voraussetzungen in LM Studio:
+  #   1. Das Qwen-Modell ist geladen (Reiter "Developer" -> Modell waehlen).
+  #   2. Der lokale Server laeuft ("Start Server", Port 1234).
+  #   3. "model" unten entspricht GENAU der Kennung aus LM Studio. Die Liste
+  #      zeigt:  curl http://127.0.0.1:1234/v1/models
+  # 06.11.2026: Cloud zuerst. Gemessen (CLOUD-PRUEFEN.bat, 14:39): die
+  # kostenlosen OpenRouter-Modelle liefern das erste Wort nach 2-2,5 s,
+  # LM Studio im echten Orb nach 90 s (langer Prompt, nur CPU).
+  # OpenAI-Schluessel ungueltig, Grok ohne Guthaben, NVIDIA-Schluessel im
+  # falschen Format - die bleiben aus, bis das behoben ist.
+  #
+  # Fluessig bleibt der Orb durch kurze Fristen: Wer nach 8 s kein Wort
+  # liefert, wird uebersprungen. Kostenlose Modelle sind begrenzt (429);
+  # dann uebernimmt das naechste, zuletzt LM Studio ohne Internet.
+  # 06.11.2026, 21:10: OpenAI-Schluessel gueltig. Gemessen (CLOUD-PRUEFEN):
+  # gpt-4.1-mini 0,49 s bis zum ersten Wort, gpt-4o-mini 0,66 s - schneller
+  # als alles andere. OpenRouter (Gratis-Kontingent 50/Tag, heute
+  # aufgebraucht) und LM Studio bleiben als Ersatz dahinter.
   primary:
-    engine: claude_code
-    model: sonnet
-    executable: ''
-    extra_args: []
-    timeout: 45
-    limit_cooldown_minutes: 30
-    # Wie lange Claude Code nach einer abgelaufenen Anmeldung uebersprungen
-    # wird. 0 schaltet die Sperre ab (dann kostet jede Frage erneut einen
-    # Fehlversuch). Kuerzer als die Grenzsperre, damit eine frische
-    # Anmeldung schnell wieder greift.
-    auth_cooldown_minutes: 15
-    warm_process: true
-    warm_timeout: 12
-    lean_start: true
-    tools: Read
-    effort: low
+    engine: openai
+    preset: openai
+    # Chat-Completions statt Responses: Strom Wort fuer Wort, kein Denkmodell.
+    api_style: chat_completions
+    model: gpt-4.1-mini
+    api_key_env: OPENAI_API_KEY
+    timeout: 30
+    first_token_timeout: 6
+    stream: true
+    minimum_predict_tokens: 200
+    temperature: 0.4
+  # Letzte Notloesung, wenn auch LM Studio fehlt.
   fallback:
     engine: ollama
     model: lfm2.5:8b
@@ -174,10 +215,145 @@ ai:
     context_window: 8192
   local_routing:
     enabled: true
-    main_provider: ollama
-    fast_provider: ollama_fast
+    main_provider: lmstudio
+    fast_provider: lmstudio_fast   # kurze Alltagsantworten: LM Studio mit kurzem Prompt
     sequential_only: true
   additional:
+    openai_2:
+      enabled: true
+      engine: openai
+      preset: openai
+      instance_name: openai_2
+      api_style: chat_completions
+      model: gpt-4o-mini
+      api_key_env: OPENAI_API_KEY
+      timeout: 30
+      first_token_timeout: 6
+      stream: true
+      minimum_predict_tokens: 200
+      temperature: 0.4
+    openrouter:
+      enabled: true
+      instance_name: openrouter
+      engine: openrouter
+      preset: openrouter
+      # flint (2,1 s im Kurztest) lieferte im echten Orb nie Text - auch mit
+      # 800 Tokens nicht (15:02:59). Deshalb dots-3, das zuverlaessig antwortet.
+      model: dots-studio/dots-3-note-preview:free
+      api_key_env: OPENROUTER_API_KEY
+      app_title: AI-Orb
+      timeout: 40
+      first_token_timeout: 8
+      stream: true
+      minimum_predict_tokens: 800   # Denkmodelle brauchen Platz, sonst bleibt der Text leer (flint, 06.11.)
+      temperature: 0.4
+    # Ersatz: OpenRouters Free Router waehlt ein gerade freies Gratismodell.
+    openrouter_2:
+      enabled: true
+      engine: openrouter
+      preset: openrouter
+      instance_name: openrouter_2
+      model: openrouter/free
+      api_key_env: OPENROUTER_API_KEY
+      app_title: AI-Orb
+      timeout: 40
+      first_token_timeout: 8
+      stream: true
+      minimum_predict_tokens: 800   # Denkmodelle brauchen Platz, sonst bleibt der Text leer (flint, 06.11.)
+      temperature: 0.4
+    # OpenRouters Free Router: sucht selbst ein gerade freies Gratismodell.
+    openrouter_free:
+      enabled: false
+      engine: openrouter
+      preset: openrouter
+      instance_name: openrouter_free
+      model: openrouter/free
+      api_key_env: OPENROUTER_API_KEY
+      app_title: AI-Orb
+      timeout: 40
+      first_token_timeout: 10
+      stream: true
+      minimum_predict_tokens: 800   # Denkmodelle brauchen Platz, sonst bleibt der Text leer (flint, 06.11.)
+      temperature: 0.4
+    # Nous Portal: springt ein, wenn OpenAI und OpenRouter nicht gehen
+    # (Kontingent, Guthaben, Ausfall). Schluessel: NOUS_API_KEY in .env.
+    # Achtung 06.11.: Nous verlangt fuer alle Modelle Guthaben - ohne
+    # Aufladen lehnt es sofort ab, und der naechste Ersatz uebernimmt.
+    nous:
+      enabled: true
+      engine: openai
+      preset: nous
+      instance_name: nous
+      api_style: chat_completions
+      base_url: https://inference-api.nousresearch.com/v1
+      model: Hermes-4-70B
+      api_key_env: NOUS_API_KEY
+      timeout: 30
+      first_token_timeout: 8
+      stream: true
+      minimum_predict_tokens: 200
+      temperature: 0.4
+    # LM Studio: Rueckfall ohne Internet.
+    lmstudio:
+      enabled: true
+      instance_name: lmstudio
+      engine: lmstudio
+      preset: lmstudio
+      model: qwen/qwen3.5-9b
+      base_url: http://127.0.0.1:1234/v1
+      timeout: 120
+      # Erstes Wort. Ein kaltes Modell laedt LM Studio erst bei der ersten
+      # Frage (JIT) - das dauert bei 5,6 GB etwa eine Minute.
+      first_token_timeout: 90
+      temperature: 0.4
+      # Antwort im Fluss: der Orb spricht den ersten Satz, waehrend der Rest
+      # noch entsteht.
+      stream: true
+      # Qwen 3.5 denkt sonst vor jeder Antwort; das kostet auf der CPU
+      # Sekunden und frisst die 40 gesprochenen Tokens auf.
+      thinking: false
+      # LM Studio ignoriert den Denkschalter ueber die API (Messung 06.11.:
+      # 15 s Denken, kein sichtbares Wort). Deshalb baut der Orb die
+      # Qwen-Vorlage selbst, mit leerem Denkblock. Nur fuer Qwen-Modelle -
+      # bei einem anderen Modell diese Zeile entfernen.
+      prompt_format: chatml
+      merge_system_messages: true
+      # Gegen Stille durch abgeschnittene Antworten (40 Tokens sind fuer
+      # einen deutschen Satz knapp).
+      minimum_predict_tokens: 96
+      # Langer Verlauf kostet auf der CPU vor JEDER Antwort Rechenzeit.
+      # ~12000 Zeichen sind gut 3000 Tokens und passen sicher in 8192.
+      recent_messages: 8
+      max_input_characters: 12000
+    # Dasselbe LM-Studio-Modell, aber mit kurzem Grundprompt und wenig
+    # Verlauf - fuer gesprochene Alltagsfragen. Kein zweites Modell im
+    # Speicher: LM Studio bedient beide aus demselben geladenen Modell.
+    # Wer spaeter ein kleineres Modell laedt (z. B. Qwen3.5-4B), traegt es
+    # nur hier ein.
+    lmstudio_fast:
+      enabled: true
+      engine: lmstudio
+      preset: lmstudio
+      instance_name: lmstudio_fast
+      model: qwen/qwen3.5-9b
+      base_url: http://127.0.0.1:1234/v1
+      timeout: 60
+      first_token_timeout: 90
+      temperature: 0.3
+      stream: true
+      thinking: false
+      # LM Studio ignoriert den Denkschalter ueber die API (Messung 06.11.:
+      # 15 s Denken, kein sichtbares Wort). Deshalb baut der Orb die
+      # Qwen-Vorlage selbst, mit leerem Denkblock. Nur fuer Qwen-Modelle -
+      # bei einem anderen Modell diese Zeile entfernen.
+      prompt_format: chatml
+      merge_system_messages: true
+      minimum_predict_tokens: 96
+      recent_messages: 4
+      max_input_characters: 5000
+      compact_system_prompt: Du bist Synapse, ein persoenlicher deutschsprachiger Assistent. Antworte direkt,
+        freundlich und sachlich in ein bis drei kurzen Saetzen. Erfinde nichts und behaupte nie, ein Werkzeug
+        benutzt zu haben. Wenn Informationen fehlen, sage das knapp.
     ollama_fast:
       enabled: true
       engine: ollama
@@ -197,7 +373,7 @@ ai:
       temperature: 0.2
       minimum_predict_tokens: 128
       context_window: 3072
-      compact_system_prompt: Du bist AI-Orb, ein persoenlicher deutschsprachiger Assistent. Antworte direkt,
+      compact_system_prompt: Du bist Synapse, ein persoenlicher deutschsprachiger Assistent. Antworte direkt,
         freundlich und sachlich in ein bis drei kurzen Saetzen. Erfinde nichts und behaupte nie, ein Werkzeug
         benutzt zu haben. Wenn Informationen fehlen, sage das knapp.
       recent_messages: 4
@@ -228,14 +404,6 @@ ai:
       warmup_tokens: 8
       recent_messages: 4
       compact_system_prompt: Du bist ein sorgfaeltiger, neutraler Bewerter. Du vergleichst zwei Antworten auf dieselbe Aufgabe und antwortest ausschliesslich im verlangten Format.
-    openrouter:
-      enabled: false
-      engine: openrouter
-      preset: openrouter
-      model: openrouter/free
-      api_key_env: OPENROUTER_API_KEY
-      app_title: AI-Orb
-      timeout: 25
     grok:
       enabled: false
       engine: grok
@@ -251,6 +419,8 @@ ai:
       api_style: responses
       model: gpt-5.6-terra
       api_key_env: OPENAI_API_KEY
+      # Wieder an (Schluessel gueltig seit 06.11., 21:10): fuer Bildschirmbilder,
+      # die nur ueber die Responses-API gehen. Im Dialog nicht in der Reihenfolge.
       timeout: 30
       effort: low
 routing:
@@ -279,12 +449,13 @@ routing:
   - api.openai.com
   - speech.platform.bing.com
 conversation:
-  system_prompt: 'Du bist AI-Orb - ein eigenstaendiger, lokaler Assistent auf dem Rechner des Benutzers.
-    Das ist deine Identitaet. Fragt jemand, wer oder was du bist, bist du AI-Orb. Der technisch verwendete
+  system_prompt: 'Du bist Synapse - ein eigenstaendiger, lokaler Assistent auf dem Rechner des Benutzers.
+    Das ist deine Identitaet. Fragt jemand, wer oder was du bist, bist du Synapse. Der technisch verwendete
     KI-Dienst ist Teil deiner Laufzeit und nicht deine Identitaet. Gib dich nie als Anbieter oder Modell aus.
-    Nenne dich immer AI-Orb oder kurz Orb.
+    Nenne dich immer Synapse.
 
     Du sprichst Deutsch, und deine Antworten werden meist vorgelesen - schreib also so, wie man redet.
+    Kuendige nie nur an ("Einen Moment", "Ich hole dir ..."). Liegen Suchergebnisse oder Nachrichten im Kontext, antworte sofort daraus; sonst rufe das passende Werkzeug auf.
 
     Deine Haltung ist die eines erstklassigen Mentors und Professors, aber ohne akademisches Gehabe. Rede
     nicht wie ein Lehrbuch. Kurze Saetze, gelegentliche Satzfragmente und lockere Formulierungen sind
@@ -425,17 +596,17 @@ agents:
   max_parallel: 4
   timeout: 120
   modelle:
-    conversation: openai
-    reasoning: openai_terra
-    research: openai_terra
+    conversation: openai_2
+    reasoning: openai
+    research: openai
     history: openai
-    coding: openai_terra
+    coding: openai
   lokale_modelle:
-    conversation: ollama_fast
-    reasoning: ollama
-    research: ollama
-    history: ollama
-    coding: ollama
+    conversation: lmstudio_fast
+    reasoning: lmstudio
+    research: lmstudio
+    history: lmstudio
+    coding: lmstudio
 skills:
   directory: skills
   require_confirmation: true
@@ -489,7 +660,7 @@ voice:
   enabled: true
   autostart: true
   hintergrund_erkennen: true
-  follow_up_seconds: 45
+  follow_up_seconds: 120   # war 45: nach einer Antwort 2 Minuten ohne Weckwort weiterreden
   freie_ansprache: true
   barge_in: false
   barge_in_hold_ms: 270
@@ -497,12 +668,12 @@ voice:
   - stop
   - stopp
   - halt
-  stop_window_ms: 600
+  stop_window_ms: 1200   # war 600: halbiert die Rechenlast waehrend der Orb spricht (87 Fenster in einer Antwort)
   stop_waehrend_lokaler_stimme: true
-  stop_initial_prompt: Hallo Orb. Hey Orb.
+  stop_initial_prompt: Hallo Synapse. Hey Synapse.
   stop_model_size: base
   interrupt_key: Escape
-  stream_speech: false
+  stream_speech: false   # bleibt aus: der normale Weg spricht mit LM Studio jetzt ohnehin Satz fuer Satz
   speaker:
     enabled: true
     enrollment_utterances: 3
@@ -510,7 +681,11 @@ voice:
     max_threshold: 0.55
     margin: 0.06
   sounds_enabled: true
-  interrupt_on_speech: true
+  # AUS seit 06.11.2026: Der Orb hat sich staendig selbst unterbrochen.
+  # Die Stop-Erkennung hoerte in seiner eigenen Lautsprecherstimme
+  # "Hallo Synapse" (aus ihrem Vorgabetext) und hielt das fuer dich -
+  # 8 abgebrochene Antworten in 10 Minuten. "Stopp" wirkt weiterhin.
+  interrupt_on_speech: false
   interrupt_windows: 2
   interrupt_min_confidence: 0.45
   barge_in_min_aehnlichkeit: 0.82
@@ -521,9 +696,9 @@ voice:
     ziel_sekunden: 12
   wake_word:
     phrases:
-    - Hallo Orb
-    - Hey Orb
-    - Orb
+    - Synapse
+    - Hallo Synapse
+    - Hey Synapse
     always_on: true
     threshold: 0.78
     max_leading_words: 3
@@ -540,17 +715,26 @@ voice:
     # zu lange dauert, ist das der erste Hebel - aber es ist ein Tausch
     # gegen Genauigkeit und deshalb eine Entscheidung des Benutzers, keine
     # Reparatur. 2 waere der Mittelweg.
-    beam_size: 5
-    initial_prompt: 'Ein Gespraech mit AI-Orb, einem deutschsprachigen Assistenten. Haeufige Woerter:
-      Hallo Orb, Hey Orb, stopp, Bildschirm, Datei, Ordner, Browser, Programm starten, Mail, Termin, Notiz,
-      Tagebuch, Tagebucheintrag. Erstelle einen neuen Tagebucheintrag. Beginne jetzt mit dem Diktieren.
-      Ende des Eintrages. Fachgebiete: Geschichtswissenschaft, Historiografie, Quellenkritik, Politikwissenschaft,
-      Voelkerrecht, Diplomatie, Archivarbeit, Sekundaerliteratur, militaerische Konflikte, Geopolitik.
-      Philosophie, Ethik, Erkenntnistheorie, Metaphysik, Sokrates, Platon, Aristoteles, Kant. Linguistik,
-      Sprachwissenschaft, Phonetik, Phonologie, Morphologie, Syntax, Semantik, Pragmatik. Germanistik,
-      Literaturwissenschaft, Literaturgeschichte, Goethe, Schiller, Kafka. Kuenstliche Intelligenz, Sprachmodell,
-      Algorithmus, Datensatz, Regulierung. Volkswirtschaft, Inflation, Leitzins, Lieferkette, Bruttoinlandsprodukt,
-      Ungleichheit.'
+    beam_size: 4   # 06.11.: von 2 auf 4 - mit 2 verstand der Orb zu viel falsch; kostet etwa 1 s mehr
+    # Kurz halten. Der lange Fachwortkatalog von vorher tauchte woertlich in
+    # den Erkennungen auf ("Beginn jetzt mit dem Diktieren", "Syntax") und
+    # verdraengte das Gesagte - Whisper "hoert" lange Vorgabetexte.
+    # LEER seit 06.11.2026. Jeder Vorgabetext kam auf Rauschen woertlich
+    # zurueck - erst der Fachwortkatalog, dann "lerne meine Stimme" (startete
+    # das Einlernen immer wieder), zuletzt die Wortliste ("Nachrichten des
+    # Tages, Wetter, Erinnerung"). Das Weckwort braucht ihn nicht mehr: Der
+    # Orb erkennt Marc an der Stimme.
+    initial_prompt: ''
+    # Spracherkennung ueber OpenAI (06.11.2026). Genauer und schneller als
+    # Whisper "small" auf der CPU. Faellt sie aus, erkennt die lokale wie
+    # bisher. Das Stop-Wort und die Weckwort-Vorpruefung bleiben lokal.
+    cloud:
+      enabled: true
+      api_key_env: OPENAI_API_KEY
+      models:
+      - gpt-4o-mini-transcribe
+      - whisper-1
+      timeout: 8
     microphone: null
     preroll_ms: 400
     # Wie lange Stille eine Aeusserung beendet.
@@ -560,7 +744,7 @@ voice:
     # laenger als eine Sekunde. Der Orb hielt sie fuer das Ende, machte
     # aus einem Gedanken zwei Auftraege und fing an zu antworten,
     # waehrend noch gesprochen wurde.
-    silence_ms: 1400
+    silence_ms: 1100   # war 1400; kuerzere Wartezeit bis zum Ende deiner Aussage
     threshold_factor: 3.0
     minimum_speech_ms: 350
     # Die harte Obergrenze einer einzelnen Aufnahme.
@@ -597,11 +781,16 @@ voice:
     # 'false' war ein Fehlschlag der ersten Stimme gleichbedeutend mit
     # Schweigen. Ein hoerbarer Stimmwechsel ist unschoen, Stille ist
     # schlimmer.
+    # Reihenfolge der Stimmen - nur Verfahren mit WEIBLICHER Stimme. Faellt
+    # Supertonic aus (Paket oder Modell fehlt), spricht sapi (Windows-Stimme
+    # Hedda), damit der Orb nie stumm bleibt. pocket_tts (juergen) und piper
+    # (thorsten) stehen bewusst nicht in der Kette: beides sind Maennerstimmen.
     engines:
-    - openai_tts
-    - pocket_tts
+    - supertonic
+    - sapi
     offline_engines:
-    - pocket_tts
+    - supertonic
+    - sapi
     consistent_voice: true
     allow_voice_fallback: true
     speed: 1.0
@@ -638,10 +827,10 @@ voice:
     warmup_text: Bereit.
     supertonic:
       model: supertonic-3
-      voice: M1
+      voice: F1   # F1-F5 weiblich, M1-M5 maennlich; Vorhoeren: STIMMEN-VORHOEREN.bat
       language: de
       steps: 6
-      cpu_threads: 6
+      cpu_threads: 4
       chunk_silence_ms: 70
     pocket_tts:
       model_variant: german
@@ -698,7 +887,7 @@ voice:
       noise_w: 0.8
       noise_scale: 0.667
     sapi:
-      voice: ''
+      voice: Microsoft Hedda Desktop
       timeout: 60
     kokoro:
       voice: af_heart
@@ -887,7 +1076,7 @@ presence:
   proactive_enabled: false
   proactive_gap_minutes: 45
 personality:
-  name: AI-Orb
+  name: Synapse
   waerme: 0.6
   ausfuehrlichkeit: 0.4
   foermlichkeit: 0.3

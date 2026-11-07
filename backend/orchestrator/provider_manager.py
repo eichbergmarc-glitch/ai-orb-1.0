@@ -1019,9 +1019,23 @@ class ProviderManager:
             history = history[-recent:]
         compact: list[ChatMessage] = []
         if compact_system:
-            compact.append(ChatMessage(role="system", content=compact_system))
+            # Der kurze Grundprompt ersetzt nur den langen ERSTEN. Weitere
+            # Systemnachrichten (Suchtreffer, Zugkontext) bleiben erhalten.
+            weitere = [
+                m.content
+                for i, m in enumerate(messages)
+                if m.role == "system" and m.content and not (i == 0)
+            ]
+            compact.append(
+                ChatMessage(role="system", content="\n\n".join([compact_system, *weitere]))
+            )
         elif messages and messages[0].role == "system":
-            compact.append(messages[0])
+            # Alle Systemnachrichten behalten, nicht nur die erste: Dort
+            # stehen auch Suchergebnisse und Kontext dieses Zuges. Sie
+            # werden zu einer zusammengefasst, damit die Kuerzung unten den
+            # Grundprompt als Ganzes schuetzt.
+            system_teile = [m.content for m in messages if m.role == "system" and m.content]
+            compact.append(ChatMessage(role="system", content="\n\n".join(system_teile)))
         compact.extend(history)
 
         if character_limit:

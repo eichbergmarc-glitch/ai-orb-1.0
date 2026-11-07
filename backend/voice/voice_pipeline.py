@@ -6,7 +6,7 @@ daraus, die Weckworterkennung entscheidet, ob gemeint war, und die
 Sprachausgabe antwortet.
 
 Der Ablauf in einem Satz: **Auf die zugelassenen Stimmen hören – und für
-alle anderen schlafen, bis „Hallo Orb" fällt.**
+alle anderen schlafen, bis „Hallo Synapse" fällt.**
 
 Fünf Entscheidungen prägen das Verhalten:
 
@@ -457,11 +457,13 @@ class VoicePipeline:
 
         # --- Bestandteile ----------------------------------------------------------
         self._wake_word = WakeWordDetector(
-            config.get("voice.wake_word.phrases", ["Hallo Orb"]) or ["Hallo Orb"],
+            config.get("voice.wake_word.phrases", ["Hallo Synapse"]) or ["Hallo Synapse"],
             threshold=float(config.get("voice.wake_word.threshold", 0.78)),
             max_leading_words=int(config.get("voice.wake_word.max_leading_words", 3)),
         )
 
+        #: Der Vorgabetext der Erkennung - um sein Echo zu erkennen.
+        self._vorgabetext = str(config.get("voice.input.initial_prompt", "") or "")
         self._transcriber = Transcriber(
             model_size=str(config.get("voice.input.model_size", "small")),
             language=str(config.get("voice.input.language", "de")),
@@ -470,6 +472,7 @@ class VoicePipeline:
             cpu_threads=int(config.get("voice.input.cpu_threads", 0)),
             beam_size=int(config.get("voice.input.beam_size", 1)),
             anfangshinweis=str(config.get("voice.input.initial_prompt", "")),
+            cloud=config.get("voice.input.cloud", None) or None,
         )
 
         #: Eine zweite, absichtlich winzige Erkennung – nur für das
@@ -536,7 +539,7 @@ class VoicePipeline:
             # Aufwachen; ein falsches "Stopp" kostet jeden zweiten Satz.
             anfangshinweis=str(
                 config.get("voice.stop_initial_prompt", "")
-                or "Hallo Orb. Hey Orb."
+                or "Hallo Synapse. Hey Synapse."
             ),
         )
 
@@ -919,7 +922,7 @@ class VoicePipeline:
 
         logger.info(
             "Sprachsteuerung aktiv. Sag '%s', um mich anzusprechen.",
-            self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Orb",
+            self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Synapse",
         )
         return True
 
@@ -1557,6 +1560,9 @@ class VoicePipeline:
             # findet, liest das grosse Modell die Aufnahme noch einmal
             # richtig - dann lohnt sich die Sorgfalt, denn im selben Satz
             # steht meist schon der Auftrag.
+            #: Was die kleine Erkennung im Schlaf gehoert hat - falls sie das
+            #: Weckwort SICHER erkannt hat. Siehe nach der grossen Erkennung.
+            vorpruefung_mit_weckwort = None
             if self._is_asleep():
                 # Ein Weckruf braucht Stimme: "Hallo Orb" dauert laenger als
                 # eine Dreiviertelsekunde. Kuerzeres ist Knacken, Husten,
@@ -1575,20 +1581,64 @@ class VoicePipeline:
                     klein = vorpruefung.text.lower()
                     weckverdacht = (
                         self._wake_word.detect(vorpruefung.text).detected
-                        or "orb" in klein
+                        # Anklaenge an "Synapse": die kleine Erkennung hoert
+                        # daraus oft "Sinapse", "Sünapse" oder "Sie Napse".
+                        or any(
+                            anklang in klein
+                            for anklang in (
+                                "synap", "sinap", "zynap", "cynap", "sünap",
+                                "sunap", "napse", "synab",
+                            )
+                        )
                         or "hallo" in klein
                         or "halo" in klein
+                        or "hey" in klein
                     )
+                    # Sichtbar machen, was die kleine Erkennung gehoert hat.
+                    # Bisher endete dieser Weg ohne jede Zeile: Wurde ein
+                    # Weckwort falsch verstanden, verschwand es lautlos, und
+                    # im Protokoll liess sich nicht nachsehen, WARUM der Orb
+                    # nicht reagierte.
+                    sicherheit = getattr(vorpruefung, "confidence", 0.0) or 0.0
                     if not weckverdacht:
+                        logger.info(
+                            "Schlaf-Vorpruefung: kein Weckwort-Anklang (%.2f): %r",
+                            sicherheit, vorpruefung.text[:70],
+                        )
                         trace.mark("transcript_ready")
                         turn.transcript = vorpruefung.text
                         return
+                    logger.info(
+                        "Schlaf-Vorpruefung: Weckverdacht (%.2f): %r - die grosse "
+                        "Erkennung liest die Aufnahme noch einmal.",
+                        sicherheit, vorpruefung.text[:70],
+                    )
+                    if self._wake_word.detect(vorpruefung.text).detected:
+                        vorpruefung_mit_weckwort = vorpruefung
 
             # Mit Verfallszeit: Eine Aufnahme, die eine halbe Minute auf die
             # Erkennung gewartet hat, ist keine Anweisung mehr - der
             # Benutzer hat laengst neu gesprochen oder aufgegeben. Sie doch
             # zu erkennen verzoegert nur die Aufnahme, die noch zaehlt.
             transcript = await self._transcriber.transcribe(path, verfallen_nach=25.0)
+
+            # Die grosse Erkennung macht es nicht immer besser. Protokoll
+            # 06.11.2026, 14:24: klein "Hey Synapse, wie geht das dir heute?",
+            # gross "Ersteinabs, die Gette Stilhaeute." - das Weckwort war
+            # weg, der Orb blieb stumm, obwohl er richtig gehoert hatte.
+            # Hat die kleine das Weckwort sicher erkannt und die grosse
+            # nicht, gilt die kleine.
+            if (
+                vorpruefung_mit_weckwort is not None
+                and not self._wake_word.detect(transcript.text).detected
+            ):
+                logger.info(
+                    "Die grosse Erkennung verlor das Weckwort (%r); es gilt die "
+                    "kleine: %r",
+                    transcript.text[:70],
+                    vorpruefung_mit_weckwort.text[:70],
+                )
+                transcript = vorpruefung_mit_weckwort
             trace.mark("transcript_ready")
             turn.transcript = transcript.text
             turn.confidence = transcript.confidence
@@ -1659,6 +1709,18 @@ class VoicePipeline:
             if _ist_whisper_phantom(transcript.text):
                 logger.info(
                     "Verworfen: Whisper-Standardsatz ohne Sprecher (%r).",
+                    transcript.text[:60],
+                )
+                return
+
+            # Und das Echo des eigenen Vorgabetexts. Whisper gibt auf Rauschen
+            # gern woertlich den initial_prompt zurueck. Am 06.11.2026 stand
+            # darin "Hey Synapse, lerne meine Stimme" - und der Orb startete
+            # deshalb immer wieder das Einlernen und fragte nach drei Saetzen.
+            vorgabe = getattr(self, "_vorgabetext", "")
+            if _ist_vorgabe_echo(transcript.text, vorgabe):
+                logger.info(
+                    "Verworfen: Echo des Vorgabetexts der Erkennung (%r).",
                     transcript.text[:60],
                 )
                 return
@@ -2718,7 +2780,7 @@ class VoicePipeline:
                 self._vorlesung.pausieren()
             self._ruhe = True
             weckwort = (
-                self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Orb"
+                self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Synapse"
             )
             await self._say(
                 f"Alles klar, ich ziehe mich zurück. Sag '{weckwort}', "
@@ -3837,7 +3899,7 @@ class VoicePipeline:
             return problems
         return (
             "Die Sprachsteuerung ist einsatzbereit. Sag '"
-            + (self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Orb")
+            + (self._wake_word.phrases[0] if self._wake_word.phrases else "Hallo Synapse")
             + "'."
         )
 
@@ -3895,6 +3957,32 @@ def _ist_whisper_phantom(text: str) -> bool:
     return False
 
 
+def _normalisiert(text: str) -> str:
+    bereinigt = str(text or "").lower()
+    for zeichen in ".,!?;:\u2026\"'()[]-\u2013\u2014":
+        bereinigt = bereinigt.replace(zeichen, " ")
+    bereinigt = (
+        bereinigt.replace("ü", "ue").replace("ä", "ae").replace("ö", "oe")
+        .replace("ß", "ss")
+    )
+    return " ".join(bereinigt.split())
+
+
+def _ist_vorgabe_echo(text: str, vorgabe: str) -> bool:
+    """Ob die Erkennung nur ein Stueck des eigenen Vorgabetexts ist.
+
+    Kurze Erkennungen (unter fuenf Woertern) gelten nie als Echo - "Hallo
+    Synapse" darf natuerlich weiterhin wecken, auch wenn es in der Vorgabe
+    steht.
+    """
+
+    kern = _normalisiert(text)
+    vorlage = _normalisiert(vorgabe)
+    if not kern or not vorlage or len(kern.split()) < 5:
+        return False
+    return kern in vorlage
+
+
 def _ist_geplapper(text: str) -> bool:
     """Ob eine Erkennung nur aus Wortwiederholungen besteht.
 
@@ -3906,6 +3994,17 @@ def _ist_geplapper(text: str) -> bool:
     hiesse, das Sprachmodell ueber ein Wort nachdenken zu lassen, das
     niemand gesagt hat.
     """
+
+    # Ganze Saetze in Schleife: "Es geht nicht um die Zeit. Es geht nicht um
+    # die Zeit. Es geht nicht um die Zeit." (06.11.2026, 16:11) - derselbe
+    # Satz dreimal ist ein Verhaken der Erkennung, keine Aeusserung.
+    saetze = [
+        " ".join(teil.lower().split())
+        for teil in re.split(r"[.!?\u2026]+", str(text or ""))
+        if teil.strip()
+    ]
+    if len(saetze) >= 3 and len(set(saetze)) == 1:
+        return True
 
     woerter = [w.strip(".,!?;:\u2026").lower() for w in text.split()]
     woerter = [w for w in woerter if w]
