@@ -794,6 +794,16 @@ class ToolEngine:
                 "termine_ansehen", "termin_erstellen", "termin_aendern",
                 "termin_loeschen", "gmail_anmelden",
             )
+        if any(w in knapp for w in (
+            "musik", "song", "lied", "playlist", "tidal", "spiel ", "spiele ",
+            "abspielen", "hören", "hoeren", "pause", "nächste", "naechste",
+            "lauter", "leiser", "album", "künstler", "kuenstler",
+        )):
+            dazu(
+                "musik_abspielen", "musik_suchen", "musik_steuern",
+                "playlists_ansehen", "playlist_erstellen", "playlist_ergaenzen",
+                "tidal_anmelden",
+            )
         if any(w in knapp for w in ("code", "quelltext", "fehler", "konfiguration", "config")):
             dazu(
                 "eigenen_code_lesen", "eigenen_code_aendern", "dateien_suchen",

@@ -462,6 +462,8 @@ class VoicePipeline:
             max_leading_words=int(config.get("voice.wake_word.max_leading_words", 3)),
         )
 
+        #: Fehlersuche: so viele letzte Aufnahmen in logs/aufnahmen behalten.
+        self._diagnose_aufnahmen = int(config.get("voice.input.diagnose_aufnahmen", 0) or 0)
         #: Der Vorgabetext der Erkennung - um sein Echo zu erkennen.
         self._vorgabetext = str(config.get("voice.input.initial_prompt", "") or "")
         self._transcriber = Transcriber(
@@ -759,6 +761,14 @@ class VoicePipeline:
         self._satzstrom_queue: asyncio.Queue[Any] | None = None
         self._satzstrom_worker: asyncio.Task[bool] | None = None
         self._satzstrom_synth_lock = asyncio.Lock()
+        #: Fuer Cloud-Stimmen (OpenAI): mehrere Saetze GLEICHZEITIG erzeugen.
+        #: Seriell wartete jeder Satz auf den vorigen Abruf (je ~1-2 s) - war
+        #: ein Satz kuerzer gesprochen als der naechste erzeugt, entstand eine
+        #: Luecke. Das klang abgehackt (07.11.2026). Lokale Stimmen bleiben
+        #: seriell, sonst ueberlasten sie die CPU.
+        self._satzstrom_cloud_slots = asyncio.Semaphore(
+            max(1, int(config.get("voice.output.parallel_cloud_synthesis", 3) or 3))
+        )
         self._satzstrom_failed = False
         self._apply_learned_speech_style()
         self._history: list[VoiceTurn] = []
@@ -1422,6 +1432,15 @@ class VoicePipeline:
         claimed_turn = False
 
         try:
+            # Spricht Marc gerade ueber Handy oder iPad mit Synapse, hoert
+            # das PC-Mikrofon ihn meist mit. Bis 12.11.2026 antwortete der
+            # PC dann zusaetzlich - auf halb Verstandenes, still in den Chat,
+            # waehrend Marc gar nicht vor dem PC sass. Solange ein Geraet
+            # aktiv ist, bleibt das PC-Mikrofon deshalb stumm.
+            if time.monotonic() < float(getattr(self, "lokal_ruhig_bis", 0.0) or 0.0):
+                logger.debug("PC-Mikrofon ruht - das Handy/iPad ist im Gespraech.")
+                return
+
             # Solange der Orb spricht, gilt nur eine Frage: Fiel das
             # Stop-Wort? Alles andere wird überhört – auch die eigene
             # Stimme des Orb, die das Mikrofon mithört. Deshalb wird hier
@@ -1725,6 +1744,18 @@ class VoicePipeline:
                 )
                 return
 
+            # Fremde Schrift: Auf Geraeusche antwortet die Cloud-Erkennung
+            # gelegentlich in einer ganz anderen Sprache ("음, 그거." am
+            # 07.11.2026, 07:2x). Marc spricht Deutsch - ein Satz, der
+            # ueberwiegend nicht aus lateinischen Buchstaben besteht, ist
+            # kein Auftrag. Der Orb hat darauf bisher trotzdem geantwortet.
+            if _ueberwiegend_fremde_schrift(transcript.text):
+                logger.info(
+                    "Verworfen: Erkennung in fremder Schrift (%r).",
+                    transcript.text[:60],
+                )
+                return
+
             await self._event_bus.publish(
                 event_types.SPEECH_TRANSCRIBED,
                 {
@@ -1747,6 +1778,11 @@ class VoicePipeline:
                 self._turn_claimed = False
             # Die Aufnahme wird nicht aufbewahrt. Vorgabe: Keine
             # Mikrofonaufnahmen werden dauerhaft gespeichert.
+            #
+            # Ausnahme nur auf ausdruecklichen Wunsch zur Fehlersuche
+            # (voice.input.diagnose_aufnahmen: N): die letzten N Aufnahmen
+            # bleiben in logs/aufnahmen liegen, aeltere werden geloescht.
+            self._diagnose_aufnahme_behalten(path)
             with contextlib.suppress(OSError):
                 path.unlink()
             turn.duration_seconds = time.perf_counter() - started
@@ -1977,6 +2013,26 @@ class VoicePipeline:
         self._stimme_lernt = None
         self._stimme_lernt_gast = False
         self._stimme_rueckweisungen = 0
+
+    def _diagnose_aufnahme_behalten(self, path: Path) -> None:
+        anzahl = int(getattr(self, "_diagnose_aufnahmen", 0) or 0)
+        if anzahl <= 0:
+            return
+        try:
+            import shutil
+
+            from backend.utils.paths import get_logs_dir
+
+            ziel = get_logs_dir() / "aufnahmen"
+            ziel.mkdir(parents=True, exist_ok=True)
+            if path.is_file():
+                shutil.copy2(path, ziel / f"{time.strftime('%Y%m%d-%H%M%S')}-{path.name}")
+            alle = sorted(ziel.glob("*.wav"))
+            for alt in alle[:-anzahl]:
+                with contextlib.suppress(OSError):
+                    alt.unlink()
+        except Exception:  # noqa: BLE001 - Fehlersuche darf nie stoeren.
+            logger.debug("Diagnose-Aufnahme nicht gesichert.", exc_info=True)
 
     #: Saetze, die das Hinterlegen der Stimme ausloesen.
     #:
@@ -3050,12 +3106,25 @@ class VoicePipeline:
         async def _vorbereiten() -> Any:
             # Die TTS-Engine selbst bleibt seriell (wichtig fuer lokale
             # Modelle), laeuft aber parallel zur Wiedergabe des Vorgaengers.
+            if self._stimme_ist_cloud():
+                async with self._satzstrom_cloud_slots:
+                    return await self._tts.speak(satz, state="speaking")
             async with self._satzstrom_synth_lock:
                 return await self._tts.speak(satz, state="speaking")
 
         pending = asyncio.create_task(_vorbereiten())
         await queue.put((satz, pending))
         return True
+
+    def _stimme_ist_cloud(self) -> bool:
+        """Ob die gerade aktive Stimme in der Cloud erzeugt wird."""
+
+        aktiv = getattr(self._tts, "_active", None)
+        if aktiv is None:
+            reihe = getattr(self._tts, "_engines", None) or []
+            aktiv = reihe[0] if reihe else None
+        name = str(getattr(aktiv, "name", "") or "")
+        return name in {"openai_tts", "elevenlabs", "edge_neural", "remote_tts", "speechgen"}
 
     def _satzstrom_starten(self) -> None:
         """Startet eine geordnete, vorproduzierende Satzwiedergabe."""
@@ -3981,6 +4050,16 @@ def _ist_vorgabe_echo(text: str, vorgabe: str) -> bool:
     if not kern or not vorlage or len(kern.split()) < 5:
         return False
     return kern in vorlage
+
+
+def _ueberwiegend_fremde_schrift(text: str) -> bool:
+    """Ob die Buchstaben eines Textes ueberwiegend nicht lateinisch sind."""
+
+    buchstaben = [z for z in str(text or "") if z.isalpha()]
+    if not buchstaben:
+        return False
+    lateinisch = sum(1 for z in buchstaben if ord(z) < 0x250)
+    return lateinisch / len(buchstaben) < 0.5
 
 
 def _ist_geplapper(text: str) -> bool:

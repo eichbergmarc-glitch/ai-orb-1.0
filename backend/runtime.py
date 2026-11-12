@@ -210,6 +210,22 @@ class Runtime:
             neustart=self.neustarter,
         )
         self.tools.register_many(build_development_tools(self.live_development))
+        # Das Handy (12.11.2026): anrufen, SMS/WhatsApp, Apps, Kurzbefehle.
+        try:
+            from backend.integrations.gmail.oauth import GmailAuth
+            from backend.tools.handy_tools import Kontaktbuch, build_handy_tools
+
+            self.kontakte = Kontaktbuch(GmailAuth())
+            self.tools.register_many(build_handy_tools(self.kontakte))
+        except Exception:  # noqa: BLE001 - ohne Handy-Werkzeuge laeuft der Orb weiter.
+            logger.exception("Die Handy-Werkzeuge liessen sich nicht anmelden.")
+        # Fahrplan (12.11.2026): Zug-, Bus- und Postautoverbindungen.
+        try:
+            from backend.tools.fahrplan_tools import VerbindungSuchenTool
+
+            self.tools.register_many([VerbindungSuchenTool()])
+        except Exception:  # noqa: BLE001 - ohne Fahrplan laeuft der Orb weiter.
+            logger.exception("Das Fahrplan-Werkzeug liess sich nicht anmelden.")
         # Abgewiesene Werkzeuge sind ein Startfehler, keine Randnotiz.
         #
         # Achtzehn Tage lang wies das Register 'internet_suchen' bei jedem
@@ -283,6 +299,23 @@ class Runtime:
             ReadScreenTool(self.vision),
             DescribeScreenTool(self.vision),
         ])
+
+        # Die Webcam (07.11.2026): ansehen und Marc wiedererkennen.
+        if bool(self.config.get("vision.kamera.enabled", True)):
+            try:
+                from backend.tools.vision_tools import GesichtMerkenTool, KameraAnsehenTool
+                from backend.vision.kamera import Kamera
+
+                self.kamera = Kamera(
+                    provider_manager=self.providers,
+                    einstellungen=dict(self.config.get("vision.kamera", {}) or {}),
+                )
+                self.tools.register_many([
+                    KameraAnsehenTool(self.kamera),
+                    GesichtMerkenTool(self.kamera),
+                ])
+            except Exception:  # noqa: BLE001 - ohne Kamera laeuft der Orb weiter.
+                logger.exception("Die Kamera-Werkzeuge liessen sich nicht anmelden.")
         self.voice = VoicePipeline(
             event_bus=self.event_bus,
             security=self.security,
@@ -539,6 +572,33 @@ class Runtime:
                     )
             except Exception:  # noqa: BLE001 - ohne Kalender laeuft der Rest weiter.
                 logger.exception("Die Kalender-Werkzeuge liessen sich nicht anmelden.")
+
+        # TIDAL: Musik suchen, in der App abspielen, Playlists anlegen.
+        # Suchen geht schon mit Client-ID und -Secret aus der .env, fuer
+        # Playlists braucht es einmal "Melde mich bei TIDAL an".
+        self.tidal = None
+        if bool(self.config.get("tidal.enabled", True)):
+            try:
+                from backend.integrations.tidal.client import TidalClient
+                from backend.integrations.tidal.oauth import TidalAuth, TidalOAuthConfig
+                from backend.tools.tidal_tools import TidalDienst, build_tidal_tools
+
+                tidal_auth = TidalAuth(
+                    TidalOAuthConfig.from_env(
+                        scope=str(self.config.get("tidal.scope", "") or ""),
+                        redirect_uri=str(self.config.get("tidal.redirect_uri", "") or ""),
+                    )
+                )
+                self.tidal = TidalDienst(
+                    TidalClient(tidal_auth, land=str(self.config.get("tidal.land", "CH"))),
+                    danach_abspielen=bool(self.config.get("tidal.nach_oeffnen_abspielen", True)),
+                    warte_sekunden=float(self.config.get("tidal.warte_sekunden", 4.0)),
+                )
+                self.tools.register_many(build_tidal_tools(self.tidal))
+                if not tidal_auth.is_configured:
+                    logger.info("TIDAL: TIDAL_CLIENT_ID/TIDAL_CLIENT_SECRET fehlen in der .env.")
+            except Exception:  # noqa: BLE001 - ohne TIDAL laeuft der Rest weiter.
+                logger.exception("Die TIDAL-Werkzeuge liessen sich nicht anmelden.")
 
         from backend.tools.memory_tools import build_memory_tools
 
@@ -1423,7 +1483,27 @@ class Runtime:
             self._sprechauftraege.popitem(last=False)
 
         await self._teil_sprechen(auftrag, 0)
+
+        # Cloud-Stimme (OpenAI): alle weiteren Stuecke sofort anstossen.
+        # Der Grund fuer "eins nach dem anderen" war die Rechenlast der
+        # LOKALEN Stimme. In der Cloud kostet das hier nichts - und das
+        # Geraet muss nie auf ein Stueck warten. Gewartet hat es bisher
+        # mitten in der Antwort, und auf dem iPhone brach die Stimme dabei
+        # ab (12.11.2026).
+        if self._stimme_in_der_cloud():
+            for nummer in range(1, len(stuecke)):
+                self._stueck_anstossen(auftrag, nummer)
         return auftrag
+
+    def _stimme_in_der_cloud(self) -> bool:
+        tts = getattr(getattr(self, "voice", None), "tts", None)
+        aktiv = getattr(tts, "_active", None)
+        if aktiv is None:
+            reihe = getattr(tts, "_engines", None) or []
+            aktiv = reihe[0] if reihe else None
+        return str(getattr(aktiv, "name", "") or "") in {
+            "openai_tts", "elevenlabs", "edge_neural", "remote_tts", "speechgen",
+        }
 
     def _alte_auftraege_abbrechen(self) -> None:
         """Beendet das Sprechen der vorigen Antwort.
@@ -1436,7 +1516,58 @@ class Runtime:
         for eintrag in self._sprechauftraege.values():
             eintrag["abgebrochen"] = True
 
-    async def stimme_vom_geraet(self, aufnahme: Path) -> dict[str, Any]:
+    #: Nach einer Antwort aufs Handy so lange ohne "Hey Synapse" weiterreden.
+    GERAET_NACHFRAGE_SEKUNDEN = 120.0
+
+    async def _dauerhoeren_pruefen(self, aufnahme: Path) -> dict[str, Any] | None:
+        """Freihaendig vom Handy (12.11.2026): nur mit Weckwort antworten.
+
+        Das Handy hoert dauerhaft und schickt jedes Stueck Sprache. Hier
+        wird entschieden, ob es gemeint war: "Hey Synapse ..." oder kurz
+        nach einer Antwort. Alles andere wird still verworfen - und, das ist
+        wichtig, bricht die laufende Antwort NICHT ab.
+
+        Gibt ``None`` zurueck, wenn es eine Frage ist, die beantwortet werden
+        soll (der Text liegt dann in ``self._dauer_frage``), sonst das
+        Ergebnis fuer das Geraet.
+        """
+
+        transcript = await self.voice.transcriber.transcribe(aufnahme)
+        frage = transcript.text.strip()
+        self._dauer_frage = ""
+        if not frage:
+            return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "grund": "still"}
+
+        try:
+            from backend.voice.voice_pipeline import (
+                _ist_whisper_phantom,
+                _ueberwiegend_fremde_schrift,
+            )
+
+            if _ist_whisper_phantom(frage) or _ueberwiegend_fremde_schrift(frage):
+                return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "grund": "rauschen"}
+        except Exception:  # noqa: BLE001
+            pass
+
+        treffer = self.voice._wake_word.detect(frage)
+        offen = time.monotonic() < float(getattr(self, "_geraet_offen_bis", 0.0))
+        if not treffer.detected and not offen:
+            logger.info("Handy hoert mit, ohne Weckwort: %r", frage[:80])
+            return {"frage": "", "antwort": "", "auftrag": "", "teile": 0,
+                    "grund": "kein_weckwort"}
+
+        self._alte_auftraege_abbrechen()
+        if treffer.detected and not treffer.has_command:
+            # Nur "Hey Synapse": kurz bestaetigen und zuhoeren.
+            self._geraet_offen_bis = time.monotonic() + self.GERAET_NACHFRAGE_SEKUNDEN
+            auftrag = await self._auftrag_anlegen("Ja?")
+            return {"frage": frage, "antwort": "Ja?", "auftrag": auftrag, "teile": 1,
+                    "zuhoeren": True}
+
+        self._dauer_frage = frage
+        return None
+
+    async def stimme_vom_geraet(self, aufnahme: Path, *, dauer: bool = False) -> dict[str, Any]:
         """Eine Aufnahme von einem anderen Gerät: erkennen, antworten, sprechen.
 
         Das Mikrofon sitzt im iPad, und die Antwort soll dort zu hören
@@ -1454,12 +1585,28 @@ class Runtime:
             Sprechstücke zu holen sind.
         """
 
-        # Zuerst die alte Antwort verstummen lassen - sonst rechnet die
-        # Stimme noch, während die Erkennung schon anfängt.
-        self._alte_auftraege_abbrechen()
+        # Das PC-Mikrofon ruht, solange das Handy im Gespraech ist - sonst
+        # antwortet der PC auf dasselbe, nur halb verstanden (12.11.2026).
+        try:
+            self.voice.lokal_ruhig_bis = time.monotonic() + float(
+                self.config.get("voice.geraet_ruhe_sekunden", 600) or 0
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
-        transcript = await self.voice.transcriber.transcribe(aufnahme)
-        frage = transcript.text.strip()
+        if dauer:
+            vorab = await self._dauerhoeren_pruefen(aufnahme)
+            if vorab is not None:
+                return vorab
+            frage = self._dauer_frage
+            transcript = type("T", (), {"confidence": 0.9})()
+        else:
+            # Zuerst die alte Antwort verstummen lassen - sonst rechnet die
+            # Stimme noch, während die Erkennung schon anfängt.
+            self._alte_auftraege_abbrechen()
+
+            transcript = await self.voice.transcriber.transcribe(aufnahme)
+            frage = transcript.text.strip()
 
         if not frage:
             logger.info("Aufnahme vom Gerät enthielt keine erkennbare Sprache.")
@@ -1482,15 +1629,25 @@ class Runtime:
 
         logger.info("Frage vom Gerät: %s", frage)
 
-        antwort = await self.cognitive.process(frage, spoken=True)
+        from backend.tools import handy_tools
+
+        handy_tools.geraet_aktiv(True)
+        try:
+            antwort = await self.cognitive.process(frage, spoken=True)
+        finally:
+            handy_tools.geraet_aktiv(False)
+        aktionen = handy_tools.aktionen_abholen()
         text = str(getattr(antwort, "response", "") or "").strip()
 
         if not text:
-            return {"frage": frage, "antwort": "", "auftrag": "", "teile": 0}
+            return {"frage": frage, "antwort": "", "auftrag": "", "teile": 0,
+                    "aktionen": aktionen}
 
         gesprochen, gekuerzt = self._fuers_sprechen(text, self.SPRECH_GRENZE)
         stuecke = self._stuecke_bilden(gesprochen) or [gesprochen]
         auftrag = await self._auftrag_anlegen(stuecke)
+        # Nach jeder Antwort darf ohne Weckwort weitergeredet werden.
+        self._geraet_offen_bis = time.monotonic() + self.GERAET_NACHFRAGE_SEKUNDEN
 
         logger.info(
             "Antwort für das Gerät: %d Zeichen in %d Stück(en), erstes %d Zeichen%s",
@@ -1507,6 +1664,8 @@ class Runtime:
             "teile": len(stuecke),
             "gekuerzt": gekuerzt,
             "sicherheit": round(transcript.confidence, 3),
+            # Knoepfe fuer das Handy: anrufen, Nachricht, App, PDF (12.11.2026).
+            "aktionen": aktionen,
         }
 
     def status(self) -> dict[str, Any]:

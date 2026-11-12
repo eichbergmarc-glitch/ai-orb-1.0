@@ -65,6 +65,14 @@
   var beginn = 0;
   var etwasGehoert = false;
 
+  //: Freihaendig (12.11.2026): Das Handy hoert dauerhaft zu, und Synapse
+  //: antwortet auf "Hey Synapse ..." - ohne den Knopf jedes Mal zu
+  //: druecken. Einmal tippen schaltet es ein (iOS verlangt dafuer einen
+  //: Fingertipp), nochmal tippen schaltet es aus.
+  var dauer = false;
+  var dauerErste = false;
+  var abbruchOhneAbgabe = false;
+
   var knopf = document.getElementById("stimme-knopf");
   var anzeige = document.getElementById("stimme-anzeige");
 
@@ -96,6 +104,7 @@
    * iOS spaeter jede Wiedergabe - ohne Fehlermeldung, einfach lautlos.
    */
   function tonFreischalten() {
+    wiedergabeVorbereiten();
     if (freigeschaltet) return;
     freigeschaltet = true;
     tonspur = new Audio();
@@ -163,7 +172,7 @@
   async function starten() {
     if (laeuft || abgabeLaeuft) return;
     tonFreischalten();
-    nachreichenWeg();
+    if (!dauer) nachreichenWeg();
 
     try {
       strom = await navigator.mediaDevices.getUserMedia({
@@ -187,7 +196,27 @@
     }
 
     kontext = new (window.AudioContext || window.webkitAudioContext)();
-    if (kontext.state === "suspended") await kontext.resume();
+    if (kontext.state === "suspended") {
+      try {
+        await Promise.race([kontext.resume(), warte(800)]);
+      } catch (fehler) { /* unten behandelt */ }
+    }
+    // Ohne Fingertipp laesst iOS den Ton-Kontext manchmal schlafen. Dann
+    // kommt kein einziger Ton an - lieber ehrlich aufgeben und um einen
+    // Tipp bitten (siehe automatischStarten).
+    if (kontext.state !== "running") {
+      try { strom.getTracks().forEach(function (spur) { spur.stop(); }); } catch (f) { /* egal */ }
+      try { await kontext.close(); } catch (f) { /* egal */ }
+      kontext = null;
+      return "gesperrt";
+    }
+
+    // Wiedergabe ueber Web Audio (12.11.2026): Startet das Zuhoeren beim
+    // Oeffnen der Seite ohne Fingertipp, verweigert iOS dem Audio-Element
+    // jede Wiedergabe - die Antwort kam an, blieb aber stumm. Ein
+    // Ton-Kontext, der WAEHREND der Mikrofon-Aufnahme entsteht, laeuft
+    // dagegen ohne Tipp. Er bleibt offen und spielt alle Antworten.
+    wiedergabeVorbereiten();
 
     quelle = kontext.createMediaStreamSource(strom);
     verarbeiter = kontext.createScriptProcessor(4096, 1, 1);
@@ -225,6 +254,14 @@
         return;
       }
 
+      // Freihaendig: Solange niemand spricht, nur die letzte Sekunde
+      // behalten - sonst waechst die Aufnahme ueber Minuten Stille.
+      if (dauer && !etwasGehoert && stuecke.length > 8) {
+        stuecke = stuecke.slice(-4);
+        beginn = jetzt;
+        return;
+      }
+
       // Von selbst aufhoeren, wenn jemand zu Ende gesprochen hat.
       if (
         etwasGehoert &&
@@ -243,7 +280,9 @@
 
     laeuft = true;
     zustand("hoert");
-    melde("Ich höre … (hört von selbst auf)");
+    melde(dauer
+      ? (dauerErste ? "Ich höre … (freihändig an)" : "Freihändig – sag „Hey Synapse …“")
+      : "Ich höre … (hört von selbst auf)");
 
     stoppUhr = window.setTimeout(function () {
       void beenden();
@@ -272,9 +311,18 @@
       kontext = null;
     }
 
+    if (abbruchOhneAbgabe) {
+      abbruchOhneAbgabe = false;
+      stuecke = [];
+      zustand("aus");
+      return;
+    }
+
     var gesamt = 0;
     stuecke.forEach(function (stueck) { gesamt += stueck.length; });
-    if (gesamt < rate * 0.3) {
+    if (gesamt < rate * 0.3 || (dauer && !etwasGehoert)) {
+      stuecke = [];
+      if (dauer) { weiterHoeren(); return; }
       melde("Das war zu kurz.");
       zustand("aus");
       return;
@@ -346,9 +394,14 @@
     warteAnzeige(true, "Einen Moment …");
 
     try {
+      var kopf = { "Content-Type": "audio/wav" };
+      // Die erste Aufnahme nach dem Einschalten gilt immer (man hat ja
+      // gerade getippt); danach nur mit Weckwort oder kurz nach einer Antwort.
+      if (dauer && !dauerErste) kopf["X-Orb-Dauer"] = "1";
+      dauerErste = false;
       var antwort = await fetch("/stimme/aufnahme", {
         method: "POST",
-        headers: { "Content-Type": "audio/wav" },
+        headers: kopf,
         body: blob,
         credentials: "same-origin",
       });
@@ -361,7 +414,9 @@
       var ergebnis = await antwort.json();
 
       if (!ergebnis.frage) {
-        melde("Nichts verstanden.");
+        // Freihaendig ist das der Normalfall (kein "Hey Synapse"): still
+        // weiterhoeren statt "Nichts verstanden" zu zeigen.
+        if (!dauer) melde("Nichts verstanden.");
         return;
       }
 
@@ -374,11 +429,20 @@
       if (ergebnis.befehl === "chat_auf") window.orbWeb.chatZeigen(true);
       if (ergebnis.befehl === "chat_zu") window.orbWeb.chatZeigen(false);
 
+      // Handy-Aktionen (12.11.2026): Anruf, SMS/WhatsApp, App, PDF.
+      zeigeAktionen(ergebnis.aktionen || []);
+
       if (ergebnis.auftrag && ergebnis.teile > 0) {
         melde("");
-        // Nicht warten: Das Sprechen laeuft weiter, waehrend der Knopf
-        // schon wieder bereit ist.
-        void vorlesen(ergebnis.auftrag, ergebnis.teile);
+        if (dauer) {
+          // Freihaendig: erst zu Ende sprechen, dann wieder zuhoeren - sonst
+          // hoert sich das Handy selbst.
+          sprichtNoch = vorlesen(ergebnis.auftrag, ergebnis.teile);
+        } else {
+          // Nicht warten: Das Sprechen laeuft weiter, waehrend der Knopf
+          // schon wieder bereit ist.
+          void vorlesen(ergebnis.auftrag, ergebnis.teile);
+        }
       } else if (ergebnis.ton) {
         // Die Antwort kommt noch in der alten Form: eine einzige Datei
         // statt Stuecken.
@@ -400,11 +464,82 @@
       }
     } catch (fehler) {
       melde("Die Verbindung brach ab.");
+      handyMeldung("Fehler bei der Abgabe: " + (fehler && (fehler.message || fehler.name)));
     } finally {
       warteAnzeige(false);
       abgabeLaeuft = false;
       zustand("aus");
+      if (dauer) {
+        var warten = sprichtNoch;
+        sprichtNoch = null;
+        if (warten) { try { await warten; } catch (f) { /* egal */ } }
+        weiterHoeren();
+      }
     }
+  }
+
+  /**
+   * Knoepfe fuer das, was Synapse auf dem Handy vorbereitet hat.
+   *
+   * iOS laesst eine Webseite nicht selbst anrufen oder senden - wohl aber
+   * einen Verweis oeffnen, wenn der Mensch darauf tippt. Darum ein grosser
+   * Knopf pro Aktion: "Peter anrufen", "WhatsApp an Peter senden",
+   * "Reiseplan oeffnen".
+   */
+  var aktionsLeiste = null;
+  var SYMBOLE = { anruf: "📞", nachricht: "💬", app: "📱", kurzbefehl: "⚡", dokument: "📄" };
+
+  function zeigeAktionen(aktionen) {
+    if (!aktionen || !aktionen.length) return;
+    if (aktionsLeiste) aktionsLeiste.remove();
+    aktionsLeiste = document.createElement("div");
+    aktionsLeiste.setAttribute("role", "dialog");
+    aktionsLeiste.style.cssText =
+      "position:fixed;left:12px;right:12px;bottom:calc(16px + env(safe-area-inset-bottom));" +
+      "z-index:9999;display:flex;flex-direction:column;gap:10px;padding:14px;" +
+      "background:rgba(14,20,32,0.96);border:1px solid rgba(120,170,255,0.35);" +
+      "border-radius:18px;box-shadow:0 10px 40px rgba(0,0,0,0.5);" +
+      "font-family:system-ui,-apple-system,sans-serif;";
+    aktionen.forEach(function (aktion) {
+      var verweis = document.createElement("a");
+      verweis.href = aktion.url;
+      if (aktion.art === "dokument") verweis.target = "_blank";
+      verweis.rel = "noopener";
+      verweis.textContent = (SYMBOLE[aktion.art] || "➜") + "  " + aktion.titel;
+      verweis.style.cssText =
+        "display:block;padding:16px 18px;border-radius:14px;text-decoration:none;" +
+        "font-size:18px;font-weight:600;color:#fff;text-align:center;" +
+        "background:" + (aktion.art === "anruf" ? "#2e9e5b" : "#2f6fde") + ";";
+      verweis.addEventListener("click", function () {
+        tonFreischalten();
+        window.setTimeout(function () {
+          if (aktionsLeiste && aktion.art !== "dokument") { aktionsLeiste.remove(); aktionsLeiste = null; }
+        }, 400);
+      });
+      aktionsLeiste.appendChild(verweis);
+    });
+    var zu = document.createElement("button");
+    zu.type = "button";
+    zu.textContent = "Schliessen";
+    zu.style.cssText =
+      "padding:10px;border:0;border-radius:12px;background:transparent;" +
+      "color:#9fb3cf;font-size:15px;";
+    zu.addEventListener("click", function (ereignis) {
+      ereignis.stopPropagation();
+      if (aktionsLeiste) { aktionsLeiste.remove(); aktionsLeiste = null; }
+    });
+    aktionsLeiste.appendChild(zu);
+    document.body.appendChild(aktionsLeiste);
+  }
+
+  var sprichtNoch = null;
+
+  /** Freihaendig: nach einer kurzen Pause wieder zuhoeren. */
+  function weiterHoeren() {
+    if (!dauer) return;
+    window.setTimeout(function () {
+      if (dauer && !laeuft && !abgabeLaeuft) void starten();
+    }, 400);
   }
 
   /**
@@ -436,20 +571,91 @@
     return null;
   }
 
+  var wiedergabe = null;
+
+  function wiedergabeVorbereiten() {
+    try {
+      if (!wiedergabe || wiedergabe.state === "closed") {
+        wiedergabe = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (wiedergabe.state !== "running") {
+        var p = wiedergabe.resume();
+        if (p && p.catch) p.catch(function () {});
+      }
+    } catch (fehler) {
+      wiedergabe = null;
+    }
+  }
+
   /** Spielt eine Datei ab und wartet, bis sie zu Ende ist. */
-  function abspielen(stueck) {
+  async function abspielen(stueck) {
+    if (wiedergabe && wiedergabe.state === "suspended") {
+      try { await Promise.race([wiedergabe.resume(), warte(500)]); } catch (f) { /* egal */ }
+    }
+    if (wiedergabe && wiedergabe.state === "running") {
+      try {
+        var roh = await stueck.arrayBuffer();
+        var puffer = await new Promise(function (gut, schlecht) {
+          var r = wiedergabe.decodeAudioData(roh, gut, schlecht);
+          if (r && r.then) r.then(gut, schlecht);
+        });
+        return await new Promise(function (fertig) {
+          var q = wiedergabe.createBufferSource();
+          q.buffer = puffer;
+          q.connect(wiedergabe.destination);
+          var vorbei = false;
+          function schluss() { if (!vorbei) { vorbei = true; fertig("fertig"); } }
+          q.onended = schluss;
+          window.setTimeout(schluss, puffer.duration * 1000 + 2000);
+          q.start(0);
+        });
+      } catch (fehler) {
+        /* weiter mit dem Audio-Element */
+      }
+    }
+    return abspielenElement(stueck);
+  }
+
+  /** Die alte Wiedergabe ueber ein Audio-Element (braucht unter iOS einen Tipp). */
+  function abspielenElement(stueck) {
     return new Promise(function (fertig) {
       var adresse = URL.createObjectURL(stueck);
       if (!tonspur) tonspur = new Audio();
       tonspur.src = adresse;
 
       var beendet = false;
+      var waechter = null;
       function schluss(ergebnis) {
         if (beendet) return;
         beendet = true;
+        if (waechter) window.clearInterval(waechter);
         URL.revokeObjectURL(adresse);
         fertig(ergebnis);
       }
+
+      // Waechter: Safari meldet das Ende nicht immer ("ended" bleibt aus,
+      // wenn die Wiedergabe kurz unterbrochen wurde). Dann hing die
+      // Antwort fuer immer an diesem Stueck, und die Stimme war weg.
+      var letzteZeit = -1;
+      var stillstand = 0;
+      waechter = window.setInterval(function () {
+        if (tonspur.ended) { schluss("fertig"); return; }
+        if (tonspur.currentTime === letzteZeit) {
+          stillstand += 1;
+          if (stillstand >= 4 && tonspur.currentTime > 0) {
+            // Vier Sekunden ohne Fortschritt nach begonnener Wiedergabe:
+            // erst noch einmal anschieben, dann weiter zum naechsten Stueck.
+            if (tonspur.paused && stillstand === 4) {
+              var p = tonspur.play();
+              if (p && p.catch) p.catch(function () {});
+            }
+            if (stillstand >= 8) schluss("fertig");
+          }
+        } else {
+          stillstand = 0;
+          letzteZeit = tonspur.currentTime;
+        }
+      }, 1000);
 
       tonspur.onended = function () { schluss("fertig"); };
       tonspur.onerror = function () { schluss("kaputt"); };
@@ -474,34 +680,78 @@
    * entsteht keine Pause zwischen den Saetzen, obwohl der Rechner noch
    * daran arbeitet.
    */
+  /**
+   * Bildschirm wach halten, solange gesprochen wird (12.11.2026).
+   *
+   * Ging das iPhone mitten in der Antwort in die Sperre, haelt Safari die
+   * Seite an - die Stimme brach ab. Die Wake-Lock-Schnittstelle gibt es in
+   * Safari seit iOS 16.4; wo sie fehlt, passiert einfach nichts.
+   */
+  var wachhalter = null;
+  async function wachHalten(an) {
+    try {
+      if (an && !wachhalter && navigator.wakeLock && navigator.wakeLock.request) {
+        wachhalter = await navigator.wakeLock.request("screen");
+        wachhalter.addEventListener("release", function () { wachhalter = null; });
+      } else if (!an && wachhalter) {
+        var w = wachhalter;
+        wachhalter = null;
+        await w.release();
+      }
+    } catch (fehler) {
+      wachhalter = null;
+    }
+  }
+
   async function vorlesen(auftrag, anzahl) {
     zustand("spricht");
+    void wachHalten(true);
 
     var naechstes = holeStueck(auftrag, 0);
+    var verloren = 0;
 
     for (var nummer = 0; nummer < anzahl; nummer++) {
       var stueck = await naechstes;
+
+      // Ein Stueck fehlt? Einmal nachfassen, bevor aufgegeben wird - ein
+      // kurzer Netzaussetzer (Tailscale, Mobilfunk) soll nicht die ganze
+      // restliche Antwort kosten.
+      if (!stueck) stueck = await holeStueck(auftrag, nummer);
 
       // Das uebernaechste schon anfordern, bevor dieses abgespielt wird.
       naechstes = nummer + 1 < anzahl ? holeStueck(auftrag, nummer + 1) : null;
 
       if (!stueck) {
-        melde(nummer === 0 ? "Der Ton kam nicht an." : "Die Stimme ist mittendrin ausgefallen.");
-        break;
+        verloren++;
+        if (nummer === 0 || verloren > 1) {
+          melde(nummer === 0 ? "Der Ton kam nicht an." : "Die Stimme ist mittendrin ausgefallen.");
+          handyMeldung("Ton nicht geholt: Stueck " + nummer + " von " + anzahl);
+          break;
+        }
+        continue;  // dieses eine Stueck auslassen, mit dem naechsten weiter
       }
 
       var ergebnis = await abspielen(stueck);
+      if (ergebnis === "kaputt") ergebnis = await abspielen(stueck);
       if (ergebnis === "gesperrt") {
-        melde("Antwort ist da.");
+        handyMeldung("Wiedergabe von iOS gesperrt (Stueck " + nummer + ")");
+        melde("Antwort ist da – tippen zum Abspielen.");
+        void wachHalten(false);
         nachreichen(stueck, auftrag, nummer, anzahl);
         return;
       }
       if (ergebnis === "kaputt") {
-        melde("Der Ton kam nicht an.");
-        break;
+        verloren++;
+        if (verloren > 1) {
+          melde("Der Ton kam nicht an.");
+          break;
+        }
       }
     }
 
+    handyMeldung("vorgelesen: " + (anzahl - verloren) + " von " + anzahl + " Stueck(en)" +
+      (wiedergabe ? ", WebAudio " + wiedergabe.state : ", ohne WebAudio"));
+    if (!dauer) void wachHalten(false);
     zustand("aus");
   }
 
@@ -585,12 +835,100 @@
   if (knopf) {
     knopf.addEventListener("click", function (ereignis) {
       ereignis.preventDefault();
+      if (dauer) {
+        // Freihaendig aus: laufende Aufnahme verwerfen - und das merken,
+        // damit die Seite beim naechsten Oeffnen nicht von selbst zuhoert.
+        dauer = false;
+        merkeFreihaendig(false);
+        void wachHalten(false);
+        if (laeuft) { abbruchOhneAbgabe = true; void beenden(); }
+        melde("Freihändig aus.");
+        zustand("aus");
+        return;
+      }
       if (laeuft) {
         void beenden();
-      } else {
-        void starten();
+        return;
       }
+      // Einmal tippen: freihaendig an. Die erste Frage braucht kein Weckwort.
+      dauer = true;
+      dauerErste = true;
+      merkeFreihaendig(true);
+      void wachHalten(true);
+      void starten();
     });
     zustand("aus");
+    automatischStarten();
+  }
+
+  /**
+   * Beim Oeffnen der Seite sofort freihaendig zuhoeren (12.11.2026).
+   *
+   * Marc will das Mikrofon nicht jedes Mal antippen: Seite auf, "Hey
+   * Synapse", fertig. Das klappt, sobald Safari das Mikrofon fuer diese
+   * Adresse dauerhaft erlaubt hat. Laesst iOS den Ton ohne Fingertipp
+   * nicht zu, genuegt EIN Tipp irgendwo auf der Seite - nicht gezielt auf
+   * den Knopf.
+   */
+  function merkeFreihaendig(an) {
+    try { window.localStorage.setItem("orbFreihaendig", an ? "an" : "aus"); } catch (f) { /* egal */ }
+  }
+
+  function freihaendigGewuenscht() {
+    try { return window.localStorage.getItem("orbFreihaendig") !== "aus"; } catch (f) { return true; }
+  }
+
+  /**
+   * Seit 12.11.2026 (Nachmittag): IMMER ein Tipp zum Start.
+   *
+   * Das Zuhoeren ohne Tipp lief zwar, aber iOS liess die Antworten dann
+   * nicht abspielen - Synapse "antwortete nicht", obwohl die Antwort
+   * fertig war. Ein einziger Tipp irgendwo auf der Seite schaltet Ton UND
+   * Mikrofon frei; danach laeuft alles freihaendig mit "Hey Synapse".
+   */
+  async function automatischStarten() {
+    if (!freihaendigGewuenscht() || dauer || laeuft) return;
+    var schleier = document.createElement("div");
+    schleier.id = "stimme-start";
+    schleier.style.cssText =
+      "position:fixed;inset:0;z-index:9998;display:flex;align-items:center;" +
+      "justify-content:center;background:rgba(5,10,20,0.55);" +
+      "font-family:system-ui,-apple-system,sans-serif;";
+    var text = document.createElement("div");
+    text.textContent = "Tippen – dann hört Synapse auf „Hey Synapse“";
+    text.style.cssText =
+      "padding:22px 26px;border-radius:18px;background:rgba(14,20,32,0.95);" +
+      "color:#fff;font-size:20px;font-weight:600;text-align:center;max-width:80%;" +
+      "border:1px solid rgba(120,170,255,0.4);";
+    schleier.appendChild(text);
+    document.body.appendChild(schleier);
+
+    function einTipp(ereignis) {
+      if (ereignis) { ereignis.preventDefault(); ereignis.stopPropagation(); }
+      schleier.remove();
+      if (dauer || laeuft) return;
+      // Ton und Mikrofon muessen aus genau diesem Tipp heraus starten.
+      freigeschaltet = false;
+      tonFreischalten();
+      dauer = true;
+      dauerErste = false;
+      merkeFreihaendig(true);
+      void wachHalten(true);
+      handyMeldung("gestartet (freihaendig, nach Tipp)");
+      void starten();
+    }
+    schleier.addEventListener("click", einTipp, { once: true });
+  }
+
+  /** Kurze Rueckmeldung an den PC, damit Fehler im Protokoll stehen. */
+  function handyMeldung(text) {
+    try {
+      void fetch("/stimme/meldung", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: String(text).slice(0, 300) }),
+        credentials: "same-origin",
+      }).catch(function () {});
+    } catch (f) { /* egal */ }
   }
 })();

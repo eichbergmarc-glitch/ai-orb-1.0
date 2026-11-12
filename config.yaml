@@ -24,7 +24,10 @@ backend:
   # eigenen Netz und dem Tailnet, nie aus dem oeffentlichen Internet.
   # false: das Losungswort aus der .env (AI_ORB_WEB_TOKEN) wird verlangt.
   ohne_losungswort: true
-  static_dir: ''
+  # Die Oberflaeche fuer iPad und Handy (07.11.2026). Die installierte EXE
+  # bringt sie nicht mit (app.asar ist leer) und lieferte dem iPad deshalb
+  # keine Seite. Dieser Pfad zeigt auf die gebaute Oberflaeche im Orb-Ordner.
+  static_dir: 'C:\Users\info\OneDrive\Dokumente\ai-orb-1.0-main\desktop\electron\dist\renderer'
 window:
   frameless: true
   transparent: true
@@ -456,6 +459,11 @@ conversation:
 
     Du sprichst Deutsch, und deine Antworten werden meist vorgelesen - schreib also so, wie man redet.
     Kuendige nie nur an ("Einen Moment", "Ich hole dir ..."). Liegen Suchergebnisse oder Nachrichten im Kontext, antworte sofort daraus; sonst rufe das passende Werkzeug auf.
+    Du hast eine Webcam: kamera_ansehen zeigt dir, was gerade vor dem Rechner passiert und ob Marc da ist; gesicht_merken legt ein Referenzfoto an. Benutze die Kamera nur, wenn Marc es will.
+    E-Mails liest du mit dem Werkzeug mails_lesen, nicht ueber den Browser. Meldet es, Gmail sei nicht verbunden, sag dem Benutzer: Sag einfach "Melde mich bei Gmail an".
+    Zug-, Bus- und Postautoverbindungen holst du mit dem Werkzeug verbindung_suchen (SBB-Fahrplan), nie ueber die Websuche. Nenne nur die Zeiten, die der Fahrplan liefert: Abfahrt, Umstieg, Ankunft - kurz.
+    Spricht Marc ueber das Handy mit dir, kannst du dort handeln: anrufen (Name aus den Google-Kontakten oder Nummer), nachricht_senden (WhatsApp oder SMS, Text vorher kurz vorlesen), app_oeffnen (auch Navigation in Karten), kurzbefehl_starten (iPhone-Kurzbefehle). Dort erscheint dann ein Knopf, Marc tippt einmal. Eingehende SMS oder WhatsApp kannst du nicht lesen - das laesst das iPhone nicht zu; sag das ehrlich.
+    Will Marc einen Plan, eine Liste oder ein Dokument (Reiseplan, Fahrplan, Einkaufsliste ...), erstelle es sofort mit pdf_erstellen - bei Reisen zuerst die Verbindungen mit verbindung_suchen holen und die echten Zeiten hineinschreiben. Auf dem Handy erscheint ein Knopf zum Oeffnen.
 
     Deine Haltung ist die eines erstklassigen Mentors und Professors, aber ohne akademisches Gehabe. Rede
     nicht wie ein Lehrbuch. Kurze Saetze, gelegentliche Satzfragmente und lockere Formulierungen sind
@@ -735,7 +743,15 @@ voice:
       - gpt-4o-mini-transcribe
       - whisper-1
       timeout: 8
-    microphone: null
+    # Das Webcam-Mikrofon (07.11.2026). Eingetragen ist ein Teil des
+    # Geraetenamens; "cam" passt auf "Webcam", "Camera", "HD Webcam C270"
+    # usw. Gibt es kein solches Geraet, nimmt der Orb die Windows-
+    # Standard-Eingabe. null = immer Windows-Standard.
+    microphone: cam
+    # Fehlersuche (07.11.2026): die letzten 5 Aufnahmen bleiben in
+    # logs\aufnahmen liegen, damit sich pruefen laesst, was das Mikrofon
+    # wirklich liefert. Danach wieder auf 0 setzen.
+    diagnose_aufnahmen: 5
     preroll_ms: 400
     # Wie lange Stille eine Aeusserung beendet.
     #
@@ -785,7 +801,12 @@ voice:
     # Supertonic aus (Paket oder Modell fehlt), spricht sapi (Windows-Stimme
     # Hedda), damit der Orb nie stumm bleibt. pocket_tts (juergen) und piper
     # (thorsten) stehen bewusst nicht in der Kette: beides sind Maennerstimmen.
+    # 07.11.2026: OpenAI-Stimme 'marin' (weiblich) zuerst. Supertonic auf der
+    # CPU brauchte fuer einen Satz fast so lange, wie er dauert (RTF 0,9-1,1)
+    # - dazwischen entstanden Pausen, die Antworten klangen abgehackt.
+    # Ohne Netz oder Guthaben spricht wie bisher Supertonic (F1).
     engines:
+    - openai_tts
     - supertonic
     - sapi
     offline_engines:
@@ -829,7 +850,7 @@ voice:
       model: supertonic-3
       voice: F1   # F1-F5 weiblich, M1-M5 maennlich; Vorhoeren: STIMMEN-VORHOEREN.bat
       language: de
-      steps: 6
+      steps: 5   # war 6: schneller, damit zwischen den Saetzen keine Luecken entstehen
       cpu_threads: 4
       chunk_silence_ms: 70
     pocket_tts:
@@ -859,7 +880,7 @@ voice:
       timeout_seconds: 4
     openai_tts:
       model: gpt-4o-mini-tts
-      voice: cedar
+      voice: marin   # weiblich (cedar ist maennlich)
       api_key_env: OPENAI_API_KEY
       timeout: 25
       instructions: Sprich auf Deutsch wie ein spontaner, intelligenter Mensch in einem direkten Gespraech.
@@ -1032,6 +1053,19 @@ kalender:
     - 60
     - 10
     takt_sekunden: 180
+tidal:
+  enabled: true
+  # Land fuer den Katalog (ISO-Code) - bestimmt, welche Titel verfuegbar sind.
+  land: CH
+  # Nach dem Oeffnen in der TIDAL-App die Wiedergabetaste druecken.
+  # Auf false stellen, falls die App von selbst startet und sonst pausiert.
+  nach_oeffnen_abspielen: true
+  warte_sekunden: 4
+  # Muss im TIDAL-Entwicklerportal genau so als Redirect-URI stehen.
+  redirect_uri: http://127.0.0.1:8756/tidal/callback
+  # Leer = Voreinstellung (user.read search.read playlists.read
+  # playlists.write collection.read collection.write).
+  scope: ''
 plugins:
   directory: plugins
   require_confirmation: true
@@ -1046,6 +1080,18 @@ vision:
   keep_minutes: 10
   max_edge: 1600
   ocr_languages: deu+eng
+  # Die Webcam (07.11.2026). Nur auf ausdruecklichen Wunsch ('Schau mal
+  # durch die Kamera', 'Wer sitzt hier?'), nie im Hintergrund. Das Bild geht
+  # zur Auswertung an das Sprachmodell und wird nicht gespeichert - ausser
+  # dem Referenzfoto, das 'Merk dir mein Gesicht' anlegt (data/kamera).
+  kamera:
+    enabled: true
+    # Name der Kamera fuer DirectShow (wie im Geraete-Manager).
+    geraet: Logi C270 HD WebCam
+    # Ersatz, falls OpenCV installiert ist: Kamera-Nummer.
+    index: 0
+    aufwaermen_bilder: 15
+    name: Marc
 pipeline:
   timeout_seconds: 180
   retries_per_stage: 1

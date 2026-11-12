@@ -236,6 +236,36 @@ class AudioCapture:
         # gilt darum das Standardgerät – lieber mit dem falschen Mikrofon
         # hören als gar nicht, und im Protokoll steht, dass gewechselt
         # wurde.
+        # Ein Mikrofon per NAMEN (z. B. "Mikrofonarray") auf eine Nummer
+        # aufloesen. sounddevice selbst bricht ab, wenn der Name unter
+        # mehreren Windows-Schnittstellen (MME, WASAPI, ...) vorkommt - und
+        # das tut er fast immer. Genommen wird der Treffer der
+        # Standardschnittstelle, sonst der erste.
+        if isinstance(self._device, str) and self._device.strip() and not self._device.strip().isdigit():
+            gesucht = self._device.strip().lower()
+            try:
+                standard_api = sd.default.hostapi
+            except Exception:  # noqa: BLE001
+                standard_api = None
+            treffer: list[tuple[int, Any]] = []
+            try:
+                for index, info in enumerate(sd.query_devices()):
+                    if int(info.get("max_input_channels", 0)) > 0 and gesucht in str(
+                        info.get("name", "")
+                    ).lower():
+                        treffer.append((index, info.get("hostapi")))
+            except Exception:  # noqa: BLE001
+                treffer = []
+            if treffer:
+                bevorzugt = [i for i, api in treffer if api == standard_api]
+                self._device = (bevorzugt or [treffer[0][0]])[0]
+            else:
+                logger.warning(
+                    "Kein Mikrofon mit '%s' im Namen gefunden - es laeuft das "
+                    "Standardgeraet.", self._device,
+                )
+                self._device = None
+
         anlaeufe: list[tuple[Any, float]] = [(self._device, 0.0), (self._device, 1.0)]
         if self._device is not None:
             anlaeufe.append((None, 1.0))

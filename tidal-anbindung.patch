@@ -1,0 +1,1526 @@
+From 2df9152e63116bc42cb8612fc387dbf268f8cecf Mon Sep 17 00:00:00 2001
+From: Marc Eichberg <eichbergmarc@gmail.com>
+Date: Sat, 7 Nov 2026 10:14:07 +0100
+Subject: [PATCH] TIDAL-Anbindung: Musik suchen, abspielen, Playlists anlegen
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KcZ5fGdhHYi4jAeB9FQu1T
+---
+ backend/api/server.py                  |  43 +++
+ backend/integrations/tidal/__init__.py |  19 ++
+ backend/integrations/tidal/client.py   | 318 ++++++++++++++++++++++
+ backend/integrations/tidal/oauth.py    | 331 +++++++++++++++++++++++
+ backend/integrations/tidal/player.py   |  80 ++++++
+ backend/runtime.py                     |  27 ++
+ backend/security/permissions.py        |   8 +
+ backend/tools/tidal_tools.py           | 348 +++++++++++++++++++++++++
+ backend/tools/tool_engine.py           |  10 +
+ config.yaml                            |  13 +
+ docs/TIDAL.md                          |  66 +++++
+ tests/backend/test_tidal.py            | 134 ++++++++++
+ 12 files changed, 1397 insertions(+)
+ create mode 100644 backend/integrations/tidal/__init__.py
+ create mode 100644 backend/integrations/tidal/client.py
+ create mode 100644 backend/integrations/tidal/oauth.py
+ create mode 100644 backend/integrations/tidal/player.py
+ create mode 100644 backend/tools/tidal_tools.py
+ create mode 100644 docs/TIDAL.md
+ create mode 100644 tests/backend/test_tidal.py
+
+diff --git a/backend/api/server.py b/backend/api/server.py
+index 431bd56..3fe7c01 100644
+--- a/backend/api/server.py
++++ b/backend/api/server.py
+@@ -125,6 +125,49 @@ def build_router(runtime: Runtime) -> ApiRouter:
+ 
+     router.get("/gmail/callback", gmail_callback)
+ 
++    # --- Die Rueckkehr von der TIDAL-Anmeldung ------------------------------
++
++    def tidal_callback(params: dict[str, Any]) -> dict[str, Any]:
++        def _seite(titel: str, text: str, gut: bool) -> dict[str, Any]:
++            farbe = "#2e9e5b" if gut else "#c0392b"
++            return {
++                "_html": (
++                    "<!DOCTYPE html><html lang='de'><head><meta charset='utf-8'>"
++                    "<title>AI-Orb</title></head>"
++                    "<body style='font-family:Segoe UI,system-ui,sans-serif;"
++                    "background:#0e1420;color:#dce8f7;display:flex;"
++                    "align-items:center;justify-content:center;height:100vh;margin:0'>"
++                    "<div style='max-width:30rem;text-align:center'>"
++                    f"<h1 style='color:{farbe};font-size:1.4rem'>{titel}</h1>"
++                    f"<p style='line-height:1.6'>{text}</p></div></body></html>"
++                ),
++                "_status": 200 if gut else 400,
++            }
++
++        dienst = getattr(runtime, "tidal", None)
++        if dienst is None:
++            return _seite("TIDAL ist nicht eingerichtet", "Der Orb hat kein TIDAL-Modul geladen.", gut=False)
++        if params.get("error"):
++            return _seite(
++                "Anmeldung abgebrochen",
++                f"TIDAL meldet: {params['error']}. Du kannst es im Orb erneut versuchen.",
++                gut=False,
++            )
++        ergebnis = dienst.anmeldung_abschliessen(
++            str(params.get("code", "")), str(params.get("state", ""))
++        )
++        if not ergebnis.get("ok"):
++            return _seite("Anmeldung fehlgeschlagen", str(ergebnis.get("fehler")), gut=False)
++        runtime.publish("tidal.login.completed", {})
++        return _seite(
++            "Mit TIDAL verbunden",
++            "Der Orb kann jetzt Playlists in deinem TIDAL-Konto anlegen. "
++            "Du kannst dieses Fenster schliessen.",
++            gut=True,
++        )
++
++    router.get("/tidal/callback", tidal_callback)
++
+     router.get("/health", health)
+     router.get("/status", status)
+     router.get("/config", config_view)
+diff --git a/backend/integrations/tidal/__init__.py b/backend/integrations/tidal/__init__.py
+new file mode 100644
+index 0000000..382351d
+--- /dev/null
++++ b/backend/integrations/tidal/__init__.py
+@@ -0,0 +1,19 @@
++"""TIDAL: Musik suchen, in der App abspielen, Playlists anlegen und füllen.
++
++Einrichtung und Hintergrund stehen in ``docs/TIDAL.md``.
++"""
++
++from __future__ import annotations
++
++from backend.integrations.tidal.client import Playlist, TidalClient, TidalFehler, Titel
++from backend.integrations.tidal.oauth import TidalAuth, TidalAuthFehler, TidalOAuthConfig
++
++__all__ = [
++    "Playlist",
++    "TidalAuth",
++    "TidalAuthFehler",
++    "TidalClient",
++    "TidalFehler",
++    "TidalOAuthConfig",
++    "Titel",
++]
+diff --git a/backend/integrations/tidal/client.py b/backend/integrations/tidal/client.py
+new file mode 100644
+index 0000000..ab8febc
+--- /dev/null
++++ b/backend/integrations/tidal/client.py
+@@ -0,0 +1,318 @@
++"""Der TIDAL-Client.
++
++Spricht die offizielle TIDAL-API (``https://openapi.tidal.com/v2``) an. Sie
++folgt dem JSON:API-Format: Antworten haben ``data`` (die Treffer als
++``{id, type}``) und ``included`` (die eigentlichen Angaben zu Titeln und
++Künstlern). Wie beim Kalender nur mit der stdlib und einem einschleusbaren
++Transport, damit kein Test echte Playlists anlegt.
++
++## Abspielen
++
++Die öffentliche API liefert keine Musik aus - abgespielt wird in der
++TIDAL-App. Der Orb sucht den Titel über die API und öffnet ihn dann mit
++einem ``tidal://``-Link in der App (ersatzweise im Browser auf tidal.com).
++Gesteuert (Pause, weiter, lauter) wird über die Medientasten von Windows,
++auf die die TIDAL-App hört.
++"""
++
++from __future__ import annotations
++
++import json
++import urllib.error
++import urllib.parse
++import urllib.request
++from dataclasses import dataclass, field
++from typing import Any, Protocol
++
++from backend.integrations.tidal.oauth import TidalAuth, TidalAuthFehler
++from backend.system.logging_setup import get_logger
++
++logger = get_logger(__name__)
++
++API_BASE = "https://openapi.tidal.com/v2"
++_JSONAPI = "application/vnd.api+json"
++
++#: Wie viele Titel TIDAL pro Anfrage zu einer Playlist hinzufügen lässt.
++_HINZUFUEGEN_PRO_ANFRAGE = 20
++
++
++class TidalFehler(RuntimeError):
++    """Ein Fehler beim Zugriff auf TIDAL."""
++
++
++class Transport(Protocol):
++    def request(
++        self, method: str, url: str, *, token: str, body: dict[str, Any] | None
++    ) -> dict[str, Any]:
++        ...
++
++
++class UrllibTransport:
++    """Der echte Transport über ``urllib``."""
++
++    def request(
++        self, method: str, url: str, *, token: str, body: dict[str, Any] | None
++    ) -> dict[str, Any]:
++        daten = json.dumps(body).encode("utf-8") if body is not None else None
++        kopf = {"Authorization": f"Bearer {token}", "Accept": _JSONAPI}
++        if daten is not None:
++            kopf["Content-Type"] = _JSONAPI
++        anfrage = urllib.request.Request(url, data=daten, headers=kopf, method=method)
++        try:
++            with urllib.request.urlopen(anfrage, timeout=30) as antwort:
++                roh = antwort.read().decode("utf-8")
++                return json.loads(roh) if roh.strip() else {}
++        except urllib.error.HTTPError as fehler:
++            text = fehler.read().decode("utf-8", errors="replace")[:400]
++            if fehler.code == 401:
++                raise TidalFehler(
++                    "TIDAL hat die Anmeldung nicht akzeptiert. Sag „Melde mich "
++                    f"bei TIDAL an“. ({text})"
++                ) from fehler
++            if fehler.code == 403:
++                raise TidalFehler(
++                    "TIDAL verweigert das. Meist fehlt in der Anwendung im "
++                    "Entwicklerportal ein Bereich (Scope) oder die Anmeldung "
++                    f"stammt von vor der Änderung. ({text})"
++                ) from fehler
++            if fehler.code == 404:
++                raise TidalFehler("Das gibt es bei TIDAL nicht (mehr).") from fehler
++            if fehler.code == 429:
++                raise TidalFehler("TIDAL bremst gerade - zu viele Anfragen. Gleich noch einmal.") from fehler
++            raise TidalFehler(f"TIDAL antwortete mit {fehler.code}: {text}") from fehler
++        except (urllib.error.URLError, TimeoutError, OSError) as fehler:
++            raise TidalFehler(f"TIDAL ist nicht erreichbar: {fehler}") from fehler
++
++
++@dataclass(slots=True)
++class Titel:
++    id: str
++    name: str = ""
++    kuenstler: list[str] = field(default_factory=list)
++    dauer: str = ""
++
++    def zum_vorlesen(self) -> str:
++        if self.kuenstler:
++            return f"„{self.name}“ von {', '.join(self.kuenstler)}"
++        return f"„{self.name}“"
++
++    @property
++    def link(self) -> str:
++        return f"https://tidal.com/browse/track/{self.id}"
++
++    @property
++    def app_link(self) -> str:
++        return f"tidal://track/{self.id}"
++
++
++@dataclass(slots=True)
++class Playlist:
++    id: str
++    name: str = ""
++    anzahl: int | None = None
++
++    @property
++    def link(self) -> str:
++        return f"https://tidal.com/browse/playlist/{self.id}"
++
++    @property
++    def app_link(self) -> str:
++        return f"tidal://playlist/{self.id}"
++
++
++def _dauer_lesen(iso: str) -> str:
++    """``PT3M25S`` -> ``3:25``."""
++
++    import re
++
++    treffer = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", iso or "")
++    if not treffer:
++        return ""
++    h, m, s = (int(x or 0) for x in treffer.groups())
++    m += h * 60
++    return f"{m}:{s:02d}"
++
++
++class TidalClient:
++    """Suchen, Playlists anlegen und füllen."""
++
++    def __init__(
++        self,
++        auth: TidalAuth,
++        *,
++        land: str = "CH",
++        transport: Transport | None = None,
++    ) -> None:
++        self.auth = auth
++        self.land = (land or "CH").upper()
++        self._transport = transport or UrllibTransport()
++
++    # --- intern ----------------------------------------------------------------
++
++    def _url(self, pfad: str, params: dict[str, Any] | None = None) -> str:
++        alle = {"countryCode": self.land, **(params or {})}
++        return f"{API_BASE}{pfad}?{urllib.parse.urlencode(alle, safe=',[]')}"
++
++    def _anfrage(
++        self,
++        method: str,
++        pfad: str,
++        *,
++        params: dict[str, Any] | None = None,
++        body: dict[str, Any] | None = None,
++        benutzer: bool = False,
++    ) -> dict[str, Any]:
++        try:
++            token = self.auth.user_token() if benutzer else self.auth.bester_token()
++        except TidalAuthFehler as fehler:
++            raise TidalFehler(str(fehler)) from fehler
++        return self._transport.request(method, self._url(pfad, params), token=token, body=body)
++
++    @staticmethod
++    def _titel_aus(dokument: dict[str, Any], reihenfolge: list[str]) -> list[Titel]:
++        """Setzt Titel und Künstlernamen aus ``data`` und ``included`` zusammen."""
++
++        eintraege = list(dokument.get("included") or [])
++        daten = dokument.get("data")
++        if isinstance(daten, list):
++            eintraege += [d for d in daten if d.get("attributes")]
++        elif isinstance(daten, dict) and daten.get("attributes"):
++            eintraege.append(daten)
++
++        kuenstler = {
++            e["id"]: str(e.get("attributes", {}).get("name", ""))
++            for e in eintraege
++            if e.get("type") == "artists"
++        }
++        titel: dict[str, Titel] = {}
++        for e in eintraege:
++            if e.get("type") != "tracks":
++                continue
++            attr = e.get("attributes") or {}
++            name = str(attr.get("title", ""))
++            if attr.get("version"):
++                name += f" ({attr['version']})"
++            namen = [
++                kuenstler[r["id"]]
++                for r in ((e.get("relationships") or {}).get("artists") or {}).get("data") or []
++                if r.get("id") in kuenstler and kuenstler[r["id"]]
++            ]
++            titel[str(e["id"])] = Titel(
++                id=str(e["id"]),
++                name=name,
++                kuenstler=namen,
++                dauer=_dauer_lesen(str(attr.get("duration", ""))),
++            )
++        return [titel[i] for i in reihenfolge if i in titel]
++
++    # --- Suche -----------------------------------------------------------------
++
++    def suchen(self, text: str, *, anzahl: int = 5) -> list[Titel]:
++        """Sucht Titel im Katalog."""
++
++        begriff = (text or "").strip()
++        if not begriff:
++            return []
++        antwort = self._anfrage(
++            "GET",
++            f"/searchResults/{urllib.parse.quote(begriff, safe='')}/relationships/tracks",
++            params={"include": "tracks"},
++        )
++        ids = [str(d.get("id")) for d in (antwort.get("data") or []) if d.get("type") == "tracks"]
++        ids = ids[: max(1, anzahl)]
++        if not ids:
++            return []
++        return self.titel_holen(ids)
++
++    def titel_holen(self, ids: list[str]) -> list[Titel]:
++        """Holt Titel samt Künstlernamen."""
++
++        if not ids:
++            return []
++        antwort = self._anfrage(
++            "GET",
++            "/tracks",
++            params={"filter[id]": ",".join(ids), "include": "artists"},
++        )
++        titel = self._titel_aus(antwort, ids)
++        # Wenn TIDAL Künstler nicht mitliefert, sind die Titel trotzdem brauchbar.
++        bekannt = {t.id for t in titel}
++        return titel + [Titel(id=i) for i in ids if i not in bekannt]
++
++    # --- Playlists -------------------------------------------------------------
++
++    def playlist_anlegen(self, name: str, *, beschreibung: str = "", oeffentlich: bool = False) -> Playlist:
++        antwort = self._anfrage(
++            "POST",
++            "/playlists",
++            body={
++                "data": {
++                    "type": "playlists",
++                    "attributes": {
++                        "name": name,
++                        "description": beschreibung,
++                        "accessType": "PUBLIC" if oeffentlich else "UNLISTED",
++                    },
++                }
++            },
++            benutzer=True,
++        )
++        daten = antwort.get("data") or {}
++        if not daten.get("id"):
++            raise TidalFehler("TIDAL hat die Playlist nicht bestätigt.")
++        return Playlist(id=str(daten["id"]), name=str((daten.get("attributes") or {}).get("name", name)), anzahl=0)
++
++    def titel_hinzufuegen(self, playlist_id: str, titel_ids: list[str]) -> int:
++        """Hängt Titel an eine Playlist an. Gibt die Anzahl zurück."""
++
++        ids = [str(i) for i in titel_ids if str(i).strip()]
++        for start in range(0, len(ids), _HINZUFUEGEN_PRO_ANFRAGE):
++            stueck = ids[start : start + _HINZUFUEGEN_PRO_ANFRAGE]
++            self._anfrage(
++                "POST",
++                f"/playlists/{urllib.parse.quote(playlist_id, safe='')}/relationships/items",
++                body={"data": [{"id": i, "type": "tracks"} for i in stueck]},
++                benutzer=True,
++            )
++        return len(ids)
++
++    def meine_playlists(self, *, anzahl: int = 50) -> list[Playlist]:
++        """Die Playlists in der Sammlung des Benutzers."""
++
++        antwort = self._anfrage(
++            "GET",
++            "/userCollectionPlaylists/me/relationships/items",
++            params={"include": "items"},
++            benutzer=True,
++        )
++        details = {
++            str(e.get("id")): e
++            for e in (antwort.get("included") or [])
++            if e.get("type") == "playlists"
++        }
++        ergebnis: list[Playlist] = []
++        for d in antwort.get("data") or []:
++            if d.get("type") != "playlists":
++                continue
++            attr = (details.get(str(d.get("id"))) or {}).get("attributes") or {}
++            ergebnis.append(
++                Playlist(
++                    id=str(d.get("id")),
++                    name=str(attr.get("name", "")),
++                    anzahl=attr.get("numberOfItems"),
++                )
++            )
++        return ergebnis[:anzahl]
++
++    def playlist_finden(self, name: str) -> tuple[Playlist | None, list[Playlist]]:
++        """Sucht eine eigene Playlist nach Namen. Mehrdeutig -> ``None`` + Liste."""
++
++        klein = (name or "").strip().lower()
++        alle = self.meine_playlists(anzahl=200)
++        genau = [p for p in alle if p.name.lower() == klein]
++        if len(genau) == 1:
++            return genau[0], genau
++        teil = [p for p in alle if klein and klein in p.name.lower()]
++        if len(teil) == 1:
++            return teil[0], teil
++        return None, (genau or teil)
+diff --git a/backend/integrations/tidal/oauth.py b/backend/integrations/tidal/oauth.py
+new file mode 100644
+index 0000000..0888e88
+--- /dev/null
++++ b/backend/integrations/tidal/oauth.py
+@@ -0,0 +1,331 @@
++"""Anmeldung bei TIDAL.
++
++TIDAL kennt zwei Wege, und der Orb braucht beide:
++
++1. **Client Credentials** - nur mit Client-ID und Client-Secret, ohne
++   Benutzer. Damit darf man den Katalog durchsuchen (Titel, Alben,
++   Künstler). Das funktioniert sofort, ganz ohne Anmeldung im Browser.
++2. **Authorization Code mit PKCE** - der Benutzer meldet sich einmal im
++   Browser bei TIDAL an. Erst damit darf der Orb in SEINEM Konto etwas tun:
++   Playlists anlegen, Titel hinzufügen, eigene Playlists ansehen.
++
++Der Ablauf von Weg 2 ist derselbe Loopback-Fluss wie bei Gmail: Browser
++auf, Anmeldung bei TIDAL, TIDAL schickt den Einmalcode an
++``/tidal/callback`` des lokalen Servers, der Code wird gegen ein Token
++getauscht. Das Passwort sieht der Orb nie.
++
++## Wo die Geheimnisse liegen
++
++Client-ID und Client-Secret stehen in der ``.env`` (``TIDAL_CLIENT_ID``,
++``TIDAL_CLIENT_SECRET``), nie im Code und nie in ``config.yaml`` - das
++Projekt liegt auf GitHub. Das Benutzertoken liegt in den Benutzerdaten
++(``tidal/token.json``), verschleiert wie das Gmail-Token, wenn
++``AI_ORB_ENCRYPTION_KEY`` gesetzt ist.
++"""
++
++from __future__ import annotations
++
++import base64
++import hashlib
++import json
++import os
++import secrets
++import time
++import urllib.error
++import urllib.parse
++import urllib.request
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++from backend.integrations.gmail.oauth import Token, _deobfuscate, _obfuscate
++from backend.system.logging_setup import get_logger
++from backend.utils.paths import get_user_dir
++
++logger = get_logger(__name__)
++
++#: Öffentliche Endpunkte von TIDAL - keine Geheimnisse.
++AUTH_ENDPOINT = "https://login.tidal.com/authorize"
++TOKEN_ENDPOINT = "https://auth.tidal.com/v1/oauth2/token"
++
++#: Was der Orb im Konto darf: lesen, suchen, Playlists und Sammlung pflegen.
++#: Lässt sich mit ``TIDAL_SCOPE`` in der .env oder ``tidal.scope`` in der
++#: config.yaml ändern, falls TIDAL die Namen der Bereiche ändert.
++DEFAULT_SCOPE = (
++    "user.read search.read playlists.read playlists.write "
++    "collection.read collection.write"
++)
++
++#: Der Rückweg nach der Anmeldung. Muss im TIDAL-Entwicklerportal GENAU so
++#: als Redirect-URI eingetragen sein.
++DEFAULT_REDIRECT_URI = "http://127.0.0.1:8756/tidal/callback"
++
++
++class TidalAuthFehler(RuntimeError):
++    """Ein Problem bei Anmeldung oder Token."""
++
++
++@dataclass(slots=True)
++class TidalOAuthConfig:
++    """Die Anmeldedaten der Anwendung."""
++
++    client_id: str = ""
++    client_secret: str = ""
++    scope: str = DEFAULT_SCOPE
++    redirect_uri: str = DEFAULT_REDIRECT_URI
++
++    @classmethod
++    def from_env(
++        cls, *, scope: str = "", redirect_uri: str = ""
++    ) -> TidalOAuthConfig:
++        return cls(
++            client_id=os.environ.get("TIDAL_CLIENT_ID", "").strip(),
++            client_secret=os.environ.get("TIDAL_CLIENT_SECRET", "").strip(),
++            scope=(os.environ.get("TIDAL_SCOPE", "").strip() or scope or DEFAULT_SCOPE),
++            redirect_uri=redirect_uri or DEFAULT_REDIRECT_URI,
++        )
++
++    @property
++    def is_configured(self) -> bool:
++        return bool(self.client_id and self.client_secret)
++
++
++def _post_formular(url: str, felder: dict[str, str], *, basic: tuple[str, str] | None = None) -> dict[str, Any]:
++    """Schickt ein Formular an den Token-Endpunkt und liest die JSON-Antwort."""
++
++    kopf = {"Content-Type": "application/x-www-form-urlencoded"}
++    if basic is not None:
++        roh = f"{basic[0]}:{basic[1]}".encode("utf-8")
++        kopf["Authorization"] = "Basic " + base64.b64encode(roh).decode("ascii")
++
++    anfrage = urllib.request.Request(
++        url,
++        data=urllib.parse.urlencode(felder).encode("utf-8"),
++        headers=kopf,
++        method="POST",
++    )
++    try:
++        with urllib.request.urlopen(anfrage, timeout=30) as antwort:
++            return json.loads(antwort.read().decode("utf-8") or "{}")
++    except urllib.error.HTTPError as fehler:
++        text = fehler.read().decode("utf-8", errors="replace")[:400]
++        raise TidalAuthFehler(f"TIDAL lehnt die Anmeldung ab ({fehler.code}): {text}") from fehler
++    except (urllib.error.URLError, TimeoutError, OSError) as fehler:
++        raise TidalAuthFehler(f"TIDAL ist nicht erreichbar: {fehler}") from fehler
++
++
++class TidalAuth:
++    """Verwaltet beide Token: das der Anwendung und das des Benutzers."""
++
++    def __init__(
++        self,
++        config: TidalOAuthConfig | None = None,
++        *,
++        token_path: Path | None = None,
++        post: Any = None,
++    ) -> None:
++        self.config = config or TidalOAuthConfig.from_env()
++        self.token_path = token_path or (get_user_dir() / "tidal" / "token.json")
++        self._token: Token | None = None
++        self._app_token: Token | None = None
++        self._key = os.environ.get("AI_ORB_ENCRYPTION_KEY", "").strip()
++        #: Einschleusbar für Tests - kein Test soll echt bei TIDAL anklopfen.
++        self._post = post or _post_formular
++        #: Der PKCE-Prüfwert und der state der laufenden Anmeldung.
++        self._ausstehend: tuple[str, str] | None = None
++
++    # --- Zustand --------------------------------------------------------------
++
++    @property
++    def is_configured(self) -> bool:
++        return self.config.is_configured
++
++    @property
++    def is_authenticated(self) -> bool:
++        token = self._load_token()
++        return token is not None and bool(token.refresh_token or not token.is_expired)
++
++    # --- Anwendungstoken (nur Katalog) ---------------------------------------
++
++    def app_token(self) -> str:
++        """Ein Token ohne Benutzer - reicht zum Suchen im Katalog."""
++
++        if not self.is_configured:
++            raise TidalAuthFehler(
++                "TIDAL ist nicht eingerichtet: TIDAL_CLIENT_ID und "
++                "TIDAL_CLIENT_SECRET fehlen in der .env."
++            )
++        if self._app_token is not None and not self._app_token.is_expired:
++            return self._app_token.access_token
++
++        antwort = self._post(
++            TOKEN_ENDPOINT,
++            {"grant_type": "client_credentials"},
++            basic=(self.config.client_id, self.config.client_secret),
++        )
++        self._app_token = Token(
++            access_token=str(antwort.get("access_token", "")),
++            expires_at=time.time() + float(antwort.get("expires_in", 3600)),
++            scope=str(antwort.get("scope", "")),
++        )
++        if not self._app_token.access_token:
++            raise TidalAuthFehler("TIDAL hat kein Zugriffstoken geschickt.")
++        return self._app_token.access_token
++
++    # --- Benutzertoken ---------------------------------------------------------
++
++    def user_token(self) -> str:
++        """Ein Token im Namen des Benutzers - nötig für Playlists."""
++
++        token = self._load_token()
++        if token is None:
++            raise TidalAuthFehler(
++                "Du bist bei TIDAL noch nicht angemeldet. Sag „Melde mich bei "
++                "TIDAL an“ - das ist einmalig."
++            )
++        if token.is_expired:
++            if not token.refresh_token:
++                raise TidalAuthFehler(
++                    "Die TIDAL-Anmeldung ist abgelaufen. Sag „Melde mich bei "
++                    "TIDAL an“, um sie zu erneuern."
++                )
++            token = self._erneuern(token)
++        return token.access_token
++
++    def bester_token(self) -> str:
++        """Benutzertoken, wenn vorhanden - sonst das Anwendungstoken."""
++
++        try:
++            return self.user_token()
++        except TidalAuthFehler:
++            return self.app_token()
++
++    def _erneuern(self, token: Token) -> Token:
++        antwort = self._post(
++            TOKEN_ENDPOINT,
++            {
++                "grant_type": "refresh_token",
++                "refresh_token": token.refresh_token,
++                "client_id": self.config.client_id,
++            },
++        )
++        token.access_token = str(antwort.get("access_token", ""))
++        token.expires_at = time.time() + float(antwort.get("expires_in", 3600))
++        if antwort.get("refresh_token"):
++            token.refresh_token = str(antwort["refresh_token"])
++        self._save_token(token)
++        return token
++
++    # --- Anmeldung im Browser --------------------------------------------------
++
++    def anmelde_url(self) -> str:
++        """Baut die Anmelde-URL und merkt sich Prüfwert und state."""
++
++        verifier = secrets.token_urlsafe(64)
++        challenge = (
++            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
++            .decode()
++            .rstrip("=")
++        )
++        state = secrets.token_urlsafe(16)
++        self._ausstehend = (verifier, state)
++
++        params = {
++            "response_type": "code",
++            "client_id": self.config.client_id,
++            "redirect_uri": self.config.redirect_uri,
++            "scope": self.config.scope,
++            "code_challenge_method": "S256",
++            "code_challenge": challenge,
++            "state": state,
++        }
++        return f"{AUTH_ENDPOINT}?{urllib.parse.urlencode(params)}"
++
++    def anmeldung_abschliessen(self, code: str, state: str = "") -> Token:
++        """Tauscht den Einmalcode gegen das Benutzertoken."""
++
++        if self._ausstehend is None:
++            raise TidalAuthFehler(
++                "Es läuft gerade keine TIDAL-Anmeldung. Sag zuerst „Melde mich "
++                "bei TIDAL an“."
++            )
++        verifier, erwartet = self._ausstehend
++        # Der state schützt davor, dass eine fremde Seite dem Orb einen Code
++        # unterschiebt. Fehlt er ganz, lassen wir es durchgehen (manche
++        # Weiterleitungen verlieren ihn), ein FALSCHER state aber nicht.
++        if state and state != erwartet:
++            raise TidalAuthFehler("Der Rückweg passt nicht zur gestarteten Anmeldung.")
++
++        antwort = self._post(
++            TOKEN_ENDPOINT,
++            {
++                "grant_type": "authorization_code",
++                "client_id": self.config.client_id,
++                "code": code,
++                "redirect_uri": self.config.redirect_uri,
++                "code_verifier": verifier,
++            },
++        )
++        token = Token(
++            access_token=str(antwort.get("access_token", "")),
++            refresh_token=str(antwort.get("refresh_token", "")),
++            expires_at=time.time() + float(antwort.get("expires_in", 3600)),
++            scope=str(antwort.get("scope", self.config.scope)),
++        )
++        if not token.access_token:
++            raise TidalAuthFehler("TIDAL hat kein Zugriffstoken geschickt.")
++        self._save_token(token)
++        self._ausstehend = None
++        logger.info("TIDAL-Anmeldung erfolgreich.")
++        return token
++
++    def forget(self) -> bool:
++        self._token = None
++        try:
++            if self.token_path.is_file():
++                self.token_path.unlink()
++            return True
++        except OSError as fehler:
++            logger.error("TIDAL-Token nicht löschbar: %s", fehler)
++            return False
++
++    # --- Speichern -------------------------------------------------------------
++
++    def _load_token(self) -> Token | None:
++        if self._token is not None:
++            return self._token
++        if not self.token_path.is_file():
++            return None
++        try:
++            roh = self.token_path.read_bytes()
++            if self._key and roh[:5] == b"ENC1:":
++                text = _deobfuscate(base64.b64decode(roh[5:]), self._key)
++            else:
++                text = roh.decode("utf-8")
++            self._token = Token.from_dict(json.loads(text))
++            return self._token
++        except (OSError, ValueError) as fehler:
++            logger.warning("TIDAL-Token nicht lesbar: %s", fehler)
++            return None
++
++    def _save_token(self, token: Token) -> None:
++        self._token = token
++        inhalt = json.dumps(token.to_dict(), ensure_ascii=False)
++        try:
++            self.token_path.parent.mkdir(parents=True, exist_ok=True)
++            if self._key:
++                self.token_path.write_bytes(
++                    b"ENC1:" + base64.b64encode(_obfuscate(inhalt, self._key))
++                )
++            else:
++                logger.warning(
++                    "TIDAL-Token wird im Klartext gespeichert. Setze "
++                    "AI_ORB_ENCRYPTION_KEY in der .env, um es zu schützen."
++                )
++                self.token_path.write_text(inhalt, encoding="utf-8")
++            try:
++                os.chmod(self.token_path, 0o600)
++            except OSError:
++                pass
++        except OSError as fehler:
++            logger.error("TIDAL-Token nicht speicherbar: %s", fehler)
+diff --git a/backend/integrations/tidal/player.py b/backend/integrations/tidal/player.py
+new file mode 100644
+index 0000000..d11a9b4
+--- /dev/null
++++ b/backend/integrations/tidal/player.py
+@@ -0,0 +1,80 @@
++"""Abspielen über die TIDAL-App und Steuern über die Medientasten.
++
++Die öffentliche TIDAL-API spielt nichts ab. Der Orb öffnet deshalb den
++gefundenen Titel oder die Playlist per ``tidal://``-Link in der
++TIDAL-Desktop-App und drückt danach - wenn gewünscht - die
++Wiedergabe-Medientaste. Pause, weiter, zurück und Lautstärke laufen
++ebenfalls über die Medientasten von Windows; die TIDAL-App hört darauf.
++"""
++
++from __future__ import annotations
++
++import os
++import sys
++import threading
++import time
++import webbrowser
++
++from backend.system.logging_setup import get_logger
++
++logger = get_logger(__name__)
++
++#: Virtuelle Tastencodes von Windows für die Medientasten.
++MEDIENTASTEN: dict[str, int] = {
++    "pause": 0xB3,        # Wiedergabe/Pause (dieselbe Taste)
++    "weiter": 0xB3,
++    "abspielen": 0xB3,
++    "naechster": 0xB0,
++    "vorheriger": 0xB1,
++    "stopp": 0xB2,
++    "lauter": 0xAF,
++    "leiser": 0xAE,
++    "stumm": 0xAD,
++}
++
++
++def taste_druecken(aktion: str, *, wiederholen: int = 1) -> bool:
++    """Drückt eine Medientaste. Gibt ``False`` zurück, wenn es nicht geht."""
++
++    code = MEDIENTASTEN.get(aktion)
++    if code is None or sys.platform != "win32":
++        return False
++    try:
++        import ctypes
++
++        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
++        for _ in range(max(1, wiederholen)):
++            user32.keybd_event(code, 0, 0x0001, 0)          # KEYEVENTF_EXTENDEDKEY
++            user32.keybd_event(code, 0, 0x0001 | 0x0002, 0)  # ... | KEYEVENTF_KEYUP
++        return True
++    except Exception:  # noqa: BLE001 - ohne Medientaste läuft der Rest weiter.
++        logger.exception("Die Medientaste liess sich nicht drücken.")
++        return False
++
++
++def in_app_oeffnen(app_link: str, web_link: str, *, danach_abspielen: bool = False, warte_sekunden: float = 4.0) -> str:
++    """Öffnet einen Link in der TIDAL-App, sonst im Browser.
++
++    Returns:
++        ``"app"`` oder ``"browser"`` - wo es geöffnet wurde.
++    """
++
++    wo = "browser"
++    if sys.platform == "win32":
++        try:
++            os.startfile(app_link)  # type: ignore[attr-defined]
++            wo = "app"
++        except OSError:
++            logger.info("Keine TIDAL-App für %s gefunden - Browser.", app_link)
++    if wo == "browser":
++        webbrowser.open(web_link, new=2)
++
++    if wo == "app" and danach_abspielen:
++        # Die App braucht einen Moment, bis die Seite geladen ist. Im
++        # Hintergrund warten, damit der Orb nicht so lange stumm bleibt.
++        def _spaeter() -> None:
++            time.sleep(warte_sekunden)
++            taste_druecken("abspielen")
++
++        threading.Thread(target=_spaeter, name="tidal-abspielen", daemon=True).start()
++    return wo
+diff --git a/backend/runtime.py b/backend/runtime.py
+index f907b05..9ad6d80 100644
+--- a/backend/runtime.py
++++ b/backend/runtime.py
+@@ -540,6 +540,33 @@ class Runtime:
+             except Exception:  # noqa: BLE001 - ohne Kalender laeuft der Rest weiter.
+                 logger.exception("Die Kalender-Werkzeuge liessen sich nicht anmelden.")
+ 
++        # TIDAL: Musik suchen, in der App abspielen, Playlists anlegen.
++        # Suchen geht schon mit Client-ID und -Secret aus der .env, fuer
++        # Playlists braucht es einmal "Melde mich bei TIDAL an".
++        self.tidal = None
++        if bool(self.config.get("tidal.enabled", True)):
++            try:
++                from backend.integrations.tidal.client import TidalClient
++                from backend.integrations.tidal.oauth import TidalAuth, TidalOAuthConfig
++                from backend.tools.tidal_tools import TidalDienst, build_tidal_tools
++
++                tidal_auth = TidalAuth(
++                    TidalOAuthConfig.from_env(
++                        scope=str(self.config.get("tidal.scope", "") or ""),
++                        redirect_uri=str(self.config.get("tidal.redirect_uri", "") or ""),
++                    )
++                )
++                self.tidal = TidalDienst(
++                    TidalClient(tidal_auth, land=str(self.config.get("tidal.land", "CH"))),
++                    danach_abspielen=bool(self.config.get("tidal.nach_oeffnen_abspielen", True)),
++                    warte_sekunden=float(self.config.get("tidal.warte_sekunden", 4.0)),
++                )
++                self.tools.register_many(build_tidal_tools(self.tidal))
++                if not tidal_auth.is_configured:
++                    logger.info("TIDAL: TIDAL_CLIENT_ID/TIDAL_CLIENT_SECRET fehlen in der .env.")
++            except Exception:  # noqa: BLE001 - ohne TIDAL laeuft der Rest weiter.
++                logger.exception("Die TIDAL-Werkzeuge liessen sich nicht anmelden.")
++
+         from backend.tools.memory_tools import build_memory_tools
+ 
+         self.tools.register_many(
+diff --git a/backend/security/permissions.py b/backend/security/permissions.py
+index a0d14bc..c73763d 100644
+--- a/backend/security/permissions.py
++++ b/backend/security/permissions.py
+@@ -188,6 +188,14 @@ KNOWN_PERMISSIONS: dict[str, Permission] = {
+             "Termine anlegen, ändern und löschen",
+             RiskLevel.HIGH,
+         ),
++        _permission(
++            # Musik bei TIDAL: suchen, in der App abspielen, Playlists im
++            # eigenen Konto anlegen und ergaenzen. Abwaegbar, nicht heikel:
++            # Eine Playlist zu viel laesst sich mit einem Klick loeschen.
++            "music",
++            "Musik bei TIDAL suchen, abspielen und Playlists verwalten",
++            RiskLevel.MODERATE,
++        ),
+         _permission(
+             "send_email",
+             "Eine E-Mail versenden",
+diff --git a/backend/tools/tidal_tools.py b/backend/tools/tidal_tools.py
+new file mode 100644
+index 0000000..0b7a09c
+--- /dev/null
++++ b/backend/tools/tidal_tools.py
+@@ -0,0 +1,348 @@
++"""Die Werkzeuge für TIDAL.
++
++Sieben Stück: anmelden, suchen, abspielen, steuern, Playlists ansehen,
++Playlist erstellen, Playlist ergänzen.
++
++## Warum Songs als Text und nicht als Kennungen
++
++Wie beim Kalender: Kein Mensch sagt "Titel 77646123". Das Modell gibt die
++Songs so an, wie der Benutzer sie nennt ("Bohemian Rhapsody von Queen"),
++und das Werkzeug sucht selbst den passenden Titel. Was es nicht findet,
++sagt es ausdrücklich - eine Playlist, in der stillschweigend die Hälfte
++fehlt, ist schlimmer als eine Fehlermeldung.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import re
++from typing import Any
++
++from backend.integrations.tidal.client import TidalClient, TidalFehler, Titel
++from backend.integrations.tidal.oauth import TidalAuthFehler
++from backend.integrations.tidal.player import MEDIENTASTEN, in_app_oeffnen, taste_druecken
++from backend.system.logging_setup import get_logger
++from backend.tools.base_tool import Tool, ToolParameter, ToolResult
++
++logger = get_logger(__name__)
++
++_PERMISSION = "music"
++
++#: Höchstens so viele Songs pro Playlist-Auftrag - schützt vor endlosen
++#: Suchschleifen, wenn das Modell eine riesige Liste erfindet.
++_MAX_SONGS = 100
++
++
++def _songs_lesen(text: str) -> list[str]:
++    """Zerlegt "A; B; C" oder eine Liste mit Zeilen in einzelne Songs."""
++
++    teile = re.split(r"[;\n]+", text or "")
++    songs = []
++    for teil in teile:
++        sauber = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", teil).strip()
++        if sauber:
++            songs.append(sauber)
++    return songs[:_MAX_SONGS]
++
++
++def _suchbegriff(song: str) -> str:
++    """'Hello von Adele' / 'Adele - Hello' -> 'Hello Adele' (besser für die Suche)."""
++
++    return re.sub(r"\s+(?:von|by)\s+|\s+[-–]\s+", " ", song).strip()
++
++
++class _TidalWerkzeug(Tool):
++    permission = _PERMISSION
++
++    def __init__(self, dienst: TidalDienst) -> None:
++        self._dienst = dienst
++
++    @property
++    def _client(self) -> TidalClient:
++        return self._dienst.client
++
++    @staticmethod
++    def _fehler(fehler: Exception) -> ToolResult:
++        return ToolResult.failure(str(fehler))
++
++
++class TidalAnmeldenTool(_TidalWerkzeug):
++    name = "tidal_anmelden"
++    description = (
++        "Startet die einmalige Anmeldung bei TIDAL im Browser. Benutze das bei "
++        "'melde mich bei TIDAL an' oder wenn ein TIDAL-Werkzeug meldet, dass "
++        "keine Anmeldung besteht. Nötig für Playlists; Suchen und Abspielen "
++        "gehen auch ohne."
++    )
++    parameters = ()
++
++    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
++        bericht = self._dienst.anmeldung_starten()
++        if not bericht.get("ok"):
++            return ToolResult.failure(str(bericht.get("fehler")))
++        return ToolResult.success(
++            "Ich habe die TIDAL-Anmeldung im Browser geöffnet. Melde dich dort "
++            "an und erteile die Erlaubnis - danach kann ich Playlists anlegen.",
++            url=bericht.get("url", ""),
++        )
++
++
++class MusikSuchenTool(_TidalWerkzeug):
++    name = "musik_suchen"
++    description = (
++        "Sucht Songs bei TIDAL und listet die Treffer auf, ohne etwas "
++        "abzuspielen. 'suche' ist Titel und/oder Künstler."
++    )
++    parameters = (
++        ToolParameter("suche", "string", "Titel und/oder Künstler, z.B. 'Hello Adele'."),
++        ToolParameter("anzahl", "integer", "Wie viele Treffer.", required=False, default=5),
++    )
++
++    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
++        try:
++            treffer = await asyncio.to_thread(
++                self._client.suchen, arguments["suche"], anzahl=int(arguments.get("anzahl") or 5)
++            )
++        except (TidalFehler, TidalAuthFehler) as fehler:
++            return self._fehler(fehler)
++        if not treffer:
++            return ToolResult.success(f"Zu '{arguments['suche']}' habe ich bei TIDAL nichts gefunden.")
++        zeilen = [f"{i}. {t.zum_vorlesen()}" for i, t in enumerate(treffer, 1)]
++        return ToolResult.success("\n".join(zeilen), titel=[t.id for t in treffer])
++
++
++class MusikAbspielenTool(_TidalWerkzeug):
++    name = "musik_abspielen"
++    description = (
++        "Spielt Musik über TIDAL ab: sucht einen Song (oder eine eigene "
++        "Playlist) und startet ihn in der TIDAL-App. Benutze das bei 'spiel "
++        "...', 'ich will ... hören', 'mach Musik an'. 'art' ist 'song' oder "
++        "'playlist'."
++    )
++    parameters = (
++        ToolParameter("suche", "string", "Songtitel und/oder Künstler bzw. Name der Playlist."),
++        ToolParameter(
++            "art", "string", "Was gespielt werden soll.",
++            required=False, default="song", choices=("song", "playlist"),
++        ),
++    )
++
++    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
++        suche = str(arguments.get("suche", "")).strip()
++        art = str(arguments.get("art") or "song")
++        try:
++            if art == "playlist":
++                playlist, kandidaten = await asyncio.to_thread(self._client.playlist_finden, suche)
++                if playlist is None:
++                    if kandidaten:
++                        namen = ", ".join(p.name for p in kandidaten[:8])
++                        return ToolResult.failure(f"Mehrere Playlists passen: {namen}. Welche meinst du?")
++                    return ToolResult.failure(f"Eine Playlist '{suche}' habe ich in deiner Sammlung nicht gefunden.")
++                wo = self._dienst.oeffnen(playlist.app_link, playlist.link)
++                return ToolResult.success(f"Ich spiele deine Playlist „{playlist.name}“ ab.", wo=wo)
++
++            treffer = await asyncio.to_thread(self._client.suchen, _suchbegriff(suche), anzahl=1)
++        except (TidalFehler, TidalAuthFehler) as fehler:
++            return self._fehler(fehler)
++        if not treffer:
++            return ToolResult.failure(f"Zu '{suche}' habe ich bei TIDAL nichts gefunden.")
++        titel = treffer[0]
++        wo = self._dienst.oeffnen(titel.app_link, titel.link)
++        ort = "in der TIDAL-App" if wo == "app" else "im Browser"
++        return ToolResult.success(f"Ich spiele {titel.zum_vorlesen()} {ort} ab.", titel=titel.id, wo=wo)
++
++
++class MusikSteuernTool(_TidalWerkzeug):
++    name = "musik_steuern"
++    description = (
++        "Steuert die laufende Musik über die Medientasten: pause, weiter, "
++        "naechster, vorheriger, stopp, lauter, leiser, stumm. Benutze das bei "
++        "'Pause', 'nächster Song', 'lauter' usw."
++    )
++    parameters = (
++        ToolParameter(
++            "aktion", "string", "Was getan werden soll.",
++            choices=tuple(k for k in MEDIENTASTEN if k != "abspielen"),
++        ),
++    )
++
++    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
++        aktion = str(arguments.get("aktion", ""))
++        # Lautstärke in spürbaren Schritten - ein einzelner Tastendruck sind
++        # unter Windows nur zwei Prozent.
++        wiederholen = 5 if aktion in ("lauter", "leiser") else 1
++        if not taste_druecken(aktion, wiederholen=wiederholen):
++            return ToolResult.failure("Die Medientasten lassen sich nur unter Windows drücken.")
++        return ToolResult.success("Erledigt.", aktion=aktion)
++
++
++class PlaylistsAnsehenTool(_TidalWerkzeug):
++    name = "playlists_ansehen"
++    description = "Listet die eigenen TIDAL-Playlists des Benutzers auf."
++    parameters = ()
++
++    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
++        try:
++            playlists = await asyncio.to_thread(self._client.meine_playlists)
++        except (TidalFehler, TidalAuthFehler) as fehler:
++            return self._fehler(fehler)
++        if not playlists:
++            return ToolResult.success("In deiner TIDAL-Sammlung sind noch keine Playlists.")
++        zeilen = [
++            f"{i}. {p.name}" + (f" ({p.anzahl} Titel)" if p.anzahl is not None else "")
++            for i, p in enumerate(playlists, 1)
++        ]
++        return ToolResult.success("\n".join(zeilen))
++
++
++class _PlaylistFuellen(_TidalWerkzeug):
++    async def _titel_suchen(self, songs: list[str]) -> tuple[list[Titel], list[str]]:
++        gefunden: list[Titel] = []
++        fehlend: list[str] = []
++        for song in songs:
++            try:
++                treffer = await asyncio.to_thread(self._client.suchen, _suchbegriff(song), anzahl=1)
++            except TidalFehler as fehler:
++                logger.warning("TIDAL-Suche nach %r fehlgeschlagen: %s", song, fehler)
++                treffer = []
++            if treffer:
++                gefunden.append(treffer[0])
++            else:
++                fehlend.append(song)
++        return gefunden, fehlend
++
++    @staticmethod
++    def _bericht(kopf: str, gefunden: list[Titel], fehlend: list[str]) -> str:
++        text = kopf
++        if gefunden:
++            text += "\n" + "\n".join(f"- {t.zum_vorlesen()}" for t in gefunden)
++        if fehlend:
++            text += "\nNicht gefunden: " + "; ".join(fehlend)
++        return text
++
++
++class PlaylistErstellenTool(_PlaylistFuellen):
++    name = "playlist_erstellen"
++    description = (
++        "Legt in TIDAL eine neue Playlist an und füllt sie mit Songs. 'songs' "
++        "ist eine Liste, getrennt durch Semikolon, z.B. 'Hello von Adele; "
++        "Yellow von Coldplay'. Wenn der Benutzer nur eine Stimmung oder ein "
++        "Thema nennt, wähle selbst passende, real existierende Songs aus."
++    )
++    parameters = (
++        ToolParameter("name", "string", "Name der Playlist."),
++        ToolParameter("songs", "string", "Songs, getrennt durch ';' - jeweils Titel und Künstler."),
++        ToolParameter("beschreibung", "string", "Optionale Beschreibung.", required=False, default=""),
++        ToolParameter("abspielen", "boolean", "Danach gleich abspielen.", required=False, default=False),
++    )
++
++    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
++        name = str(arguments.get("name", "")).strip()
++        songs = _songs_lesen(str(arguments.get("songs", "")))
++        if not name:
++            return ToolResult.failure("Die Playlist braucht einen Namen.")
++        try:
++            # Zuerst prüfen, ob die Anmeldung steht - sonst sucht der Orb
++            # zwanzig Songs, nur um dann am Anlegen zu scheitern.
++            self._dienst.auth.user_token()
++            gefunden, fehlend = await self._titel_suchen(songs)
++            playlist = await asyncio.to_thread(
++                self._client.playlist_anlegen, name, beschreibung=str(arguments.get("beschreibung") or "")
++            )
++            if gefunden:
++                await asyncio.to_thread(self._client.titel_hinzufuegen, playlist.id, [t.id for t in gefunden])
++        except (TidalFehler, TidalAuthFehler) as fehler:
++            return self._fehler(fehler)
++
++        if arguments.get("abspielen"):
++            self._dienst.oeffnen(playlist.app_link, playlist.link)
++        kopf = f"Die Playlist „{playlist.name}“ ist angelegt, mit {len(gefunden)} Titeln."
++        return ToolResult.success(self._bericht(kopf, gefunden, fehlend), playlist=playlist.id, link=playlist.link)
++
++
++class PlaylistErgaenzenTool(_PlaylistFuellen):
++    name = "playlist_ergaenzen"
++    description = (
++        "Fügt Songs zu einer bestehenden eigenen TIDAL-Playlist hinzu. "
++        "'playlist' ist ihr Name, 'songs' durch Semikolon getrennt."
++    )
++    parameters = (
++        ToolParameter("playlist", "string", "Name der Playlist."),
++        ToolParameter("songs", "string", "Songs, getrennt durch ';'."),
++    )
++
++    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
++        songs = _songs_lesen(str(arguments.get("songs", "")))
++        try:
++            playlist, kandidaten = await asyncio.to_thread(
++                self._client.playlist_finden, str(arguments.get("playlist", ""))
++            )
++            if playlist is None:
++                if kandidaten:
++                    namen = ", ".join(p.name for p in kandidaten[:8])
++                    return ToolResult.failure(f"Mehrere Playlists passen: {namen}. Welche meinst du?")
++                return ToolResult.failure("Diese Playlist habe ich in deiner Sammlung nicht gefunden.")
++            gefunden, fehlend = await self._titel_suchen(songs)
++            if gefunden:
++                await asyncio.to_thread(self._client.titel_hinzufuegen, playlist.id, [t.id for t in gefunden])
++        except (TidalFehler, TidalAuthFehler) as fehler:
++            return self._fehler(fehler)
++        kopf = f"Zu „{playlist.name}“ habe ich {len(gefunden)} Titel hinzugefügt."
++        return ToolResult.success(self._bericht(kopf, gefunden, fehlend), playlist=playlist.id)
++
++
++class TidalDienst:
++    """Hält Anmeldung, Client und Abspieleinstellungen zusammen."""
++
++    def __init__(self, client: TidalClient, *, danach_abspielen: bool = True, warte_sekunden: float = 4.0, oeffner: Any = None) -> None:
++        self.client = client
++        self.auth = client.auth
++        self.danach_abspielen = danach_abspielen
++        self.warte_sekunden = warte_sekunden
++        self._oeffner = oeffner or in_app_oeffnen
++
++    def oeffnen(self, app_link: str, web_link: str) -> str:
++        return self._oeffner(
++            app_link, web_link,
++            danach_abspielen=self.danach_abspielen,
++            warte_sekunden=self.warte_sekunden,
++        )
++
++    def anmeldung_starten(self) -> dict[str, Any]:
++        if not self.auth.is_configured:
++            return {
++                "ok": False,
++                "fehler": (
++                    "TIDAL ist nicht eingerichtet: TIDAL_CLIENT_ID und "
++                    "TIDAL_CLIENT_SECRET fehlen in der .env (siehe docs/TIDAL.md)."
++                ),
++            }
++        url = self.auth.anmelde_url()
++        try:
++            import webbrowser
++
++            webbrowser.open(url, new=2)
++        except Exception:  # noqa: BLE001
++            logger.info("Browser nicht zu öffnen; die URL steht im Ergebnis.")
++        return {"ok": True, "url": url}
++
++    def anmeldung_abschliessen(self, code: str, state: str = "") -> dict[str, Any]:
++        if not code.strip():
++            return {"ok": False, "fehler": "Es kam kein Anmeldecode an."}
++        try:
++            self.auth.anmeldung_abschliessen(code.strip(), state)
++        except TidalAuthFehler as fehler:
++            return {"ok": False, "fehler": str(fehler)}
++        return {"ok": True}
++
++
++def build_tidal_tools(dienst: TidalDienst) -> list[Tool]:
++    return [
++        TidalAnmeldenTool(dienst),
++        MusikSuchenTool(dienst),
++        MusikAbspielenTool(dienst),
++        MusikSteuernTool(dienst),
++        PlaylistsAnsehenTool(dienst),
++        PlaylistErstellenTool(dienst),
++        PlaylistErgaenzenTool(dienst),
++    ]
+diff --git a/backend/tools/tool_engine.py b/backend/tools/tool_engine.py
+index 0a75973..ab27e5a 100644
+--- a/backend/tools/tool_engine.py
++++ b/backend/tools/tool_engine.py
+@@ -794,6 +794,16 @@ class ToolEngine:
+                 "termine_ansehen", "termin_erstellen", "termin_aendern",
+                 "termin_loeschen", "gmail_anmelden",
+             )
++        if any(w in knapp for w in (
++            "musik", "song", "lied", "playlist", "tidal", "spiel ", "spiele ",
++            "abspielen", "hören", "hoeren", "pause", "nächste", "naechste",
++            "lauter", "leiser", "album", "künstler", "kuenstler",
++        )):
++            dazu(
++                "musik_abspielen", "musik_suchen", "musik_steuern",
++                "playlists_ansehen", "playlist_erstellen", "playlist_ergaenzen",
++                "tidal_anmelden",
++            )
+         if any(w in knapp for w in ("code", "quelltext", "fehler", "konfiguration", "config")):
+             dazu(
+                 "eigenen_code_lesen", "eigenen_code_aendern", "dateien_suchen",
+diff --git a/config.yaml b/config.yaml
+index ce63cde..15e2196 100644
+--- a/config.yaml
++++ b/config.yaml
+@@ -1032,6 +1032,19 @@ kalender:
+     - 60
+     - 10
+     takt_sekunden: 180
++tidal:
++  enabled: true
++  # Land fuer den Katalog (ISO-Code) - bestimmt, welche Titel verfuegbar sind.
++  land: CH
++  # Nach dem Oeffnen in der TIDAL-App die Wiedergabetaste druecken.
++  # Auf false stellen, falls die App von selbst startet und sonst pausiert.
++  nach_oeffnen_abspielen: true
++  warte_sekunden: 4
++  # Muss im TIDAL-Entwicklerportal genau so als Redirect-URI stehen.
++  redirect_uri: http://127.0.0.1:8756/tidal/callback
++  # Leer = Voreinstellung (user.read search.read playlists.read
++  # playlists.write collection.read collection.write).
++  scope: ''
+ plugins:
+   directory: plugins
+   require_confirmation: true
+diff --git a/docs/TIDAL.md b/docs/TIDAL.md
+new file mode 100644
+index 0000000..e330eae
+--- /dev/null
++++ b/docs/TIDAL.md
+@@ -0,0 +1,66 @@
++# TIDAL im AI-Orb
++
++Der Orb kann mit TIDAL:
++
++- **Musik abspielen**: „Spiel Yellow von Coldplay“, „Spiel meine Playlist Sport“
++- **Steuern**: „Pause“, „Nächster Song“, „Lauter“ (über die Medientasten von Windows)
++- **Suchen**: „Such mir Songs von Adele“
++- **Playlists anlegen**: „Mach mir eine Playlist ‚Waldrunde‘ mit ruhigen Indie-Songs“
++- **Playlists ergänzen**: „Füg ‚Hello‘ von Adele zu meiner Playlist Waldrunde hinzu“
++- **Playlists ansehen**: „Welche Playlists habe ich?“
++
++Abgespielt wird in der **TIDAL-Desktop-App**. Die öffentliche TIDAL-API
++liefert selbst keine Musik aus. Der Orb sucht den Titel und öffnet ihn per
++`tidal://`-Link in der App. Ist keine App installiert, öffnet er ihn im
++Browser auf tidal.com.
++
++## Einrichtung (einmalig)
++
++1. **Zugangsdaten in die `.env`** im Projektordner (nie in `config.yaml`,
++   die Datei liegt auf GitHub):
++
++   ```
++   TIDAL_CLIENT_ID=deine-client-id
++   TIDAL_CLIENT_SECRET=dein-client-secret
++   ```
++
++2. **Redirect-URI im Entwicklerportal eintragen**: Unter
++   https://developer.tidal.com → Dashboard → deine App → *Redirect URIs*
++   folgende Adresse genau so hinzufügen:
++
++   ```
++   http://127.0.0.1:8756/tidal/callback
++   ```
++
++   Akzeptiert TIDAL `127.0.0.1` nicht, nimm `http://localhost:8756/tidal/callback`
++   und stelle in `config.yaml` unter `tidal.redirect_uri` dasselbe ein.
++
++3. **Bereiche (Scopes)** der App im Portal aktivieren: `user.read`,
++   `search.read`, `playlists.read`, `playlists.write`, `collection.read`,
++   `collection.write`.
++
++4. **TIDAL-Desktop-App** installieren und darin anmelden.
++
++5. Orb neu starten und einmal sagen: **„Melde mich bei TIDAL an“**. Im
++   Browser bei TIDAL anmelden und zustimmen. Danach kann der Orb
++   Playlists anlegen. Suchen und Abspielen funktionieren auch ohne diesen
++   Schritt.
++
++## Einstellungen (`config.yaml` → `tidal`)
++
++| Schlüssel | Bedeutung |
++|---|---|
++| `enabled` | TIDAL ein/aus |
++| `land` | Katalogland (z. B. `CH`, `DE`) |
++| `nach_oeffnen_abspielen` | Nach dem Öffnen die Wiedergabetaste drücken. Auf `false` stellen, wenn die App selbst losspielt und der Orb sonst pausiert. |
++| `warte_sekunden` | Wie lange der Orb auf die App wartet, bevor er „Play“ drückt |
++| `redirect_uri` | Rückweg der Anmeldung (muss im Portal stehen) |
++| `scope` | Eigene Bereiche, leer = Voreinstellung |
++
++## Wo was liegt
++
++- `backend/integrations/tidal/oauth.py`: Anmeldung (Client Credentials + PKCE)
++- `backend/integrations/tidal/client.py`: API-Aufrufe (Suche, Playlists)
++- `backend/integrations/tidal/player.py`: App öffnen, Medientasten
++- `backend/tools/tidal_tools.py`: die sieben Werkzeuge
++- Token: Benutzerdaten `tidal/token.json`, verschleiert, wenn `AI_ORB_ENCRYPTION_KEY` gesetzt ist
+diff --git a/tests/backend/test_tidal.py b/tests/backend/test_tidal.py
+new file mode 100644
+index 0000000..3c00314
+--- /dev/null
++++ b/tests/backend/test_tidal.py
+@@ -0,0 +1,134 @@
++"""Tests für die TIDAL-Anbindung - ohne einen einzigen echten Netzaufruf."""
++
++from __future__ import annotations
++
++import asyncio
++import time
++import urllib.parse
++from typing import Any
++
++from backend.integrations.gmail.oauth import Token
++from backend.integrations.tidal.client import TidalClient
++from backend.integrations.tidal.oauth import TidalAuth, TidalOAuthConfig
++from backend.security.permissions import KNOWN_PERMISSIONS
++from backend.tools.tidal_tools import TidalDienst, _songs_lesen, build_tidal_tools
++
++
++class AttrappeTransport:
++    def __init__(self) -> None:
++        self.aufrufe: list[tuple[str, str, str, Any]] = []
++
++    def request(self, method: str, url: str, *, token: str, body: Any) -> dict[str, Any]:
++        self.aufrufe.append((method, url, token, body))
++        pfad = urllib.parse.urlparse(url).path
++        if "/searchResults/" in pfad:
++            return {"data": [{"id": "111", "type": "tracks"}, {"id": "222", "type": "tracks"}]}
++        if pfad.endswith("/tracks"):
++            return {
++                "data": [
++                    {"id": "111", "type": "tracks", "attributes": {"title": "Yellow", "duration": "PT4M26S"},
++                     "relationships": {"artists": {"data": [{"id": "9", "type": "artists"}]}}},
++                ],
++                "included": [{"id": "9", "type": "artists", "attributes": {"name": "Coldplay"}}],
++            }
++        if pfad.endswith("/playlists") and method == "POST":
++            return {"data": {"id": "pl-1", "type": "playlists", "attributes": {"name": body["data"]["attributes"]["name"]}}}
++        if pfad.endswith("/relationships/items") and method == "POST":
++            return {}
++        if "userCollectionPlaylists" in pfad:
++            return {
++                "data": [{"id": "pl-1", "type": "playlists"}, {"id": "pl-2", "type": "playlists"}],
++                "included": [
++                    {"id": "pl-1", "type": "playlists", "attributes": {"name": "Waldrunde", "numberOfItems": 3}},
++                    {"id": "pl-2", "type": "playlists", "attributes": {"name": "Sport"}},
++                ],
++            }
++        return {}
++
++
++def _auth(tmp_path, *, angemeldet: bool = True) -> TidalAuth:
++    def post(url: str, felder: dict[str, str], *, basic=None) -> dict[str, Any]:
++        assert felder["grant_type"] in ("client_credentials", "authorization_code", "refresh_token")
++        return {"access_token": "tok-" + felder["grant_type"], "expires_in": 3600, "refresh_token": "r"}
++
++    auth = TidalAuth(
++        TidalOAuthConfig(client_id="id", client_secret="geheim"),
++        token_path=tmp_path / "token.json",
++        post=post,
++    )
++    if angemeldet:
++        auth._save_token(Token(access_token="user", refresh_token="r", expires_at=time.time() + 3600))
++    return auth
++
++
++def _werkzeuge(tmp_path, *, angemeldet: bool = True):
++    transport = AttrappeTransport()
++    geoeffnet: list[str] = []
++    client = TidalClient(_auth(tmp_path, angemeldet=angemeldet), land="CH", transport=transport)
++    dienst = TidalDienst(client, oeffner=lambda app, web, **_: geoeffnet.append(app) or "app")
++    return {t.name: t for t in build_tidal_tools(dienst)}, transport, geoeffnet
++
++
++def test_berechtigung_ist_bekannt():
++    assert "music" in KNOWN_PERMISSIONS
++
++
++def test_songs_lesen():
++    assert _songs_lesen("1. Hello von Adele; - Yellow\nCreep") == ["Hello von Adele", "Yellow", "Creep"]
++
++
++def test_suche_ohne_anmeldung_nutzt_anwendungstoken(tmp_path):
++    werkzeuge, transport, _ = _werkzeuge(tmp_path, angemeldet=False)
++    ergebnis = asyncio.run(werkzeuge["musik_suchen"].execute({"suche": "Yellow", "anzahl": 1}))
++    assert ergebnis.ok
++    assert "Coldplay" in ergebnis.output
++    assert transport.aufrufe[0][2] == "tok-client_credentials"
++    assert "countryCode=CH" in transport.aufrufe[0][1]
++
++
++def test_abspielen_oeffnet_app(tmp_path):
++    werkzeuge, _, geoeffnet = _werkzeuge(tmp_path)
++    ergebnis = asyncio.run(werkzeuge["musik_abspielen"].execute({"suche": "Yellow von Coldplay"}))
++    assert ergebnis.ok
++    assert geoeffnet == ["tidal://track/111"]
++
++
++def test_playlist_erstellen(tmp_path):
++    werkzeuge, transport, _ = _werkzeuge(tmp_path)
++    ergebnis = asyncio.run(
++        werkzeuge["playlist_erstellen"].execute({"name": "Waldrunde", "songs": "Yellow von Coldplay"})
++    )
++    assert ergebnis.ok, ergebnis.error
++    anlegen = [a for a in transport.aufrufe if a[0] == "POST" and a[1].split("?")[0].endswith("/playlists")]
++    assert anlegen and anlegen[0][2] == "user"
++    items = [a for a in transport.aufrufe if "relationships/items" in a[1] and a[0] == "POST"]
++    assert items[0][3] == {"data": [{"id": "111", "type": "tracks"}]}
++
++
++def test_playlist_ohne_anmeldung_sagt_wie(tmp_path):
++    werkzeuge, transport, _ = _werkzeuge(tmp_path, angemeldet=False)
++    ergebnis = asyncio.run(werkzeuge["playlist_erstellen"].execute({"name": "X", "songs": "Yellow"}))
++    assert not ergebnis.ok
++    assert "anmelden" in ergebnis.error.lower() or "angemeldet" in ergebnis.error.lower()
++    assert not transport.aufrufe
++
++
++def test_eigene_playlist_abspielen(tmp_path):
++    werkzeuge, _, geoeffnet = _werkzeuge(tmp_path)
++    ergebnis = asyncio.run(werkzeuge["musik_abspielen"].execute({"suche": "sport", "art": "playlist"}))
++    assert ergebnis.ok
++    assert geoeffnet == ["tidal://playlist/pl-2"]
++
++
++def test_anmeldung_prueft_state(tmp_path):
++    auth = _auth(tmp_path, angemeldet=False)
++    url = auth.anmelde_url()
++    params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
++    assert params["code_challenge_method"] == ["S256"]
++    try:
++        auth.anmeldung_abschliessen("code", "falsch")
++        raise AssertionError("falscher state wurde angenommen")
++    except Exception as fehler:  # noqa: BLE001
++        assert "passt nicht" in str(fehler)
++    auth.anmeldung_abschliessen("code", params["state"][0])
++    assert auth.user_token() == "tok-authorization_code"
+-- 
+2.43.0
+

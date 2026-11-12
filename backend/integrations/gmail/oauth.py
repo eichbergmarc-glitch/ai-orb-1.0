@@ -68,6 +68,10 @@ DEFAULT_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 #: niemand – Least Privilege, dieselbe Überlegung wie oben bei Gmail.
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
+#: Die Kontakte, nur lesend (12.11.2026): "Ruf Peter an" braucht Peters
+#: Nummer. Wer sich vorher angemeldet hat, muss sich einmal neu anmelden.
+CONTACTS_SCOPE = "https://www.googleapis.com/auth/contacts.readonly"
+
 
 def kalender_bereich_enthalten(scope: str) -> bool:
     """Ob ein erteilter Rechteumfang den Kalender einschließt.
@@ -115,6 +119,7 @@ class OAuthConfig:
             teile = [DEFAULT_SCOPE]
             if mit_kalender:
                 teile.append(CALENDAR_SCOPE)
+            teile.append(CONTACTS_SCOPE)
             scope = " ".join(teile)
 
         return cls(

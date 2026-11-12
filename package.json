@@ -43,39 +43,81 @@
     ],
     "extraResources": [
       {
+        "from": "desktop/electron/dist/renderer",
+        "to": "app/desktop/electron/dist/renderer",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "backend",
         "to": "app/backend",
-        "filter": ["**/*.py", "!**/__pycache__/**"]
+        "filter": [
+          "**/*.py",
+          "!**/__pycache__/**"
+        ]
       },
       {
         "from": "runtime",
         "to": "app/runtime",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "plugins",
         "to": "app/plugins",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "skills",
         "to": "app/skills",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
-      { "from": "config.yaml", "to": "app/config.yaml" },
-      { "from": ".env.example", "to": "app/.env.example" },
-      { "from": "requirements.txt", "to": "app/requirements.txt" },
-      { "from": "requirements-voice.txt", "to": "app/requirements-voice.txt" },
-      { "from": "requirements-vision.txt", "to": "app/requirements-vision.txt" },
-      { "from": "upgrade.py", "to": "app/upgrade.py" },
-      { "from": "README.md", "to": "app/README.md" },
-      { "from": "LICENSE", "to": "app/LICENSE" }
+      {
+        "from": "config.yaml",
+        "to": "app/config.yaml"
+      },
+      {
+        "from": ".env.example",
+        "to": "app/.env.example"
+      },
+      {
+        "from": "requirements.txt",
+        "to": "app/requirements.txt"
+      },
+      {
+        "from": "requirements-voice.txt",
+        "to": "app/requirements-voice.txt"
+      },
+      {
+        "from": "requirements-vision.txt",
+        "to": "app/requirements-vision.txt"
+      },
+      {
+        "from": "upgrade.py",
+        "to": "app/upgrade.py"
+      },
+      {
+        "from": "README.md",
+        "to": "app/README.md"
+      },
+      {
+        "from": "LICENSE",
+        "to": "app/LICENSE"
+      }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico",
@@ -103,6 +145,8 @@
     "compression": "maximum",
     "removePackageScripts": true,
     "asar": true,
-    "asarUnpack": ["**/*.node"]
+    "asarUnpack": [
+      "**/*.node"
+    ]
   }
 }

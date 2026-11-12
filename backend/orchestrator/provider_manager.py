@@ -1343,6 +1343,15 @@ class ProviderManager:
 
         if images:
             provider = self.active_provider
+            # Kann der aktive Anbieter keine Bilder, den ersten nehmen, der
+            # es kann (z. B. openai_terra), statt gleich abzulehnen.
+            if provider is None or not bool(getattr(provider, "supports_images", False)):
+                for kandidat in self._providers.values():
+                    if bool(getattr(kandidat, "supports_images", False)) and callable(
+                        getattr(kandidat, "complete_with_images", None)
+                    ) and self._health.record(kandidat.name).available:
+                        provider = kandidat
+                        break
             image_method = getattr(provider, "complete_with_images", None)
             if provider is None or not bool(
                 getattr(provider, "supports_images", False)
@@ -1364,7 +1373,7 @@ class ProviderManager:
                 max_tokens=max_tokens,
             )
             self._health.note_success(
-                self._active_name or provider.name,
+                provider.name,
                 time.perf_counter() - started,
             )
             return response.text

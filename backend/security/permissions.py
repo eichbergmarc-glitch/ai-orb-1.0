@@ -189,6 +189,14 @@ KNOWN_PERMISSIONS: dict[str, Permission] = {
             RiskLevel.HIGH,
         ),
         _permission(
+            # Musik bei TIDAL: suchen, in der App abspielen, Playlists im
+            # eigenen Konto anlegen und ergaenzen. Abwaegbar, nicht heikel:
+            # Eine Playlist zu viel laesst sich mit einem Klick loeschen.
+            "music",
+            "Musik bei TIDAL suchen, abspielen und Playlists verwalten",
+            RiskLevel.MODERATE,
+        ),
+        _permission(
             "send_email",
             "Eine E-Mail versenden",
             RiskLevel.CRITICAL,

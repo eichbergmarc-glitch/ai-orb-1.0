@@ -125,6 +125,49 @@ def build_router(runtime: Runtime) -> ApiRouter:
 
     router.get("/gmail/callback", gmail_callback)
 
+    # --- Die Rueckkehr von der TIDAL-Anmeldung ------------------------------
+
+    def tidal_callback(params: dict[str, Any]) -> dict[str, Any]:
+        def _seite(titel: str, text: str, gut: bool) -> dict[str, Any]:
+            farbe = "#2e9e5b" if gut else "#c0392b"
+            return {
+                "_html": (
+                    "<!DOCTYPE html><html lang='de'><head><meta charset='utf-8'>"
+                    "<title>AI-Orb</title></head>"
+                    "<body style='font-family:Segoe UI,system-ui,sans-serif;"
+                    "background:#0e1420;color:#dce8f7;display:flex;"
+                    "align-items:center;justify-content:center;height:100vh;margin:0'>"
+                    "<div style='max-width:30rem;text-align:center'>"
+                    f"<h1 style='color:{farbe};font-size:1.4rem'>{titel}</h1>"
+                    f"<p style='line-height:1.6'>{text}</p></div></body></html>"
+                ),
+                "_status": 200 if gut else 400,
+            }
+
+        dienst = getattr(runtime, "tidal", None)
+        if dienst is None:
+            return _seite("TIDAL ist nicht eingerichtet", "Der Orb hat kein TIDAL-Modul geladen.", gut=False)
+        if params.get("error"):
+            return _seite(
+                "Anmeldung abgebrochen",
+                f"TIDAL meldet: {params['error']}. Du kannst es im Orb erneut versuchen.",
+                gut=False,
+            )
+        ergebnis = dienst.anmeldung_abschliessen(
+            str(params.get("code", "")), str(params.get("state", ""))
+        )
+        if not ergebnis.get("ok"):
+            return _seite("Anmeldung fehlgeschlagen", str(ergebnis.get("fehler")), gut=False)
+        runtime.publish("tidal.login.completed", {})
+        return _seite(
+            "Mit TIDAL verbunden",
+            "Der Orb kann jetzt Playlists in deinem TIDAL-Konto anlegen. "
+            "Du kannst dieses Fenster schliessen.",
+            gut=True,
+        )
+
+    router.get("/tidal/callback", tidal_callback)
+
     router.get("/health", health)
     router.get("/status", status)
     router.get("/config", config_view)
@@ -533,7 +576,12 @@ def build_router(runtime: Runtime) -> ApiRouter:
             pfad = Path(ablage.name)
 
         try:
-            return runtime.run(runtime.stimme_vom_geraet(pfad), timeout=300.0)
+            # Freihaendig (Handy hoert dauerhaft): Kopfzeile X-Orb-Dauer: 1.
+            dauer = any(
+                str(name).lower() == "x-orb-dauer" and str(wert).strip() == "1"
+                for name, wert in (_kopfzeilen or {}).items()
+            )
+            return runtime.run(runtime.stimme_vom_geraet(pfad, dauer=dauer), timeout=300.0)
         finally:
             # Die Aufnahme ist beantwortet; sie aufzuheben hätte keinen
             # Zweck und wäre eine Mitschrift, um die niemand gebeten hat.
@@ -588,6 +636,30 @@ def build_router(runtime: Runtime) -> ApiRouter:
             "_status": 200,
         }
 
+    def dokument(params: dict[str, Any]) -> dict[str, Any]:
+        """Gibt ein von Synapse erstelltes Dokument an das Handy (12.11.2026).
+
+        Nur ueber eine zufaellige Kennung, die beim Erstellen vergeben
+        wurde - nie ueber einen Pfad.
+        """
+
+        from backend.tools.handy_tools import dokument_pfad
+
+        ziel = dokument_pfad(str(params.get("id", "")).strip())
+        if ziel is None:
+            return {"_status": 404, "_bytes": b"", "_type": "", "error": "unbekannt"}
+        typ = "application/pdf" if ziel.suffix.lower() == ".pdf" else "application/octet-stream"
+        return {"_bytes": ziel.read_bytes(), "_type": typ, "_status": 200}
+
+    router.get("/dokument", dokument)
+
+    def stimme_meldung(body: dict[str, Any]) -> dict[str, Any]:
+        """Das Handy meldet, was beim Abspielen passiert (12.11.2026)."""
+
+        logger.info("Handy meldet: %s", str(body.get("text", ""))[:300])
+        return {"ok": True}
+
+    router.post("/stimme/meldung", stimme_meldung)
     router.post_raw("/stimme/aufnahme", stimme_aufnahme)
     router.get("/stimme/ton", stimme_ton)
 

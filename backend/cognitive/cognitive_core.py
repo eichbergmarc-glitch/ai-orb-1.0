@@ -215,6 +215,12 @@ class CognitiveCore:
         """
 
         started = time.perf_counter()
+        # Das Weckwort ist Anrede, nicht Inhalt (12.11.2026): "Hey Synapse,
+        # such mir einen Zug ..." landete sonst mitsamt "Synapse" in der
+        # Websuche - Treffer ueber eine Razer-Software, wirre Antwort.
+        from backend.tools.web_tools import weckwort_entfernen
+
+        text = weckwort_entfernen(text)
         self.working_memory.append("conversation", {"role": "user", "text": text})
 
         # Tagebuchbefehle sind Datentransaktionen, keine Denkaufgaben. Der

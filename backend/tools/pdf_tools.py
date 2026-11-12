@@ -659,6 +659,17 @@ class CreatePdfTool(Tool):
         if bilder:
             note = f" {bilder} Bild(er) eingebettet." + note
 
+        # Kommt die Frage vom Handy, dort gleich einen Knopf "PDF oeffnen"
+        # anbieten (12.11.2026) - die Datei liegt sonst nur auf dem PC.
+        try:
+            from backend.tools import handy_tools
+
+            if handy_tools.ist_geraet_aktiv():
+                handy_tools.dokument_freigeben(path, title)
+                note += " Auf dem Handy erscheint ein Knopf zum Oeffnen."
+        except Exception:  # noqa: BLE001 - die PDF ist trotzdem da.
+            logger.exception("PDF liess sich nicht fuer das Handy freigeben.")
+
         logger.info(
             "PDF erzeugt: %s (%d Seiten, %d Bilder, %d Bytes).",
             path, len(layout.pages), bilder, len(payload),

@@ -263,6 +263,28 @@ def _tragkraft(wort: str, grossgeschrieben: set[str]) -> float:
     return punkte + min(len(wort), 12) / 12.0
 
 
+_WECKWORT_AM_ANFANG = re.compile(
+    # Mit Gruss davor auch verhoerte Formen ("Hey Snaps", "Hey Sinapt"),
+    # ohne Gruss nur das eigentliche Wort - sonst fiele "Snapchat oeffnen".
+    r"^\s*(?:(?:hey|hei|ei|ey|hai|hallo|hi|hej|he|ok|okay|na)\b[\s,]*s[iy]?n[a\u00e4]p[st]\w*"
+    r"|s[iy]naps\w*)\b[\s,.:;!?-]*",
+    re.IGNORECASE,
+)
+
+
+def weckwort_entfernen(text: str) -> str:
+    """"Hey Synapse, such mir ..." -> "such mir ..." (12.11.2026).
+
+    Das Weckwort gehoert nicht zur Frage. Blieb es stehen, suchte der Orb
+    nach "synapse bus- zugverbindung melchnau ..." und bekam Seiten ueber
+    die Razer-Software gleichen Namens - und antwortete entsprechend wirr.
+    Nur am Anfang entfernt; "Was ist Razer Synapse?" bleibt unberuehrt.
+    """
+
+    rest = _WECKWORT_AM_ANFANG.sub("", str(text or ""), count=1).strip()
+    return rest if rest else str(text or "").strip()
+
+
 def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
     """Macht aus einem gesprochenen Satz einen brauchbaren Suchbegriff.
 
@@ -277,7 +299,7 @@ def suchbegriff_aus(text: str, *, hoechstens: int = 90) -> str:
     eine Quelle ein und sind kein Fuellwort.
     """
 
-    knapp = " " + " ".join(str(text).lower().split()) + " "
+    knapp = " " + " ".join(weckwort_entfernen(str(text)).lower().split()) + " "
     # Whisper versteht das sehr kurze deutsche Akronym "KI" im Satz oft als
     # den Namen "Kai". In Verbindung mit Modell/Modellen ist die Bedeutung
     # eindeutig genug, um sie vor der Zerlegung zu berichtigen.

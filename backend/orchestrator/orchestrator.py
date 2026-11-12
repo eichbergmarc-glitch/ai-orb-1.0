@@ -2153,7 +2153,40 @@ class Orchestrator:
         # und führe eine Suche durch" löste vorher acht Suchläufe mit dem
         # wörtlichen Befehlssatz aus - alle leer, und für den Benutzer sah
         # das aus wie "die Suche ist kaputt".
-        if tools_available and faehigkeit.aktualitaet and not ist_browser_befehl(text):
+        # Zug- und Busverbindungen (12.11.2026) kommen aus dem Fahrplan,
+        # nicht aus einer Websuche: Abfahrtszeiten stehen nicht verlaesslich
+        # in Suchtreffern, und das Modell erfand daraus wirre Antworten.
+        fahrplan_kontext = ""
+        if tools_available:
+            from backend.tools.fahrplan_tools import ist_fahrplanfrage
+
+            fahrplan_kontext = await self._vorab_fahrplan(text)
+            if not fahrplan_kontext and ist_fahrplanfrage(text):
+                # Orte nicht sicher erkannt (die Spracherkennung machte am
+                # 12.11. aus "nach Ostermundigen" "aus der Mundigen"). Dann
+                # keine Websuche - die brachte nur Fremdes -, sondern das
+                # Fahrplan-Werkzeug oder eine kurze Rueckfrage.
+                fahrplan_kontext = (
+                    "Das ist eine Fahrplanfrage. Hol die Verbindung mit dem Werkzeug "
+                    "verbindung_suchen (von, nach, zeit). Die Spracherkennung kann "
+                    "Ortsnamen verhoert haben: Ist Start oder Ziel nicht eindeutig, "
+                    "frag kurz nach ('Von wo nach wo genau?'), statt zu raten."
+                )
+                context_block = "\n\n".join(
+                    part for part in (context_block, fahrplan_kontext) if part
+                )
+            elif fahrplan_kontext:
+                context_block = "\n\n".join(
+                    part for part in (context_block, fahrplan_kontext) if part
+                )
+                vorab_ergebnisse["verbindung_suchen"] = fahrplan_kontext
+                vorab_ergebnisse["internet_suchen"] = fahrplan_kontext
+        if (
+            tools_available
+            and faehigkeit.aktualitaet
+            and not fahrplan_kontext
+            and not ist_browser_befehl(text)
+        ):
             frisch = await self._vorab_suchen(text)
             if frisch:
                 vorab_suchkontext = frisch
@@ -3043,6 +3076,32 @@ class Orchestrator:
             "aus welcher seiner Quellen etwas stammt, und lies mit "
             "'webseite_lesen' nach, wenn die Trefferzeile nicht reicht:\n\n"
             + quellen_gegenueberstellen(gesammelt)
+        )
+
+    async def _vorab_fahrplan(self, text: str) -> str:
+        """Fragt bei "Verbindung von X nach Y" direkt den Fahrplan ab."""
+
+        try:
+            from backend.tools.fahrplan_tools import fahrplan_anfrage
+
+            argumente = fahrplan_anfrage(text)
+            if not argumente:
+                return ""
+            lauf = await self._tool_engine.direkt_ausfuehren("verbindung_suchen", argumente)
+        except Exception:  # noqa: BLE001 - darf nie die Antwort verhindern.
+            logger.exception("Die Fahrplanabfrage ist gescheitert.")
+            return ""
+        if lauf.result.ok and lauf.result.output:
+            logger.info("Fahrplan abgefragt: %s (%.1f s).", argumente, lauf.seconds)
+            return (
+                "Fahrplan (soeben bei transport.opendata.ch abgefragt - nur "
+                "diese Zeiten nennen, nichts erfinden):\n" + lauf.result.output
+            )
+        fehler = str(lauf.result.error or "").strip()
+        logger.info("Fahrplan ohne Ergebnis fuer %s: %s", argumente, fehler)
+        return (
+            "Fahrplanabfrage ohne Ergebnis: " + (fehler or "keine Verbindung gefunden")
+            + " Sag das ehrlich und erfinde keine Zeiten."
         )
 
     async def _vorab_suchen(self, text: str) -> str:

@@ -126,3 +126,74 @@ class DescribeScreenTool(Tool):
             )
 
         return ToolResult.success(getattr(result, "answer", ""))
+
+
+class KameraAnsehenTool(Tool):
+    """Sieht durch die Webcam (07.11.2026)."""
+
+    name = "kamera_ansehen"
+    description = (
+        "Macht ein Standbild mit der WEBCAM und beschreibt, was zu sehen ist - "
+        "wer vor dem Rechner sitzt, was er in der Hand haelt, was im Raum "
+        "passiert. Erkennt Marc, wenn ein Referenzfoto gespeichert ist. Das "
+        "Bild geht zur Auswertung an das Sprachmodell und wird nicht "
+        "gespeichert. NUR benutzen, wenn der Benutzer ausdruecklich will, dass "
+        "du durch die Kamera schaust."
+    )
+    permission = "camera"
+    parameters = (
+        ToolParameter(
+            "frage", "string",
+            "Was genau wissenswert ist, z. B. 'Wer sitzt da?' oder 'Was halte ich hoch?'.",
+            required=False, default="",
+        ),
+    )
+
+    def __init__(self, kamera: Any | None = None) -> None:
+        super().__init__()
+        self._kamera = kamera
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        if self._kamera is None:
+            return ToolResult.failure("Die Kamera ist nicht eingerichtet.")
+        try:
+            antwort = await self._kamera.ansehen(str(arguments.get("frage", "") or ""))
+        except Exception as error:  # noqa: BLE001
+            logger.warning("Kamerabild nicht auswertbar: %s", error)
+            return ToolResult.failure(
+                f"Die Webcam liess sich nicht nutzen: {error}. Pruefe, ob sie "
+                "eingesteckt ist und kein anderes Programm (Kamera-App, Teams) "
+                "sie gerade benutzt."
+            )
+        return ToolResult.success(antwort or "Auf dem Kamerabild war nichts zu erkennen.")
+
+
+class GesichtMerkenTool(Tool):
+    """Speichert ein Referenzfoto, damit Synapse Marc wiedererkennt."""
+
+    name = "gesicht_merken"
+    description = (
+        "Macht mit der Webcam ein Referenzfoto des Benutzers und speichert es "
+        "auf diesem Rechner, damit du ihn spaeter auf Kamerabildern "
+        "wiedererkennst. Benutzen, wenn der Benutzer sagt 'merk dir mein "
+        "Gesicht' oder 'lerne, wie ich aussehe'. Vorher bitten, gerade in die "
+        "Kamera zu schauen."
+    )
+    permission = "camera"
+    parameters = ()
+
+    def __init__(self, kamera: Any | None = None) -> None:
+        super().__init__()
+        self._kamera = kamera
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        if self._kamera is None:
+            return ToolResult.failure("Die Kamera ist nicht eingerichtet.")
+        try:
+            pfad = await self._kamera.referenz_speichern()
+        except Exception as error:  # noqa: BLE001
+            return ToolResult.failure(f"Die Webcam liess sich nicht nutzen: {error}")
+        return ToolResult.success(
+            "Ich habe mir dein Gesicht gemerkt. Das Foto liegt nur auf diesem "
+            f"Rechner ({pfad.name}).",
+        )

@@ -155,8 +155,11 @@ class OpenAICompatibleProvider(BaseProvider):
         # Der offizielle OpenAI-Responses-Endpunkt nimmt Bilder direkt als
         # Eingabe an. Kompatible Drittanbieter werden nicht pauschal als
         # bildfaehig markiert, weil deren Schemas voneinander abweichen.
-        self.supports_images = (
-            self._preset_name == "openai" and self._api_style == "responses"
+        # Seit 07.11.2026 auch ueber Chat-Completions (gpt-4.1-mini, gpt-4o-mini
+        # nehmen Bilder an) - sonst konnte das Hauptmodell weder Bildschirm
+        # noch Webcam sehen. ``supports_images: false`` schaltet es ab.
+        self.supports_images = bool(
+            settings.get("supports_images", self._preset_name == "openai")
         )
 
     # --- Schlüssel -------------------------------------------------------------
@@ -721,6 +724,53 @@ class OpenAICompatibleProvider(BaseProvider):
             raw=data,
         )
 
+    async def _chat_mit_bildern(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str,
+        images: list[dict[str, str]],
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> ProviderResponse:
+        """Bilder ueber /chat/completions (image_url mit data:-URL)."""
+
+        inhalt: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for image in images:
+            media_type = str(image.get("media_type") or "image/png").strip().lower()
+            encoded = str(image.get("data") or "").strip()
+            if not media_type.startswith("image/") or not encoded:
+                raise ProviderError(f"{self.name}: ungueltige Bilddaten.")
+            inhalt.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{media_type};base64,{encoded}"},
+            })
+        nachrichten: list[dict[str, Any]] = []
+        if system_prompt:
+            nachrichten.append({"role": "system", "content": system_prompt})
+        nachrichten.append({"role": "user", "content": inhalt})
+        payload: dict[str, Any] = {"model": self._model, "messages": nachrichten}
+        if temperature is not None:
+            payload["temperature"] = temperature
+        payload["max_tokens"] = max(int(max_tokens or 0), 400)
+        started = self._now()
+        data = await self._request_json(
+            f"{self._base_url}/chat/completions",
+            payload=payload,
+            headers=self._headers(),
+        )
+        choices = data.get("choices") or []
+        text = self._wahltext(choices[0], strom=False).strip() if choices else ""
+        if not text:
+            raise ProviderError(f"{self.name}: leere Antwort auf das Bild.")
+        return ProviderResponse(
+            text=text,
+            provider=self.name,
+            model=self._model,
+            latency_seconds=self._now() - started,
+            raw=data,
+        )
+
     async def complete_with_images(
         self,
         prompt: str,
@@ -734,6 +784,15 @@ class OpenAICompatibleProvider(BaseProvider):
 
         if not self.supports_images:
             raise ProviderError(f"{self.name}: Bilddaten werden nicht unterstuetzt.")
+
+        if self._api_style != "responses":
+            return await self._chat_mit_bildern(
+                prompt,
+                system_prompt=system_prompt,
+                images=images,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
         content: list[dict[str, str]] = [{"type": "input_text", "text": prompt}]
         for image in images:
