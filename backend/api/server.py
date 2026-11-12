@@ -660,6 +660,27 @@ def build_router(runtime: Runtime) -> ApiRouter:
         return {"ok": True}
 
     router.post("/stimme/meldung", stimme_meldung)
+
+    def stimme_version(_: dict[str, Any]) -> dict[str, Any]:
+        """Fingerabdruck der Handy-Oberflaeche (12.11.2026).
+
+        Safari laesst eine offene Seite tagelang mit dem alten Programm
+        laufen - Verbesserungen kamen nie an. Die Seite fragt hier nach
+        und laedt sich neu, sobald sich stimme.js geaendert hat.
+        """
+
+        import hashlib
+
+        ordner = str(runtime.config.get("backend.static_dir", "") or "").strip()
+        kandidaten = [Path(ordner) / "stimme.js"] if ordner else []
+        for datei in kandidaten:
+            try:
+                return {"version": hashlib.sha1(datei.read_bytes()).hexdigest()[:12]}
+            except OSError:
+                continue
+        return {"version": ""}
+
+    router.get("/stimme/version", stimme_version)
     router.post_raw("/stimme/aufnahme", stimme_aufnahme)
     router.get("/stimme/ton", stimme_ton)
 

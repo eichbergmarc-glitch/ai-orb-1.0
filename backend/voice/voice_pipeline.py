@@ -3564,6 +3564,16 @@ class VoicePipeline:
         """
 
         self._neue_rede()
+        # Merken, was der Orb von sich aus gesagt hat: Ein Handy daneben
+        # hoert es sonst mit und schickt es als Frage zurueck (12.11.2026).
+        try:
+            gesagt = getattr(self, "zuletzt_gesagt", None)
+            if gesagt is None:
+                gesagt = self.zuletzt_gesagt = []
+            gesagt.append((time.monotonic(), str(text)))
+            del gesagt[:-10]
+        except Exception:  # noqa: BLE001
+            pass
         spoken = await self._say(text, emotion=emotion)
         await self._set_state(
             VoiceState.LISTENING if self.is_awake else VoiceState.SLEEPING

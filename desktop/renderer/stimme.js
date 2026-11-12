@@ -920,6 +920,28 @@
     schleier.addEventListener("click", einTipp, { once: true });
   }
 
+  /**
+   * Neue Fassung? Dann neu laden (12.11.2026). Safari liess die Seite
+   * sonst mit dem alten Programm weiterlaufen, und Korrekturen kamen nie an.
+   * Nur wenn gerade nichts laeuft - nie mitten in einer Antwort.
+   */
+  var eigeneVersion = null;
+  async function versionPruefen() {
+    try {
+      var antwort = await fetch("/stimme/version", { cache: "no-store", credentials: "same-origin" });
+      if (!antwort.ok) return;
+      var v = (await antwort.json()).version || "";
+      if (!v) return;
+      if (eigeneVersion === null) { eigeneVersion = v; return; }
+      if (v !== eigeneVersion && !abgabeLaeuft && !sprichtNoch) {
+        handyMeldung("neue Fassung - Seite wird neu geladen");
+        window.location.reload();
+      }
+    } catch (f) { /* egal */ }
+  }
+  void versionPruefen();
+  window.setInterval(versionPruefen, 60000);
+
   /** Kurze Rueckmeldung an den PC, damit Fehler im Protokoll stehen. */
   function handyMeldung(text) {
     try {

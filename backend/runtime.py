@@ -1471,6 +1471,7 @@ class Runtime:
         if isinstance(stuecke, str):
             stuecke = self._stuecke_bilden(stuecke) or [stuecke]
 
+        self._eigene_rede_merken(" ".join(stuecke))
         auftrag = uuid.uuid4().hex[:12]
         self._sprechauftraege[auftrag] = {
             "teile": stuecke,
@@ -1519,6 +1520,42 @@ class Runtime:
     #: Nach einer Antwort aufs Handy so lange ohne "Hey Synapse" weiterreden.
     GERAET_NACHFRAGE_SEKUNDEN = 120.0
 
+    def _eigene_rede_merken(self, text: str) -> None:
+        liste = getattr(self, "_eigene_rede", None)
+        if liste is None:
+            liste = self._eigene_rede = []
+        liste.append((time.monotonic(), str(text)))
+        del liste[:-10]
+
+    def _ist_eigenes_echo(self, frage: str, *, sekunden: float = 120.0) -> bool:
+        """Hat das Mikrofon nur gehoert, was Synapse selbst gerade sagte?
+
+        Am 12.11.2026 kam "Die Anmeldung bei Google ist geschafft. Post und
+        Kalender sind jetzt verbunden." als FRAGE vom Handy - es war
+        Synapses eigene Ansage aus dem PC-Lautsprecher.
+        """
+
+        def woerter(text: str) -> set[str]:
+            return {
+                w.strip(".,!?;:\u201e\u201c\"'()-").lower()
+                for w in str(text).split()
+                if len(w.strip(".,!?;:\u201e\u201c\"'()-")) >= 4
+            }
+
+        gehoert = woerter(frage)
+        if len(gehoert) < 2:
+            return False
+        jetzt = time.monotonic()
+        quellen = list(getattr(self, "_eigene_rede", []) or [])
+        quellen += list(getattr(self.voice, "zuletzt_gesagt", []) or [])
+        for zeitpunkt, text in quellen:
+            if jetzt - zeitpunkt > sekunden:
+                continue
+            eigen = woerter(text)
+            if eigen and len(gehoert & eigen) / len(gehoert) >= 0.6:
+                return True
+        return False
+
     async def _dauerhoeren_pruefen(self, aufnahme: Path) -> dict[str, Any] | None:
         """Freihaendig vom Handy (12.11.2026): nur mit Weckwort antworten.
 
@@ -1548,6 +1585,10 @@ class Runtime:
                 return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "grund": "rauschen"}
         except Exception:  # noqa: BLE001
             pass
+
+        if self._ist_eigenes_echo(frage):
+            logger.info("Handy hoerte Synapse selbst - verworfen: %r", frage[:80])
+            return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "grund": "echo"}
 
         treffer = self.voice._wake_word.detect(frage)
         offen = time.monotonic() < float(getattr(self, "_geraet_offen_bis", 0.0))
