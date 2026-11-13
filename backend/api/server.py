@@ -768,6 +768,13 @@ def build_router(runtime: Runtime) -> ApiRouter:
 
     router.get("/stimme/pc_status", stimme_pc_status)
 
+    def stimme_auftrag_ende(params: dict[str, Any]) -> dict[str, Any]:
+        """Offene Antwort: fertig? Mit Knoepfen und Vorlesungs-Fortsetzung."""
+
+        return runtime.auftrag_ende(str(params.get("auftrag", "")).strip())
+
+    router.get("/stimme/auftrag_ende", stimme_auftrag_ende)
+
     def stimme_stopp(_: dict[str, Any]) -> dict[str, Any]:
         """Stopp-Knopf auf dem Handy/iPad: PC-Stimme und Vorlesung anhalten."""
 

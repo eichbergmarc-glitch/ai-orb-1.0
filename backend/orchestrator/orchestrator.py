@@ -2181,10 +2181,37 @@ class Orchestrator:
                 )
                 vorab_ergebnisse["verbindung_suchen"] = fahrplan_kontext
                 vorab_ergebnisse["internet_suchen"] = fahrplan_kontext
+        # Wetter (13.11.2026): Dafuer gibt es das Werkzeug "wetter". Die
+        # Vorabsuche brauchte 6,3 s und fand die "heute-show".
+        wetterfrage = bool(re.search(r"\bwetter\w*|\bregnet|\btemperatur", text, re.IGNORECASE))
+        if tools_available and wetterfrage:
+            # Direkt abfragen statt das Modell erst ueberlegen zu lassen: Der
+            # Umweg ueber den Werkzeugaufruf kostete 3,5 s (13.11.2026).
+            wetter_kontext = ""
+            try:
+                from backend.tools.alltag_tools import wetter_anfrage
+
+                lauf = await self._tool_engine.direkt_ausfuehren("wetter", wetter_anfrage(text))
+                if lauf.result.ok and lauf.result.output:
+                    wetter_kontext = (
+                        "Wetter (soeben bei Open-Meteo abgefragt - nur diese Werte nennen, "
+                        "kurz und gesprochen):\n" + lauf.result.output
+                    )
+                    vorab_ergebnisse["wetter"] = lauf.result.output
+            except Exception:  # noqa: BLE001 - darf nie die Antwort verhindern.
+                logger.exception("Die Wetter-Vorabfrage ist gescheitert.")
+            context_block = "\n\n".join(
+                part for part in (
+                    context_block,
+                    wetter_kontext or "Das ist eine Wetterfrage: Benutze das Werkzeug 'wetter' "
+                    "(Ort, tage 1-7) und nicht die Websuche.",
+                ) if part
+            )
         if (
             tools_available
             and faehigkeit.aktualitaet
             and not fahrplan_kontext
+            and not wetterfrage
             and not ist_browser_befehl(text)
         ):
             frisch = await self._vorab_suchen(text)

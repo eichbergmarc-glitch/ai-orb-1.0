@@ -14,12 +14,18 @@ def _runtime(tmp_path):
     r.voice = types.SimpleNamespace(_vorlesung=VorlesungsSession(tmp_path / "v.json", max_abschnitte=3))
     gefragt = []
 
-    async def process(text, spoken=False):
+    async def process(text, spoken=False, on_speech=None):
         gefragt.append(text)
-        return types.SimpleNamespace(response=f"Abschnitt {len(gefragt)} über Philosophie.")
+        return types.SimpleNamespace(response=f"Abschnitt {len(gefragt)} über Philosophie.",
+                                     already_spoken=False)
 
     r.cognitive = types.SimpleNamespace(process=process)
-    r._sprechauftraege = {}
+    import collections
+
+    r._sprechauftraege = collections.OrderedDict()
+    r.AUFTRAEGE_MERKEN = 50
+    r._loop = None
+    r._stimme_in_der_cloud = lambda: True
 
     async def anlegen(stuecke):
         return "auftrag"
@@ -80,3 +86,36 @@ def test_befehl_ausgabe_umschalten():
     assert Runtime._befehl_erkennen("Hey Synapse, antworte am PC.") == "ausgabe_pc"
     assert Runtime._befehl_erkennen("Antworte hier") == "ausgabe_hier"
     assert Runtime._befehl_erkennen("Antworte mir zur Philosophie") == ""
+
+
+def test_offene_antwort_beginnt_mit_dem_ersten_satz(tmp_path):
+    """13.11.2026: Das Handy bekommt den Auftrag, sobald der erste Satz steht."""
+
+    r, _ = _runtime(tmp_path)
+    freigabe = None
+
+    async def process(text, spoken=False, on_speech=None):
+        await on_speech("Erster Satz.")
+        await freigabe.wait()
+        await on_speech("Zweiter Satz.")
+        return types.SimpleNamespace(response="Erster Satz. Zweiter Satz.", already_spoken=True)
+
+    r.cognitive = types.SimpleNamespace(process=process)
+
+    async def ablauf():
+        nonlocal freigabe
+        freigabe = asyncio.Event()
+        ergebnis = await r._geraet_beantworten("Wie spät ist es?")
+        assert ergebnis["offen"] is True and ergebnis["teile"] == -1
+        auftrag = ergebnis["auftrag"]
+        assert r.sprechstueck(auftrag, 1)[0] == "kommt"
+        assert r.auftrag_ende(auftrag)["stand"] == "offen"
+        freigabe.set()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        ende = r.auftrag_ende(auftrag)
+        assert ende["stand"] == "fertig" and ende["teile"] == 2
+        assert ende["antwort"] == "Erster Satz. Zweiter Satz."
+        assert r.sprechstueck(auftrag, 2)[0] == "weg"
+
+    asyncio.run(ablauf())

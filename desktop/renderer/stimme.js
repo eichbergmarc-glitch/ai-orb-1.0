@@ -443,7 +443,7 @@
         melde("Antwort kommt am PC …");
         sprichtNoch = vorlesenUndWeiter(ergebnis);
         if (!dauer) void sprichtNoch.then(function () { sprichtNoch = null; melde(""); });
-      } else if (ergebnis.auftrag && ergebnis.teile > 0) {
+      } else if (ergebnis.auftrag && (ergebnis.teile > 0 || ergebnis.offen)) {
         melde("");
         if (dauer) {
           // Freihaendig: erst zu Ende sprechen, dann wieder zuhoeren - sonst
@@ -631,6 +631,16 @@
       pauseKnopfZeigen(true);
       if (aktuell.am_pc) await pcFertigAbwarten();
       else await vorlesen(aktuell.auftrag, aktuell.teile);
+      if (aktuell.offen) {
+        // Was zur Antwort gehoert, kommt erst am Ende: Text, Knoepfe, Vorlesung.
+        try {
+          var ende = await (await fetch("/stimme/auftrag_ende?auftrag=" + encodeURIComponent(aktuell.auftrag),
+            { cache: "no-store", credentials: "same-origin" })).json();
+          if (ende && ende.antwort && window.orbWeb) window.orbWeb.gesagt(ende.antwort, "orb");
+          if (ende && ende.aktionen) zeigeAktionen(ende.aktionen);
+          aktuell.vorlesung_weiter = !!(ende && ende.vorlesung_weiter);
+        } catch (f) { aktuell.vorlesung_weiter = false; }
+      }
       if (!aktuell.vorlesung_weiter || vorlesungGestoppt) break;
       melde("Nächster Abschnitt kommt …");
       var naechstes = null;
@@ -894,10 +904,14 @@
 
     var naechstes = holeStueck(auftrag, 0);
     var verloren = 0;
+    // anzahl < 0: offene Antwort (13.11.2026) - die Saetze entstehen noch.
+    // Es wird geholt, bis der PC "zu Ende" meldet.
+    var offen = anzahl < 0;
 
-    for (var nummer = 0; nummer < anzahl; nummer++) {
+    for (var nummer = 0; offen || nummer < anzahl; nummer++) {
       if (vorlesungGestoppt) break;
       var stueck = await naechstes;
+      if (!stueck && offen) break;
 
       // Ein Stueck fehlt? Einmal nachfassen, bevor aufgegeben wird - ein
       // kurzer Netzaussetzer (Tailscale, Mobilfunk) soll nicht die ganze
@@ -905,7 +919,7 @@
       if (!stueck) stueck = await holeStueck(auftrag, nummer);
 
       // Das uebernaechste schon anfordern, bevor dieses abgespielt wird.
-      naechstes = nummer + 1 < anzahl ? holeStueck(auftrag, nummer + 1) : null;
+      naechstes = (offen || nummer + 1 < anzahl) ? holeStueck(auftrag, nummer + 1) : null;
 
       if (!stueck) {
         verloren++;

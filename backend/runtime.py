@@ -1537,7 +1537,12 @@ class Runtime:
         eintrag = self._sprechauftraege.get(auftrag)
         if eintrag is None or eintrag.get("abgebrochen"):
             return "weg", ""
-        if nummer < 0 or nummer >= len(eintrag["teile"]):
+        if nummer < 0:
+            return "weg", ""
+        if nummer >= len(eintrag["teile"]):
+            # Offene Antwort (13.11.2026): Der Satz wird noch gedacht.
+            if eintrag.get("offen"):
+                return "kommt", ""
             return "weg", ""
 
         if nummer in eintrag["dateien"]:
@@ -1848,27 +1853,126 @@ class Runtime:
             elif vorlesung.aktiv:
                 vorlesung.benutzer_unterbricht()
 
-        handy_tools.geraet_aktiv(True)
-        try:
-            antwort = await self.cognitive.process(auftrag_text, spoken=True)
-        finally:
-            handy_tools.geraet_aktiv(False)
-        aktionen = handy_tools.aktionen_abholen()
-        text = str(getattr(antwort, "response", "") or "").strip()
+        # Sprechen, sobald der erste Satz gedacht ist (13.11.2026). Bisher
+        # wartete der Weg vom Handy auf die GANZE Antwort - bei 400 Zeichen
+        # 3-4 Sekunden Stille, bevor ueberhaupt die Stimme erzeugt wurde.
+        offener_auftrag = "" if ausgabe_pc else self._offenen_auftrag_anlegen()
+        erster_satz = asyncio.Event()
+        unterwegs = {"gesprochen": False}
 
-        weiter = False
-        if befehl in ("start", "fortsetzen") and vorlesung is not None:
+        async def sprich(satz: str) -> bool:
+            satz = str(satz or "").strip()
+            if not satz:
+                return False
+            if ausgabe_pc:
+                self._am_pc_sagen(satz)
+            else:
+                self._auftrag_erweitern(offener_auftrag, satz)
+            unterwegs["gesprochen"] = True
+            erster_satz.set()
+            return True
+
+        async def ablauf() -> dict[str, Any]:
+            handy_tools.geraet_aktiv(True)
             try:
-                vorlesung.abschnitt_beendet(text, erfolgreich=bool(text))
-                weiter = bool(vorlesung.aktiv)
-            except Exception:  # noqa: BLE001
-                logger.exception("Vorlesungsstand liess sich nicht fortschreiben.")
+                antwort = await self.cognitive.process(auftrag_text, spoken=True, on_speech=sprich)
+            finally:
+                handy_tools.geraet_aktiv(False)
+            aktionen = handy_tools.aktionen_abholen()
+            text = str(getattr(antwort, "response", "") or "").strip()
+            schon = bool(getattr(antwort, "already_spoken", False)) or unterwegs["gesprochen"]
 
-        ergebnis = await self._geraet_text_antwort(
-            frage, text, sicherheit, aktionen=aktionen, ausgabe_pc=ausgabe_pc
-        )
-        ergebnis["vorlesung_weiter"] = weiter
-        return ergebnis
+            weiter = False
+            if befehl in ("start", "fortsetzen") and vorlesung is not None:
+                try:
+                    vorlesung.abschnitt_beendet(text, erfolgreich=bool(text))
+                    weiter = bool(vorlesung.aktiv)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Vorlesungsstand liess sich nicht fortschreiben.")
+
+            if offener_auftrag:
+                if text and not schon:
+                    self._auftrag_erweitern(offener_auftrag, text)
+                self._auftrag_schliessen(
+                    offener_auftrag,
+                    {"antwort": text, "aktionen": aktionen, "vorlesung_weiter": weiter},
+                )
+                erster_satz.set()
+                return {"frage": frage, "antwort": text, "auftrag": offener_auftrag,
+                        "teile": len(self._sprechauftraege.get(offener_auftrag, {}).get("teile") or []),
+                        "aktionen": aktionen, "vorlesung_weiter": weiter, "sicherheit": sicherheit}
+
+            if schon:
+                self._geraet_offen_bis = time.monotonic() + self.GERAET_NACHFRAGE_SEKUNDEN
+                logger.info("Antwort für das Gerät am PC gesprochen (unterwegs): %d Zeichen", len(text))
+                ergebnis = {"frage": frage, "antwort": text, "auftrag": "", "teile": 0,
+                            "am_pc": True, "sicherheit": sicherheit, "aktionen": aktionen}
+            else:
+                ergebnis = await self._geraet_text_antwort(
+                    frage, text, sicherheit, aktionen=aktionen, ausgabe_pc=ausgabe_pc
+                )
+            ergebnis["vorlesung_weiter"] = weiter
+            return ergebnis
+
+        aufgabe = asyncio.get_running_loop().create_task(ablauf())
+        if ausgabe_pc:
+            return await aufgabe
+
+        # Handy/iPad: sobald der erste Satz da ist, antworten - der Rest
+        # kommt Stueck fuer Stueck, das Geraet holt ihn ab.
+        warten = asyncio.get_running_loop().create_task(erster_satz.wait())
+        await asyncio.wait({aufgabe, warten}, return_when=asyncio.FIRST_COMPLETED)
+        if aufgabe.done():
+            warten.cancel()
+            return aufgabe.result()
+        self._geraet_offen_bis = time.monotonic() + self.GERAET_NACHFRAGE_SEKUNDEN
+        logger.info("Antwort für das Gerät beginnt (offen, erster Satz bereit).")
+        return {"frage": frage, "antwort": "", "auftrag": offener_auftrag, "teile": -1,
+                "offen": True, "sicherheit": sicherheit}
+
+    def _offenen_auftrag_anlegen(self) -> str:
+        auftrag = uuid.uuid4().hex[:12]
+        self._sprechauftraege[auftrag] = {
+            "teile": [], "dateien": {}, "fehler": {}, "laeuft": set(),
+            "abgebrochen": False, "offen": True, "ende": None,
+        }
+        while len(self._sprechauftraege) > self.AUFTRAEGE_MERKEN:
+            self._sprechauftraege.popitem(last=False)
+        return auftrag
+
+    def _auftrag_erweitern(self, auftrag: str, text: str) -> None:
+        eintrag = self._sprechauftraege.get(auftrag)
+        if eintrag is None:
+            return
+        erstes = not eintrag["teile"]
+        teile = self._stuecke_bilden(text) or [text]
+        eintrag["teile"].extend(teile)
+        self._eigene_rede_merken(text)
+        anfang = len(eintrag["teile"]) - len(teile)
+        # Cloud-Stimme: sofort erzeugen, damit das Geraet nie wartet.
+        if erstes or self._stimme_in_der_cloud():
+            for nummer in range(anfang, len(eintrag["teile"])):
+                self._stueck_anstossen(auftrag, nummer)
+
+    def _auftrag_schliessen(self, auftrag: str, ende: dict[str, Any]) -> None:
+        eintrag = self._sprechauftraege.get(auftrag)
+        if eintrag is None:
+            return
+        eintrag["offen"] = False
+        eintrag["ende"] = ende
+        logger.info("Antwort für das Gerät fertig: %d Stück(e).", len(eintrag["teile"]))
+
+    def auftrag_ende(self, auftrag: str) -> dict[str, Any]:
+        """Fuer das Geraet: Ist die offene Antwort fertig, und was gehoert dazu?"""
+
+        eintrag = self._sprechauftraege.get(auftrag)
+        if eintrag is None:
+            return {"stand": "unbekannt"}
+        if eintrag.get("offen"):
+            return {"stand": "offen", "teile": len(eintrag["teile"])}
+        ende = dict(eintrag.get("ende") or {})
+        ende.update({"stand": "fertig", "teile": len(eintrag["teile"])})
+        return ende
 
     async def vorlesung_weiter_vom_geraet(self, *, ausgabe_pc: bool = False) -> dict[str, Any]:
         """Das Handy holt den naechsten Vorlesungsabschnitt."""

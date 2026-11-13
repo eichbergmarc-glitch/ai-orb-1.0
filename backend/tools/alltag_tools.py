@@ -451,7 +451,7 @@ async def _wetter_holen(ort: str) -> dict[str, Any]:
                 "latitude": treffer["latitude"], "longitude": treffer["longitude"],
                 "current": "temperature_2m,weather_code,wind_speed_10m",
                 "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-                "timezone": "Europe/Zurich", "forecast_days": 3,
+                "timezone": "Europe/Zurich", "forecast_days": 7,
             },
         )
         antwort.raise_for_status()
@@ -470,15 +470,46 @@ def wetter_text(daten: dict[str, Any], *, tage: int = 1) -> str:
             f"{_WETTER.get(int(jetzt.get('weather_code', -1)), 'unklar')}."
         )
     taeglich = daten.get("daily") or {}
-    namen = ["Heute", "Morgen", "Übermorgen"]
-    for i in range(min(max(tage, 1), len(taeglich.get("time") or []), 3)):
+    wochentage = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+    zeiten = taeglich.get("time") or []
+
+    def name(i: int) -> str:
+        if i < 3:
+            return ["Heute", "Morgen", "Übermorgen"][i]
+        try:
+            return wochentage[_dt.date.fromisoformat(str(zeiten[i])).weekday()]
+        except (ValueError, IndexError):
+            return f"In {i} Tagen"
+
+    for i in range(min(max(tage, 1), len(zeiten), 7)):
         regen = (taeglich.get("precipitation_probability_max") or [None] * 3)[i]
         teile.append(
-            f"{namen[i]}: {_WETTER.get(int(taeglich['weather_code'][i]), 'unklar')}, "
+            f"{name(i)}: {_WETTER.get(int(taeglich['weather_code'][i]), 'unklar')}, "
             f"{round(taeglich['temperature_2m_min'][i])} bis {round(taeglich['temperature_2m_max'][i])} Grad"
             + (f", Regenrisiko {regen} Prozent" if regen is not None else "") + "."
         )
     return " ".join(teile)
+
+
+def wetter_anfrage(text: str) -> dict[str, Any]:
+    """Ort und Zeitraum aus einer gesprochenen Wetterfrage (13.11.2026)."""
+
+    roh = " ".join(str(text or "").split())
+    tief = roh.lower()
+    tage = 2
+    if "woche" in tief or "wochenende" in tief or "die naechsten tage" in tief or "die nächsten tage" in tief:
+        tage = 7
+    elif "übermorgen" in tief or "uebermorgen" in tief:
+        tage = 3
+    elif re.search(r"\bheute\b|\bjetzt\b|\bgerade\b", tief) and "morgen" not in tief:
+        tage = 1
+    ort = ""
+    treffer = re.search(
+        r"\b(?:in|für|fuer|von|bei)\s+((?:[A-ZÄÖÜ][\w\-]+)(?:[\s\-](?:[A-ZÄÖÜ][\w\-]+))?)", roh
+    )
+    if treffer and treffer.group(1).lower() not in ("heute", "morgen", "eine", "die"):
+        ort = treffer.group(1).strip()
+    return {"ort": ort, "tage": tage}
 
 
 class WetterTool(Tool):
@@ -490,7 +521,7 @@ class WetterTool(Tool):
     permission = "network"
     parameters = (
         ToolParameter("ort", "string", "Ort - leer = Heimatort.", required=False, default=""),
-        ToolParameter("tage", "integer", "1 = heute, 2 = bis morgen, 3 = bis uebermorgen.",
+        ToolParameter("tage", "integer", "1 = heute, 2 = bis morgen, ... 7 = ganze Woche.",
                       required=False, default=2),
     )
 
