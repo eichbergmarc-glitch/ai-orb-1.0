@@ -43,7 +43,7 @@
   //: Wie lange still sein muss, damit die Aufnahme von selbst endet.
   //: Kuerzer schneidet Denkpausen mitten im Satz ab; laenger haengt am
   //: Ende jeder Frage als Wartezeit dran.
-  var STILLE_MS = 1300;
+  var STILLE_MS = 1100;
 
   //: Vor dieser Zeit wird nicht abgebrochen, auch wenn es still ist.
   var MINDESTDAUER_MS = 700;
@@ -399,20 +399,23 @@
       // gerade getippt); danach nur mit Weckwort oder kurz nach einer Antwort.
       if (dauer && !dauerErste) kopf["X-Orb-Dauer"] = "1";
       dauerErste = false;
-      var antwort = await fetch("/stimme/aufnahme", {
-        method: "POST",
-        headers: kopf,
-        body: blob,
-        credentials: "same-origin",
-      });
-
-      if (!antwort.ok) {
-        melde(antwort.status === 401 ? "Nicht angemeldet." : "Der Orb antwortet nicht.");
+      // Jede Aufnahme bekommt eine Kennung. Reisst die Verbindung ab
+      // (Tailscale auf dem iPhone, etwa jede Minute - 12.11.2026), fragt
+      // das Handy beim PC nach, ob die Antwort schon fertig ist, statt
+      // die Frage zu verlieren oder doppelt zu stellen.
+      var kennung = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      kopf["X-Orb-Id"] = kennung;
+      if (ausgabeAmPc()) kopf["X-Orb-Ausgabe"] = "pc";
+      var ergebnis = await abgebenMitWiederholung(blob, kopf, kennung);
+      if (ergebnis === "abgewiesen") {
+        melde("Nicht angemeldet.");
         return;
       }
 
-      var ergebnis = await antwort.json();
 
+      if (ergebnis.frage || ergebnis.grund !== "kein_weckwort") {
+        handyMeldung("Antwort erhalten: " + (ergebnis.grund || ((ergebnis.teile || 0) + " Stueck(e)")));
+      }
       if (!ergebnis.frage) {
         // Freihaendig ist das der Normalfall (kein "Hey Synapse"): still
         // weiterhoeren statt "Nichts verstanden" zu zeigen.
@@ -428,20 +431,28 @@
       // und nicht zuerst hoeren, dass er gleich kommt.
       if (ergebnis.befehl === "chat_auf") window.orbWeb.chatZeigen(true);
       if (ergebnis.befehl === "chat_zu") window.orbWeb.chatZeigen(false);
+      if (ergebnis.befehl === "ausgabe_pc" || ergebnis.befehl === "ausgabe_hier") {
+        try { window.localStorage.setItem("orbAusgabe", ergebnis.befehl === "ausgabe_pc" ? "pc" : "hier"); } catch (f) { /* egal */ }
+        ausgabeKnopfBeschriften();
+      }
 
       // Handy-Aktionen (12.11.2026): Anruf, SMS/WhatsApp, App, PDF.
       zeigeAktionen(ergebnis.aktionen || []);
 
-      if (ergebnis.auftrag && ergebnis.teile > 0) {
+      if (ergebnis.am_pc) {
+        melde("Antwort kommt am PC …");
+        sprichtNoch = vorlesenUndWeiter(ergebnis);
+        if (!dauer) void sprichtNoch.then(function () { sprichtNoch = null; melde(""); });
+      } else if (ergebnis.auftrag && ergebnis.teile > 0) {
         melde("");
         if (dauer) {
           // Freihaendig: erst zu Ende sprechen, dann wieder zuhoeren - sonst
           // hoert sich das Handy selbst.
-          sprichtNoch = vorlesen(ergebnis.auftrag, ergebnis.teile);
+          sprichtNoch = vorlesenUndWeiter(ergebnis);
         } else {
           // Nicht warten: Das Sprechen laeuft weiter, waehrend der Knopf
           // schon wieder bereit ist.
-          void vorlesen(ergebnis.auftrag, ergebnis.teile);
+          void vorlesenUndWeiter(ergebnis);
         }
       } else if (ergebnis.ton) {
         // Die Antwort kommt noch in der alten Form: eine einzige Datei
@@ -532,6 +543,163 @@
     document.body.appendChild(aktionsLeiste);
   }
 
+  /** Schickt die Aufnahme und holt die Antwort - auch ueber Netzaussetzer hinweg. */
+  async function abgebenMitWiederholung(blob, kopf, kennung) {
+    var bis = Date.now() + 90000;
+    var gesendet = false;
+    var meldungen = 0;
+    while (Date.now() < bis) {
+      if (gesendet) {
+        // Schon abgeschickt: nachfragen, ob der PC fertig ist.
+        try {
+          var nach = await fetch("/stimme/ergebnis?id=" + encodeURIComponent(kennung),
+            { credentials: "same-origin", cache: "no-store" });
+          if (nach.ok) {
+            var stand = await nach.json();
+            if (stand && stand.stand === "fertig") return stand.ergebnis || {};
+            if (stand && stand.stand === "kommt") { await warte(1200); continue; }
+            gesendet = false;  // unbekannt: der PC hat sie nie bekommen
+          }
+        } catch (f) {
+          await warte(1500);
+          continue;
+        }
+      }
+      try {
+        var antwort = await fetch("/stimme/aufnahme", {
+          method: "POST",
+          headers: kopf,
+          body: blob,
+          credentials: "same-origin",
+        });
+        if (antwort.status === 401) return "abgewiesen";
+        if (antwort.ok) return await antwort.json();
+        gesendet = true;
+        await warte(1500);
+      } catch (netzfehler) {
+        gesendet = true;
+        if (meldungen++ < 2) {
+          handyMeldung("Verbindung weg beim Abgeben (" + (netzfehler && netzfehler.message) + ") - frage nach");
+        }
+        await warte(1500);
+      }
+    }
+    throw new Error("Der PC war 90 Sekunden nicht erreichbar");
+  }
+
+  /**
+   * Vorlesung in Abschnitten (12.11.2026): Nach jedem Abschnitt holt das
+   * Handy den naechsten selbst - bis Marc auf "Pause" tippt. Waehrend
+   * gesprochen wird, ist das Mikrofon aus; deshalb der Knopf.
+   */
+  var vorlesungGestoppt = false;
+  var pauseKnopf = null;
+
+  function pauseKnopfZeigen(an) {
+    if (!an) {
+      if (pauseKnopf) { pauseKnopf.remove(); pauseKnopf = null; }
+      return;
+    }
+    if (pauseKnopf) return;
+    pauseKnopf = document.createElement("button");
+    pauseKnopf.type = "button";
+    pauseKnopf.textContent = "⏹  Stopp";
+    pauseKnopf.style.cssText =
+      "position:fixed;left:50%;transform:translateX(-50%);" +
+      "bottom:calc(20px + env(safe-area-inset-bottom));z-index:9997;" +
+      "padding:14px 22px;border:0;border-radius:16px;background:#c0392b;color:#fff;" +
+      "font-size:17px;font-weight:600;font-family:system-ui,-apple-system,sans-serif;" +
+      "box-shadow:0 8px 30px rgba(0,0,0,0.45);";
+    pauseKnopf.addEventListener("click", function (ereignis) {
+      ereignis.stopPropagation();
+      vorlesungGestoppt = true;
+      try { if (wiedergabe) wiedergabe.suspend(); } catch (f) { /* egal */ }
+      try { if (tonspur) tonspur.pause(); } catch (f) { /* egal */ }
+      void fetch("/stimme/stopp", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: "{}" }).catch(function () {});
+      handyMeldung("Stopp-Knopf gedrueckt");
+      melde("Angehalten. Bei einer Vorlesung: „weiter“ setzt fort.");
+      pauseKnopfZeigen(false);
+    });
+    document.body.appendChild(pauseKnopf);
+  }
+
+  async function vorlesenUndWeiter(ergebnis) {
+    vorlesungGestoppt = false;
+    var aktuell = ergebnis;
+    for (var runde = 0; runde < 30; runde++) {
+      pauseKnopfZeigen(true);
+      if (aktuell.am_pc) await pcFertigAbwarten();
+      else await vorlesen(aktuell.auftrag, aktuell.teile);
+      if (!aktuell.vorlesung_weiter || vorlesungGestoppt) break;
+      melde("Nächster Abschnitt kommt …");
+      var naechstes = null;
+      for (var versuch = 0; versuch < 3 && !naechstes; versuch++) {
+        try {
+          var antwort = await fetch("/stimme/vorlesung/weiter", {
+            method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ausgabe: ausgabeAmPc() ? "pc" : "handy" }),
+          });
+          if (antwort.ok) naechstes = await antwort.json();
+        } catch (f) {
+          await warte(2000);
+        }
+      }
+      melde("");
+      if (vorlesungGestoppt || !naechstes || !(naechstes.auftrag || naechstes.am_pc)) break;
+      if (naechstes.antwort && window.orbWeb) window.orbWeb.gesagt(naechstes.antwort, "orb");
+      aktuell = naechstes;
+    }
+    pauseKnopfZeigen(false);
+    vorlesungGestoppt = false;
+    try { if (wiedergabe && wiedergabe.state === "suspended") await wiedergabe.resume(); } catch (f) { /* egal */ }
+  }
+
+  /**
+   * Ausgabe am PC (13.11.2026): Marc spricht ins iPad - das versteht ihn
+   * besser -, die Antwort kommt aus den PC-Lautsprechern. Umschalten mit
+   * dem kleinen Knopf oben rechts; die Wahl bleibt gespeichert.
+   */
+  function ausgabeAmPc() {
+    try { return window.localStorage.getItem("orbAusgabe") === "pc"; } catch (f) { return false; }
+  }
+
+  async function pcFertigAbwarten() {
+    // Kurz warten, bis der PC ueberhaupt angefangen hat, dann bis er fertig ist.
+    await warte(800);
+    var bis = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < bis) {
+      if (vorlesungGestoppt) return;
+      try {
+        var antwort = await fetch("/stimme/pc_status", { cache: "no-store", credentials: "same-origin" });
+        if (antwort.ok && !(await antwort.json()).spricht) break;
+      } catch (f) { /* Netz: weiter warten */ }
+      await warte(700);
+    }
+    // Nachhall des Lautsprechers abklingen lassen, bevor das iPad wieder hoert.
+    await warte(600);
+  }
+
+  var ausgabeKnopf = document.createElement("button");
+  ausgabeKnopf.type = "button";
+  ausgabeKnopf.style.cssText =
+    "position:fixed;top:calc(10px + env(safe-area-inset-top));right:12px;z-index:9996;" +
+    "padding:8px 12px;border:1px solid rgba(120,170,255,0.4);border-radius:12px;" +
+    "background:rgba(14,20,32,0.85);color:#dce8f7;font-size:14px;" +
+    "font-family:system-ui,-apple-system,sans-serif;";
+  function ausgabeKnopfBeschriften() {
+    ausgabeKnopf.textContent = ausgabeAmPc() ? "🔊 Ton: PC" : "🔊 Ton: hier";
+  }
+  ausgabeKnopf.addEventListener("click", function (ereignis) {
+    ereignis.stopPropagation();
+    try { window.localStorage.setItem("orbAusgabe", ausgabeAmPc() ? "hier" : "pc"); } catch (f) { /* egal */ }
+    ausgabeKnopfBeschriften();
+    handyMeldung("Ausgabe umgestellt: " + (ausgabeAmPc() ? "PC" : "Handy/iPad"));
+  });
+  ausgabeKnopfBeschriften();
+  document.body.appendChild(ausgabeKnopf);
+
   var sprichtNoch = null;
 
   /** Freihaendig: nach einer kurzen Pause wieder zuhoeren. */
@@ -552,14 +720,24 @@
    * nicht, er saehe nur, dass nichts kommt.
    */
   async function holeStueck(auftrag, nummer) {
+    var netzfehler = 0;
     for (var versuch = 0; versuch < 150; versuch++) {
       try {
         var antwort = await fetch(
           "/stimme/ton?auftrag=" + encodeURIComponent(auftrag) + "&teil=" + nummer,
-          { credentials: "same-origin" }
+          { credentials: "same-origin", cache: "no-store" }
         );
       } catch (fehler) {
-        return null;
+        // Die Verbindung zum PC reisst ueber Tailscale etwa jede Minute
+        // kurz ab ("Load failed", 12.11.2026). Nicht aufgeben - warten
+        // und nochmal, bis zu viermal.
+        netzfehler++;
+        if (netzfehler > 4) {
+          handyMeldung("Stueck " + nummer + " nicht geholt: " + (fehler && fehler.message));
+          return null;
+        }
+        await warte(1500);
+        continue;
       }
       if (antwort.status === 202) {
         await warte(700);
@@ -589,6 +767,7 @@
 
   /** Spielt eine Datei ab und wartet, bis sie zu Ende ist. */
   async function abspielen(stueck) {
+    if (vorlesungGestoppt) return "fertig";
     if (wiedergabe && wiedergabe.state === "suspended") {
       try { await Promise.race([wiedergabe.resume(), warte(500)]); } catch (f) { /* egal */ }
     }
@@ -606,12 +785,18 @@
           var vorbei = false;
           function schluss() { if (!vorbei) { vorbei = true; fertig("fertig"); } }
           q.onended = schluss;
-          window.setTimeout(schluss, puffer.duration * 1000 + 2000);
-          q.start(0);
+          window.setTimeout(schluss, puffer.duration * 1000 + 2500);
+          // Anlauf: Nach einer Pause verschluckt das iPhone sonst den Anfang.
+          var ruhe = Date.now() - (window.__orbLetztesEnde || 0);
+          q.start(wiedergabe.currentTime + (ruhe > 1500 ? 0.25 : 0.02));
+          q.addEventListener("ended", function () { window.__orbLetztesEnde = Date.now(); });
         });
       } catch (fehler) {
-        /* weiter mit dem Audio-Element */
+        handyMeldung("WebAudio-Fehler: " + (fehler && (fehler.message || fehler.name)));
       }
+    }
+    if (wiedergabe && wiedergabe.state !== "running") {
+      handyMeldung("WebAudio " + wiedergabe.state + " - spiele ueber Audio-Element");
     }
     return abspielenElement(stueck);
   }
@@ -711,6 +896,7 @@
     var verloren = 0;
 
     for (var nummer = 0; nummer < anzahl; nummer++) {
+      if (vorlesungGestoppt) break;
       var stueck = await naechstes;
 
       // Ein Stueck fehlt? Einmal nachfassen, bevor aufgegeben wird - ein
@@ -941,6 +1127,42 @@
   }
   void versionPruefen();
   window.setInterval(versionPruefen, 60000);
+
+  /**
+   * Erinnerungen abholen (12.11.2026): "Erinnere mich um 16 Uhr ..." -
+   * faellige Erinnerungen liegen beim PC bereit; die offene Seite holt sie
+   * alle 15 Sekunden ab und liest sie vor.
+   */
+  var hinweisHolt = false;
+  async function hinweiseHolen() {
+    if (hinweisHolt || abgabeLaeuft || sprichtNoch || !freigeschaltet) return;
+    hinweisHolt = true;
+    try {
+      var antwort = await fetch("/stimme/hinweise" + (ausgabeAmPc() ? "?ausgabe=pc" : ""),
+        { cache: "no-store", credentials: "same-origin" });
+      if (!antwort.ok) return;
+      var liste = (await antwort.json()).hinweise || [];
+      for (var i = 0; i < liste.length; i++) {
+        var hinweis = liste[i];
+        if (window.orbWeb && window.orbWeb.gesagt) window.orbWeb.gesagt(hinweis.text, "orb");
+        if (laeuft) {
+          abbruchOhneAbgabe = true;
+          await beenden();
+        }
+        sprichtNoch = hinweis.am_pc ? pcFertigAbwarten() : vorlesen(hinweis.auftrag, hinweis.teile || 1);
+        try { await sprichtNoch; } finally { sprichtNoch = null; }
+      }
+      if (liste.length) {
+        handyMeldung("Erinnerung vorgelesen (" + liste.length + ")");
+        weiterHoeren();
+      }
+    } catch (f) {
+      /* naechstes Mal */
+    } finally {
+      hinweisHolt = false;
+    }
+  }
+  window.setInterval(hinweiseHolen, 15000);
 
   /** Kurze Rueckmeldung an den PC, damit Fehler im Protokoll stehen. */
   function handyMeldung(text) {

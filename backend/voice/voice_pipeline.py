@@ -405,6 +405,7 @@ class VoicePipeline:
         #: :meth:`_stop_spaeher_fuer_ausgabe`: Ohne dies war das Stop-Wort
         #: bei der lokalen Stimme wirkungslos - und zwar vollstaendig, nicht
         #: nur unzuverlaessig.
+        self._stop_spaeher_aktiv = bool(config.get("voice.stop_spaeher_aktiv", True))
         self._stop_waehrend_lokaler_stimme = bool(
             config.get("voice.stop_waehrend_lokaler_stimme", True)
         )
@@ -544,6 +545,28 @@ class VoicePipeline:
                 or "Hallo Synapse. Hey Synapse."
             ),
         )
+        # Der Spaeher in der Cloud (13.11.2026): "Stop Synapse" soll wirken,
+        # aber lokal rechnete der Spaeher den Prozessor voll und die Stimme
+        # stockte. Ueber die Cloud kostet ein Fenster keine Rechenzeit hier
+        # (und etwa einen Zehntelrappen pro Minute Sprechzeit).
+        self._stop_spaeher_erkenner = self._stop_transcriber
+        if bool(config.get("voice.stop_spaeher_cloud", False)):
+            wolke = dict(config.get("voice.input.cloud", {}) or {})
+            if wolke.get("enabled", True):
+                wolke["prompt"] = ""
+                wolke["models"] = ["gpt-4o-mini-transcribe", "whisper-1"]
+                wolke["timeout"] = 4
+                self._stop_spaeher_erkenner = Transcriber(
+                    model_size=str(config.get("voice.stop_model_size", "base")),
+                    language=str(config.get("voice.input.language", "de")),
+                    device=str(config.get("voice.input.device", "auto")),
+                    compute_type=str(config.get("voice.input.compute_type", "int8")),
+                    cpu_threads=1,
+                    beam_size=1,
+                    vad_filter=True,
+                    temperatur_treppe=False,
+                    cloud=wolke,
+                )
 
         # --- Auf wen gehoert wird ------------------------------------------
         #
@@ -1134,11 +1157,23 @@ class VoicePipeline:
         unterbrechen ist.
         """
 
+        # Ganz aus (12.11.2026): Der Spaeher liess waehrend jeder Antwort
+        # die lokale Erkennung im Sekundentakt laufen - 1,2 s Ton brauchten
+        # bis zu 2,9 s Rechenzeit, der Prozessor war voll und die Stimme
+        # stockte ("abgehackt"). Unterbrechen geht weiter mit Escape.
+        if not getattr(self, "_stop_spaeher_aktiv", True):
+            self._capture.set_stop_spotting(False)
+            return
         context = getattr(result, "context", {}) or {}
         # Ein laufender PCM-Strom bleibt ausgenommen: Dort entsteht die
         # Datei noch waehrend des Abspielens, das ist echte Gleichzeitigkeit.
         strom_laeuft = context.get("pcm_stream") is not None
-        if strom_laeuft:
+        # Mit dem Cloud-Spaeher kostet das Mithorchen keine Rechenzeit - dann
+        # darf "Stop Synapse" auch waehrend einer gestreamten Antwort wirken.
+        cloud_spaeher = getattr(self, "_stop_spaeher_erkenner", None) is not getattr(
+            self, "_stop_transcriber", None
+        )
+        if strom_laeuft and not cloud_spaeher:
             self._capture.set_stop_spotting(False)
             return
         if not self._stop_waehrend_lokaler_stimme and (
@@ -1309,7 +1344,8 @@ class VoicePipeline:
                     # vorigen Erkennung alt geworden ist, wird verworfen
                     # statt erkannt. Es beantwortet die Frage von
                     # vorgestern und kostet die Zeit des aktuellen.
-                    transcript = await self._stop_transcriber.transcribe(
+                    erkenner = getattr(self, "_stop_spaeher_erkenner", None) or self._stop_transcriber
+                    transcript = await erkenner.transcribe(
                         aktuell,
                         verfallen_nach=getattr(self, "_stop_fenster_verfall", 2.5),
                     )

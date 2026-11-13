@@ -29,6 +29,7 @@ from collections import OrderedDict
 import concurrent.futures
 import contextlib
 import threading
+import re
 import time
 from pathlib import Path
 from typing import Any, Coroutine, TypeVar
@@ -219,6 +220,30 @@ class Runtime:
             self.tools.register_many(build_handy_tools(self.kontakte))
         except Exception:  # noqa: BLE001 - ohne Handy-Werkzeuge laeuft der Orb weiter.
             logger.exception("Die Handy-Werkzeuge liessen sich nicht anmelden.")
+        # Alltag (12.11.2026): Erinnerungen, Abfahrtswecker, Wetter, Briefing.
+        self.erinnerungen = None
+        self._handy_hinweise: list[tuple[float, str]] = []
+        try:
+            from backend.tools.alltag_tools import (
+                Erinnerungsdienst,
+                Tagesueberblick,
+                build_alltag_tools,
+            )
+            from backend.utils.paths import get_data_dir
+
+            self.erinnerungen = Erinnerungsdienst(
+                get_data_dir() / "erinnerungen.json", self._erinnerung_ansagen
+            )
+            self.tagesueberblick = Tagesueberblick(
+                heimatort=str(self.config.get("alltag.heimatort", "") or ""),
+                pendelziel=str(self.config.get("alltag.pendelziel", "") or ""),
+                haltestelle=str(self.config.get("alltag.haltestelle", "") or ""),
+            )
+            self.erinnerungen.briefing = self.tagesueberblick.erstellen
+            self.tools.register_many(build_alltag_tools(self.erinnerungen, self.tagesueberblick))
+        except Exception:  # noqa: BLE001 - ohne Alltagswerkzeuge laeuft der Orb weiter.
+            logger.exception("Die Alltags-Werkzeuge liessen sich nicht anmelden.")
+
         # Fahrplan (12.11.2026): Zug-, Bus- und Postautoverbindungen.
         try:
             from backend.tools.fahrplan_tools import VerbindungSuchenTool
@@ -807,6 +832,37 @@ class Runtime:
             logger.exception("Die Terminerinnerung liess sich nicht sprechen.")
             return False
 
+    async def _erinnerung_ansagen(self, text: str) -> None:
+        """Faellige Erinnerung: aufs Handy legen und - wenn dort niemand ist - am PC sagen."""
+
+        self._handy_hinweise.append((time.monotonic(), text))
+        del self._handy_hinweise[:-10]
+        with contextlib.suppress(Exception):
+            await self.event_bus.publish("erinnerung.faellig", {"text": text, "zeitpunkt": time.time()})
+        handy_aktiv = time.monotonic() < float(getattr(self.voice, "lokal_ruhig_bis", 0.0) or 0.0)
+        if not handy_aktiv:
+            try:
+                await self.voice.say(text, emotion="aufmerksam")
+            except Exception:  # noqa: BLE001
+                logger.exception("Die Erinnerung liess sich am PC nicht sprechen.")
+
+    async def handy_hinweise_abholen(self, *, ausgabe_pc: bool = False) -> list[dict[str, Any]]:
+        """Fuer die Handy-Seite: Erinnerungen der letzten 30 Minuten, je einmal."""
+
+        jetzt = time.monotonic()
+        offen = [(t, text) for t, text in self._handy_hinweise if jetzt - t < 1800]
+        self._handy_hinweise.clear()
+        ergebnis = []
+        for _, text in offen:
+            if ausgabe_pc:
+                self._am_pc_sagen(text)
+                ergebnis.append({"text": text, "auftrag": "", "teile": 0, "am_pc": True})
+                continue
+            auftrag = await self._auftrag_anlegen(text)
+            teile = len(self._sprechauftraege.get(auftrag, {}).get("teile") or [text])
+            ergebnis.append({"text": text, "auftrag": auftrag, "teile": teile})
+        return ergebnis
+
     async def _gmail_angemeldet(self, event: Any) -> None:
         """Bestätigt die gelungene Google-Anmeldung hörbar."""
 
@@ -916,6 +972,13 @@ class Runtime:
         if self.terminerinnerung is not None:
             with contextlib.suppress(Exception):
                 self.terminerinnerung.starten()
+
+        # Erinnerungen und Briefing (12.11.2026).
+        if getattr(self, "erinnerungen", None) is not None:
+            with contextlib.suppress(Exception):
+                self.tagesueberblick.kalender = getattr(self, "kalender", None)
+                self.tagesueberblick.gmail = getattr(self, "gmail", None)
+                self.erinnerungen.starten()
 
         # „Ich bin da." – der einzige Moment, in dem der Orb von sich aus
         # etwas meldet, ohne gefragt worden zu sein. Er steht hier und
@@ -1167,6 +1230,9 @@ class Runtime:
             if self.terminerinnerung is not None:
                 with contextlib.suppress(Exception):
                     await self.terminerinnerung.anhalten()
+            if getattr(self, "erinnerungen", None) is not None:
+                with contextlib.suppress(Exception):
+                    await self.erinnerungen.anhalten()
 
             # Ein etwaig offenes Browserfenster mit schliessen.
             browser = getattr(self, "browsersteuerung", None)
@@ -1313,6 +1379,24 @@ class Runtime:
         # Leerzeichen, das beim Zoegern entsteht.
         knapp = " ".join(knapp.split())
 
+        # Wo die Antwort erklingt (13.11.2026): "Antworte am PC" / "Antworte hier".
+        from backend.tools.web_tools import weckwort_entfernen
+
+        ohne = weckwort_entfernen(knapp).strip(".!?,;: ")
+        if re.fullmatch(
+            r"(?:bitte\s+)?(?:antworte|antwort|sprich|ton|ausgabe|stimme)\s+(?:bitte\s+)?"
+            r"(?:am|auf\s+dem|über\s+den|ueber\s+den)\s+(?:pc|rechner|computer|laptop|lautsprecher)"
+            r"(?:\s+bitte)?",
+            ohne,
+        ):
+            return "ausgabe_pc"
+        if re.fullmatch(
+            r"(?:bitte\s+)?(?:antworte|antwort|sprich|ton|ausgabe|stimme)\s+(?:bitte\s+)?"
+            r"(?:hier|am\s+ipad|auf\s+dem\s+ipad|am\s+handy|auf\s+dem\s+handy|am\s+iphone)"
+            r"(?:\s+bitte)?",
+            ohne,
+        ):
+            return "ausgabe_hier"
         if knapp in Runtime.CHAT_AUF:
             return "chat_auf"
         if knapp in Runtime.CHAT_ZU:
@@ -1365,9 +1449,16 @@ class Runtime:
                 return
 
             try:
-                ergebnis = await self.voice.tts.speak(
-                    eintrag["teile"][nummer], emotion="freundlich"
-                )
+                # Handy/iPad bekommen Dateien - also keinen Strom (13.11.2026).
+                from backend.tts.base_engine import DATEI_NOETIG
+
+                marke = DATEI_NOETIG.set(True)
+                try:
+                    ergebnis = await self.voice.tts.speak(
+                        eintrag["teile"][nummer], emotion="freundlich"
+                    )
+                finally:
+                    DATEI_NOETIG.reset(marke)
             except Exception as fehler:  # noqa: BLE001 - ein Stück reißt den Rest nicht mit.
                 logger.warning(
                     "Sprechstück %d von %s scheiterte: %s", nummer, auftrag, fehler
@@ -1543,7 +1634,7 @@ class Runtime:
             }
 
         gehoert = woerter(frage)
-        if len(gehoert) < 2:
+        if len(gehoert) < 3:
             return False
         jetzt = time.monotonic()
         quellen = list(getattr(self, "_eigene_rede", []) or [])
@@ -1552,7 +1643,7 @@ class Runtime:
             if jetzt - zeitpunkt > sekunden:
                 continue
             eigen = woerter(text)
-            if eigen and len(gehoert & eigen) / len(gehoert) >= 0.6:
+            if eigen and len(gehoert & eigen) / len(gehoert) >= 0.8:
                 return True
         return False
 
@@ -1582,16 +1673,41 @@ class Runtime:
             )
 
             if _ist_whisper_phantom(frage) or _ueberwiegend_fremde_schrift(frage):
+                logger.info("Handy: als Rauschen verworfen: %r", frage[:80])
                 return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "grund": "rauschen"}
         except Exception:  # noqa: BLE001
             pass
 
-        if self._ist_eigenes_echo(frage):
+        from backend.tools.web_tools import weckwort_entfernen
+
+        # Beginnt der Satz mit "Hey Synapse", ist es Marc - kein Echo.
+        if weckwort_entfernen(frage) == frage.strip() and self._ist_eigenes_echo(frage):
             logger.info("Handy hoerte Synapse selbst - verworfen: %r", frage[:80])
             return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "grund": "echo"}
 
         treffer = self.voice._wake_word.detect(frage)
         offen = time.monotonic() < float(getattr(self, "_geraet_offen_bis", 0.0))
+        if not treffer.detected:
+            # Das Handy schickt manchmal zwei Saetze in einer Aufnahme:
+            # "Eklare mi den nye ... Hei Synapse, erklare mi ..." (12.11.2026).
+            # Steht das Weckwort mitten drin, gilt der Teil danach.
+            mitten = re.search(
+                r"\b(?:(?:hey|hei|hallo|ei|ey|hi|hej)[\s,]+s[iy]?n[a\u00e4]p[st]\w*|s[iy]nap[st]\w*)\b[\s,.:;!?-]*(.*)$",
+                frage,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if mitten:
+                rest = mitten.group(1).strip()
+                if len(rest.split()) >= 2:
+                    logger.info("Weckwort mitten im Satz - es gilt: %r", rest[:80])
+                    self._alte_auftraege_abbrechen()
+                    self._dauer_frage = rest
+                    return None
+                self._alte_auftraege_abbrechen()
+                self._geraet_offen_bis = time.monotonic() + self.GERAET_NACHFRAGE_SEKUNDEN
+                auftrag = await self._auftrag_anlegen("Ja?")
+                return {"frage": frage, "antwort": "Ja?", "auftrag": auftrag, "teile": 1,
+                        "zuhoeren": True}
         if not treffer.detected and not offen:
             logger.info("Handy hoert mit, ohne Weckwort: %r", frage[:80])
             return {"frage": "", "antwort": "", "auftrag": "", "teile": 0,
@@ -1600,6 +1716,7 @@ class Runtime:
         self._alte_auftraege_abbrechen()
         if treffer.detected and not treffer.has_command:
             # Nur "Hey Synapse": kurz bestaetigen und zuhoeren.
+            logger.info("Handy: nur Weckwort (%r) - 'Ja?'", frage[:60])
             self._geraet_offen_bis = time.monotonic() + self.GERAET_NACHFRAGE_SEKUNDEN
             auftrag = await self._auftrag_anlegen("Ja?")
             return {"frage": frage, "antwort": "Ja?", "auftrag": auftrag, "teile": 1,
@@ -1608,7 +1725,9 @@ class Runtime:
         self._dauer_frage = frage
         return None
 
-    async def stimme_vom_geraet(self, aufnahme: Path, *, dauer: bool = False) -> dict[str, Any]:
+    async def stimme_vom_geraet(
+        self, aufnahme: Path, *, dauer: bool = False, ausgabe_pc: bool = False
+    ) -> dict[str, Any]:
         """Eine Aufnahme von einem anderen Gerät: erkennen, antworten, sprechen.
 
         Das Mikrofon sitzt im iPad, und die Antwort soll dort zu hören
@@ -1635,9 +1754,15 @@ class Runtime:
         except Exception:  # noqa: BLE001
             pass
 
+        # Ausgabe am PC (13.11.2026): Marc spricht ins iPad, die Antwort kommt
+        # aus den PC-Lautsprechern. Das iPad-Mikrofon versteht ihn besser.
+        self._geraet_ausgabe_pc = bool(ausgabe_pc)
         if dauer:
             vorab = await self._dauerhoeren_pruefen(aufnahme)
             if vorab is not None:
+                if ausgabe_pc and vorab.get("auftrag") and vorab.get("antwort"):
+                    self._am_pc_sagen(str(vorab["antwort"]))
+                    vorab = dict(vorab, auftrag="", teile=0, am_pc=True)
                 return vorab
             frage = self._dauer_frage
             transcript = type("T", (), {"confidence": 0.9})()
@@ -1657,7 +1782,17 @@ class Runtime:
         befehl = self._befehl_erkennen(frage)
         if befehl:
             logger.info("Bedienbefehl vom Gerät: %s (%s)", frage, befehl)
-            bestaetigung = "Chat ist offen." if befehl == "chat_auf" else "Chat ist zu."
+            bestaetigung = {
+                "chat_auf": "Chat ist offen.",
+                "chat_zu": "Chat ist zu.",
+                "ausgabe_pc": "Gut, ich antworte ab jetzt über den PC.",
+                "ausgabe_hier": "Gut, ich antworte ab jetzt hier.",
+            }.get(befehl, "Erledigt.")
+            if befehl == "ausgabe_pc" or (ausgabe_pc and befehl != "ausgabe_hier"):
+                self._am_pc_sagen(bestaetigung)
+                return {"frage": frage, "antwort": bestaetigung, "befehl": befehl,
+                        "auftrag": "", "teile": 0, "am_pc": True,
+                        "sicherheit": round(transcript.confidence, 3)}
             auftrag = await self._auftrag_anlegen(bestaetigung)
             return {
                 "frage": frage,
@@ -1669,20 +1804,123 @@ class Runtime:
             }
 
         logger.info("Frage vom Gerät: %s", frage)
+        return await self._geraet_beantworten(
+            frage, round(transcript.confidence, 3), ausgabe_pc=ausgabe_pc
+        )
+
+    async def _geraet_beantworten(
+        self, frage: str, sicherheit: float = 0.9, *, ausgabe_pc: bool = False
+    ) -> dict[str, Any]:
+        """Beantwortet eine Frage vom Handy - auch als fortlaufende Vorlesung.
+
+        Seit 12.11.2026 kennt auch das Handy die Vorlesung in Abschnitten:
+        "Halte mir eine Vorlesung ueber ..." startet sie, jeder Abschnitt
+        kommt mit ``vorlesung_weiter``, und das Handy holt den naechsten von
+        selbst, bis Marc "Pause" tippt oder sagt. Vorher bekam das Handy nur
+        eine kurze Antwort - die Abschnitte gab es nur am PC.
+        """
 
         from backend.tools import handy_tools
 
+        vorlesung = getattr(self.voice, "_vorlesung", None)
+        befehl = ""
+        auftrag_text = frage
+        if vorlesung is not None:
+            try:
+                befehl = vorlesung.befehl(frage)
+            except Exception:  # noqa: BLE001
+                befehl = ""
+            if befehl == "pausieren":
+                vorlesung.pausieren()
+                return await self._geraet_text_antwort(
+                    frage,
+                    "Die Vorlesung ist pausiert. Sag 'weiter', dann mache ich an "
+                    "derselben Stelle weiter.",
+                    sicherheit,
+                    ausgabe_pc=ausgabe_pc,
+                )
+            if befehl == "start":
+                auftrag_text = vorlesung.starten(frage)
+            elif befehl == "fortsetzen":
+                auftrag_text = vorlesung.fortsetzen() or frage
+                if auftrag_text == frage:
+                    befehl = ""
+            elif vorlesung.aktiv:
+                vorlesung.benutzer_unterbricht()
+
         handy_tools.geraet_aktiv(True)
         try:
-            antwort = await self.cognitive.process(frage, spoken=True)
+            antwort = await self.cognitive.process(auftrag_text, spoken=True)
         finally:
             handy_tools.geraet_aktiv(False)
         aktionen = handy_tools.aktionen_abholen()
         text = str(getattr(antwort, "response", "") or "").strip()
 
+        weiter = False
+        if befehl in ("start", "fortsetzen") and vorlesung is not None:
+            try:
+                vorlesung.abschnitt_beendet(text, erfolgreich=bool(text))
+                weiter = bool(vorlesung.aktiv)
+            except Exception:  # noqa: BLE001
+                logger.exception("Vorlesungsstand liess sich nicht fortschreiben.")
+
+        ergebnis = await self._geraet_text_antwort(
+            frage, text, sicherheit, aktionen=aktionen, ausgabe_pc=ausgabe_pc
+        )
+        ergebnis["vorlesung_weiter"] = weiter
+        return ergebnis
+
+    async def vorlesung_weiter_vom_geraet(self, *, ausgabe_pc: bool = False) -> dict[str, Any]:
+        """Das Handy holt den naechsten Vorlesungsabschnitt."""
+
+        vorlesung = getattr(self.voice, "_vorlesung", None)
+        if vorlesung is None or not vorlesung.vorhanden:
+            return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "vorlesung_weiter": False}
+        self.voice.lokal_ruhig_bis = time.monotonic() + 600.0
+        return await self._geraet_beantworten("weiter", ausgabe_pc=ausgabe_pc)
+
+    def vorlesung_pause_vom_geraet(self) -> None:
+        vorlesung = getattr(self.voice, "_vorlesung", None)
+        if vorlesung is not None and vorlesung.aktiv:
+            vorlesung.pausieren()
+
+    def _am_pc_sagen(self, text: str) -> None:
+        """Spricht aus den PC-Lautsprechern - im Hintergrund, der Reihe nach."""
+
+        self._eigene_rede_merken(text)
+        vorher = getattr(self, "_pc_sprechaufgabe", None)
+
+        async def sprechen() -> None:
+            if vorher is not None and not vorher.done():
+                with contextlib.suppress(Exception):
+                    await vorher
+            try:
+                await self.voice.say(text, emotion="freundlich")
+            except Exception:  # noqa: BLE001
+                logger.exception("Antwort liess sich am PC nicht sprechen.")
+
+        self._pc_sprechaufgabe = asyncio.get_running_loop().create_task(sprechen())
+
+    def pc_spricht(self) -> bool:
+        aufgabe = getattr(self, "_pc_sprechaufgabe", None)
+        return bool(aufgabe is not None and not aufgabe.done())
+
+    async def _geraet_text_antwort(
+        self, frage: str, text: str, sicherheit: float = 0.9, *, aktionen: list | None = None,
+        ausgabe_pc: bool = False,
+    ) -> dict[str, Any]:
+        aktionen = aktionen or []
         if not text:
             return {"frage": frage, "antwort": "", "auftrag": "", "teile": 0,
                     "aktionen": aktionen}
+
+        if ausgabe_pc:
+            gesprochen, _ = self._fuers_sprechen(text, self.SPRECH_GRENZE)
+            self._am_pc_sagen(gesprochen)
+            self._geraet_offen_bis = time.monotonic() + self.GERAET_NACHFRAGE_SEKUNDEN
+            logger.info("Antwort für das Gerät am PC gesprochen: %d Zeichen", len(text))
+            return {"frage": frage, "antwort": text, "auftrag": "", "teile": 0,
+                    "am_pc": True, "sicherheit": sicherheit, "aktionen": aktionen}
 
         gesprochen, gekuerzt = self._fuers_sprechen(text, self.SPRECH_GRENZE)
         stuecke = self._stuecke_bilden(gesprochen) or [gesprochen]
@@ -1704,7 +1942,7 @@ class Runtime:
             "auftrag": auftrag,
             "teile": len(stuecke),
             "gekuerzt": gekuerzt,
-            "sicherheit": round(transcript.confidence, 3),
+            "sicherheit": sicherheit,
             # Knoepfe fuer das Handy: anrufen, Nachricht, App, PDF (12.11.2026).
             "aktionen": aktionen,
         }

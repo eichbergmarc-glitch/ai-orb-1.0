@@ -19,6 +19,14 @@ from pathlib import Path
 from typing import Any
 
 
+#: Ob die Sprachausgabe eine FERTIGE Datei braucht (13.11.2026). Fuer Handy
+#: und iPad werden Dateien ausgeliefert - dort darf keine Stimme als Strom
+#: antworten, dessen Datei erst spaeter fertig wird.
+import contextvars as _contextvars
+
+DATEI_NOETIG: "_contextvars.ContextVar[bool]" = _contextvars.ContextVar("tts_datei_noetig", default=False)
+
+
 @dataclass
 class SpeechRequest:
     """Ein Auftrag an die Sprachausgabe."""

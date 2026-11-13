@@ -41,6 +41,9 @@ window:
   start_position: remembered
   gpu_acceleration: true
 orb:
+  # Animation (13.11.2026): drei_kugeln, synaptix, energie oder klassisch.
+  # Wechsel per Sprache: "Hey Synapse, zeig die drei Kugeln" / "... das Gehirn".
+  darstellung: synaptix   # Kugeln: "Hey Synapse, zeig die drei Kugeln"
   scale: 0.4
   energie: true
   synaptix: true
@@ -452,6 +455,8 @@ routing:
   - api.openai.com
   - speech.platform.bing.com
 conversation:
+  # 13.11.2026: weniger Beilage pro Frage = schnelleres erstes Wort (war 12000)
+  max_extra_context_chars: 5000
   system_prompt: 'Du bist Synapse - ein eigenstaendiger, lokaler Assistent auf dem Rechner des Benutzers.
     Das ist deine Identitaet. Fragt jemand, wer oder was du bist, bist du Synapse. Der technisch verwendete
     KI-Dienst ist Teil deiner Laufzeit und nicht deine Identitaet. Gib dich nie als Anbieter oder Modell aus.
@@ -461,6 +466,10 @@ conversation:
     Kuendige nie nur an ("Einen Moment", "Ich hole dir ..."). Liegen Suchergebnisse oder Nachrichten im Kontext, antworte sofort daraus; sonst rufe das passende Werkzeug auf.
     Du hast eine Webcam: kamera_ansehen zeigt dir, was gerade vor dem Rechner passiert und ob Marc da ist; gesicht_merken legt ein Referenzfoto an. Benutze die Kamera nur, wenn Marc es will.
     E-Mails liest du mit dem Werkzeug mails_lesen, nicht ueber den Browser. Meldet es, Gmail sei nicht verbunden, sag dem Benutzer: Sag einfach "Melde mich bei Gmail an".
+    Will Marc ein Lernblatt, eine Zusammenfassung oder Notizen zum Gespraech ("mach mir daraus ein Lernblatt"), fasse das bisherige Gespraech gegliedert zusammen (Kernbegriffe, Erklaerungen, drei Pruefungsfragen) und erstelle sofort ein PDF mit pdf_erstellen.
+    Mails per Stimme: mails_lesen liest vor; zum Antworten erst mail_entwerfen, dann Empfaenger, Betreff und Text kurz vorlesen und nur nach einem klaren "senden" oder "ja, schick" mail_senden aufrufen.
+    Will Marc eine andere Animation sehen ("zeig die drei Kugeln", "wechsle zum Gehirn"), benutze animation_wechseln.
+    Erinnerungen (erinnerung_setzen), "wann muss ich los" (abfahrt_erinnern), Wetter (wetter) und "was steht heute an" (tagesueberblick) erledigst du mit diesen Werkzeugen, nie per Websuche. Ein taegliches Morgen-Briefing plant briefing_einplanen.
     Zug-, Bus- und Postautoverbindungen holst du mit dem Werkzeug verbindung_suchen (SBB-Fahrplan), nie ueber die Websuche. Nenne nur die Zeiten, die der Fahrplan liefert: Abfahrt, Umstieg, Ankunft - kurz.
     Spricht Marc ueber das Handy mit dir, kannst du dort handeln: anrufen (Name aus den Google-Kontakten oder Nummer), nachricht_senden (WhatsApp oder SMS, Text vorher kurz vorlesen), app_oeffnen (auch Navigation in Karten), kurzbefehl_starten (iPhone-Kurzbefehle). Dort erscheint dann ein Knopf, Marc tippt einmal. Eingehende SMS oder WhatsApp kannst du nicht lesen - das laesst das iPhone nicht zu; sag das ehrlich.
     Will Marc einen Plan, eine Liste oder ein Dokument (Reiseplan, Fahrplan, Einkaufsliste ...), erstelle es sofort mit pdf_erstellen - bei Reisen zuerst die Verbindungen mit verbindung_suchen holen und die echten Zeiten hineinschreiben. Auf dem Handy erscheint ein Knopf zum Oeffnen.
@@ -676,8 +685,15 @@ voice:
   - stop
   - stopp
   - halt
-  stop_window_ms: 1200   # war 600: halbiert die Rechenlast waehrend der Orb spricht (87 Fenster in einer Antwort)
+  stop_window_ms: 1500   # 13.11.: Cloud-Spaeher; war 600: halbiert die Rechenlast waehrend der Orb spricht (87 Fenster in einer Antwort)
   stop_waehrend_lokaler_stimme: true
+  # AUS seit 12.11.2026: Der "Stopp"-Spaeher rechnete waehrend jeder Antwort
+  # pausenlos (1,2 s Ton = bis 2,9 s Rechenzeit) - die Stimme stockte.
+  # Unterbrechen: Escape-Taste, auf dem Handy der Pause-Knopf.
+  stop_spaeher_aktiv: false   # 13.11. Ruecknahme: zuerst Tempo pruefen
+  # 13.11.2026: "Stop Synapse" wieder an - der Spaeher erkennt jetzt in der
+  # Cloud (keine Rechenlast am PC, ca. 0,1 Rappen pro Minute Sprechzeit).
+  stop_spaeher_cloud: false
   stop_initial_prompt: Hallo Synapse. Hey Synapse.
   stop_model_size: base
   interrupt_key: Escape
@@ -739,8 +755,15 @@ voice:
     cloud:
       enabled: true
       api_key_env: OPENAI_API_KEY
+      # gpt-4o-transcribe zuerst (12.11.2026): Die Mini-Fassung machte aus
+      # Marcs Deutsch mit Schweizer Klang "Eklare mi den nye realismen".
+      # Woerter, die Marc oft sagt (12.11.2026) - hilft der Erkennung bei
+      # Ortsnamen und Schweizer Klang. Kommt nur dieser Hinweis zurueck,
+      # wird er verworfen.
+      prompt: 'Synapse, Melchnau, Giuch, Ostermundigen, Langenthal, Bern, Roggwil, Markus Gabriel, Neuer Realismus, Philosophie, Vorlesung.'
       models:
-      - gpt-4o-mini-transcribe
+      - gpt-4o-mini-transcribe   # 13.11.: schneller als gpt-4o-transcribe
+      - gpt-4o-transcribe
       - whisper-1
       timeout: 8
     # Das Webcam-Mikrofon (07.11.2026). Eingetragen ist ein Teil des
@@ -751,7 +774,7 @@ voice:
     # Fehlersuche (07.11.2026): die letzten 5 Aufnahmen bleiben in
     # logs\aufnahmen liegen, damit sich pruefen laesst, was das Mikrofon
     # wirklich liefert. Danach wieder auf 0 setzen.
-    diagnose_aufnahmen: 5
+    diagnose_aufnahmen: 0
     preroll_ms: 400
     # Wie lange Stille eine Aeusserung beendet.
     #
@@ -821,6 +844,7 @@ voice:
     target_rms: 0.1
     trim_boundary_silence: true
     leading_silence_ms: 30
+    anlauf_ms: 300   # 12.11.2026: Stille vor der ersten Silbe nach einer Pause - sonst fehlt der Anfang
     trailing_silence_ms: 70
     sentence_pause_ms: 60
     human_timing:
@@ -879,6 +903,7 @@ voice:
       pitch_hz: 0
       timeout_seconds: 4
     openai_tts:
+      streaming: false   # 13.11.: Ruecknahme bis die Messung vorliegt
       model: gpt-4o-mini-tts
       voice: marin   # weiblich (cedar ist maennlich)
       api_key_env: OPENAI_API_KEY
@@ -1014,6 +1039,8 @@ recherche:
     feed: https://feeds.npr.org/1001/rss.xml
   favoriten:
     nutzen: true
+    # 13.11.2026: nur bei "such/recherchier/Quellen" - sonst 6-7 s Wartezeit
+    nur_auf_wunsch: true
     ordner: ''
     max_domaenen: 4
     treffer_je_domaene: 3
@@ -1154,3 +1181,10 @@ studium:
   aktualisierung: true
   aktualisierung_takt_sekunden: 1800
   aktualisierung_abstand_tage: 7
+
+# Alltag (12.11.2026): Heimatort fuer Wetter, Haltestelle fuer Fahrplan und
+# Abfahrtswecker, Pendelziel fuer das Morgen-Briefing (leer = keins).
+alltag:
+  heimatort: Melchnau
+  haltestelle: Melchnau, Giuch
+  pendelziel: ''

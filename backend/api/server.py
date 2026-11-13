@@ -561,9 +561,46 @@ def build_router(runtime: Runtime) -> ApiRouter:
     # deshalb um: Der Ton kommt herein statt aus dem Mikrofon, und die
     # Antwort geht als Datei hinaus statt in die Lautsprecher.
 
+    # Antworten nach Kennung (12.11.2026): Reisst die Verbindung zum Handy
+    # ab, waehrend Synapse antwortet, holt sich das Handy das Ergebnis
+    # spaeter ab - statt dass die Antwort verloren geht.
+    ergebnisse: dict[str, Any] = {}
+    in_arbeit: set[str] = set()
+
+    def stimme_ergebnis(params: dict[str, Any]) -> dict[str, Any]:
+        kennung = str(params.get("id", "")).strip()
+        if kennung in ergebnisse:
+            return {"stand": "fertig", "ergebnis": ergebnisse[kennung]}
+        if kennung in in_arbeit:
+            return {"stand": "kommt"}
+        return {"stand": "unbekannt"}
+
+    router.get("/stimme/ergebnis", stimme_ergebnis)
+
     def stimme_aufnahme(daten: bytes, _kopfzeilen: dict[str, str]) -> dict[str, Any]:
         """Nimmt eine Aufnahme entgegen und beantwortet sie."""
 
+        kennung = ""
+        for name, wert in (_kopfzeilen or {}).items():
+            if str(name).lower() == "x-orb-id":
+                kennung = str(wert).strip()[:40]
+        if kennung and kennung in ergebnisse:
+            return ergebnisse[kennung]
+        if kennung and kennung in in_arbeit:
+            return {"frage": "", "antwort": "", "auftrag": "", "teile": 0, "grund": "doppelt"}
+        if kennung:
+            in_arbeit.add(kennung)
+        try:
+            ergebnis = _stimme_aufnahme(daten, _kopfzeilen)
+        finally:
+            in_arbeit.discard(kennung)
+        if kennung:
+            ergebnisse[kennung] = ergebnis
+            while len(ergebnisse) > 30:
+                ergebnisse.pop(next(iter(ergebnisse)))
+        return ergebnis
+
+    def _stimme_aufnahme(daten: bytes, _kopfzeilen: dict[str, str]) -> dict[str, Any]:
         import tempfile
 
         # Die Aufnahme kommt fertig als WAV in 16 kHz, einkanalig - genau
@@ -581,7 +618,14 @@ def build_router(runtime: Runtime) -> ApiRouter:
                 str(name).lower() == "x-orb-dauer" and str(wert).strip() == "1"
                 for name, wert in (_kopfzeilen or {}).items()
             )
-            return runtime.run(runtime.stimme_vom_geraet(pfad, dauer=dauer), timeout=300.0)
+            ausgabe_pc = any(
+                str(name).lower() == "x-orb-ausgabe" and str(wert).strip().lower() == "pc"
+                for name, wert in (_kopfzeilen or {}).items()
+            )
+            return runtime.run(
+                runtime.stimme_vom_geraet(pfad, dauer=dauer, ausgabe_pc=ausgabe_pc),
+                timeout=300.0,
+            )
         finally:
             # Die Aufnahme ist beantwortet; sie aufzuheben hätte keinen
             # Zweck und wäre eine Mitschrift, um die niemand gebeten hat.
@@ -657,6 +701,13 @@ def build_router(runtime: Runtime) -> ApiRouter:
         """Das Handy meldet, was beim Abspielen passiert (12.11.2026)."""
 
         logger.info("Handy meldet: %s", str(body.get("text", ""))[:300])
+        # Das Handy ist im Gespraech: das PC-Mikrofon ruht (es hoert sonst mit).
+        try:
+            import time as _zeit
+
+            runtime.voice.lokal_ruhig_bis = _zeit.monotonic() + 600.0
+        except Exception:  # noqa: BLE001
+            pass
         return {"ok": True}
 
     router.post("/stimme/meldung", stimme_meldung)
@@ -681,6 +732,60 @@ def build_router(runtime: Runtime) -> ApiRouter:
         return {"version": ""}
 
     router.get("/stimme/version", stimme_version)
+
+    def stimme_hinweise(_: dict[str, Any]) -> dict[str, Any]:
+        """Faellige Erinnerungen fuer das Handy (12.11.2026)."""
+
+        try:
+            import time as _zeit
+
+            runtime.voice.lokal_ruhig_bis = max(
+                float(getattr(runtime.voice, "lokal_ruhig_bis", 0.0) or 0.0),
+                _zeit.monotonic() + 120.0,
+            )
+            ausgabe_pc = str(_.get("ausgabe", "")).lower() == "pc"
+            return {"hinweise": runtime.run(
+                runtime.handy_hinweise_abholen(ausgabe_pc=ausgabe_pc), timeout=60.0
+            )}
+        except Exception:  # noqa: BLE001
+            logger.exception("Hinweise fuers Handy liessen sich nicht holen.")
+            return {"hinweise": []}
+
+    router.get("/stimme/hinweise", stimme_hinweise)
+
+    def stimme_vorlesung_weiter(body: dict[str, Any]) -> dict[str, Any]:
+        """Naechster Vorlesungsabschnitt fuer das Handy (12.11.2026)."""
+
+        ausgabe_pc = str((body or {}).get("ausgabe", "")).lower() == "pc"
+        return runtime.run(
+            runtime.vorlesung_weiter_vom_geraet(ausgabe_pc=ausgabe_pc), timeout=300.0
+        )
+
+    def stimme_pc_status(_: dict[str, Any]) -> dict[str, Any]:
+        """Spricht der PC noch? Das iPad hoert erst danach wieder zu (13.11.2026)."""
+
+        return {"spricht": bool(runtime.pc_spricht())}
+
+    router.get("/stimme/pc_status", stimme_pc_status)
+
+    def stimme_stopp(_: dict[str, Any]) -> dict[str, Any]:
+        """Stopp-Knopf auf dem Handy/iPad: PC-Stimme und Vorlesung anhalten."""
+
+        try:
+            runtime.voice.interrupt()
+        except Exception:  # noqa: BLE001
+            logger.exception("PC-Stimme liess sich nicht anhalten.")
+        runtime.vorlesung_pause_vom_geraet()
+        return {"ok": True}
+
+    router.post("/stimme/stopp", stimme_stopp)
+
+    def stimme_vorlesung_pause(_: dict[str, Any]) -> dict[str, Any]:
+        runtime.vorlesung_pause_vom_geraet()
+        return {"ok": True}
+
+    router.post("/stimme/vorlesung/weiter", stimme_vorlesung_weiter)
+    router.post("/stimme/vorlesung/pause", stimme_vorlesung_pause)
     router.post_raw("/stimme/aufnahme", stimme_aufnahme)
     router.get("/stimme/ton", stimme_ton)
 

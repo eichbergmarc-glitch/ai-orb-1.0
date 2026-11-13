@@ -334,6 +334,7 @@ def test_openai_tts_erhaelt_menschliche_regie_und_latenzformat(
         options={
             "model": "gpt-4o-mini-tts",
             "voice": "cedar",
+            "streaming": False,  # hier geht es um den Datei-Weg
             "instructions": (
                 "Sprich spontan und natuerlich. Kein Nachrichtensprecher, "
                 "kein Roboterklang."

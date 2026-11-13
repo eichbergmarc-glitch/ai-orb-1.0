@@ -85,7 +85,7 @@ def test_fortsetzen_mit_neuem_explizitem_thema_startet_neue_vorlesung(tmp_path):
 
     assert session.befehl(befehl) == "start"
     auftrag = session.starten(befehl)
-    assert session.stand.thema == "philosophie"
+    assert session.stand.thema.lower() == "philosophie"
     assert "Abschnitt 1" in auftrag
 
 

@@ -191,10 +191,86 @@ _VORGABE: dict[str, float] = {
 }
 
 
+#: Gesprochene Namen -> Darstellung (13.11.2026).
+_DARSTELLUNGEN = (
+    ("drei_kugeln", ("kugel", "baell", "bäll", "bälle", "baelle", "drei", "rgb", "farbkugel")),
+    ("synaptix", ("gehirn", "hirn", "synaptix", "neuron", "netz")),
+    ("energie", ("energie", "energy", "auge", "augen")),
+    ("klassisch", ("klassisch", "punkte", "zwei punkte", "einfach", "schlicht")),
+)
+
+
+def darstellung_aus(wunsch: str) -> str:
+    text = str(wunsch or "").lower()
+    for name, woerter in _DARSTELLUNGEN:
+        if name in text or any(wort in text for wort in woerter):
+            return name
+    return ""
+
+
+def darstellung_schreiben(pfad: Path, darstellung: str) -> None:
+    """Setzt ``orb.darstellung`` in der config.yaml - Kommentare bleiben."""
+
+    zeilen = pfad.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next((i for i, z in enumerate(zeilen) if z.rstrip() == "orb:"), None)
+    if start is None:
+        zeilen.append(f"\norb:\n  darstellung: {darstellung}\n")
+    else:
+        ende = next(
+            (i for i in range(start + 1, len(zeilen))
+             if zeilen[i].strip() and not zeilen[i].startswith((" ", "\t", "#"))),
+            len(zeilen),
+        )
+        for i in range(start + 1, ende):
+            if zeilen[i].startswith("  darstellung:"):
+                zeilen[i] = f"  darstellung: {darstellung}\n"
+                break
+        else:
+            zeilen.insert(start + 1, f"  darstellung: {darstellung}\n")
+    pfad.write_text("".join(zeilen), encoding="utf-8")
+
+
+class AnimationWechselnTool(Tool):
+    """Wechselt die Darstellung des Orb (Kugeln, Gehirn, Energie, klassisch)."""
+
+    name = "animation_wechseln"
+    description = (
+        "Wechselt die ganze Animation des Orb: 'drei Kugeln' (rot, gruen, blau, "
+        "verschmelzend), 'Gehirn' (Synaptix), 'Energie' (Energie-Orb mit Augen) "
+        "oder 'klassisch'. Fuer 'wechsle zur Kugel-Animation', 'zeig das Gehirn' usw."
+    )
+    permission = "modify_own_code"
+    parameters = (ToolParameter("darstellung", "string", "Welche Animation, in Marcs Worten."),)
+
+    def __init__(self, event_bus: Any) -> None:
+        self._bus = event_bus
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        ziel = darstellung_aus(str(arguments.get("darstellung", "")))
+        if not ziel:
+            return ToolResult.failure(
+                "Diese Animation kenne ich nicht. Es gibt: drei Kugeln, Gehirn, Energie, klassisch."
+            )
+        from backend.config import get_config
+
+        konfig = get_config()
+        pfad = Path(getattr(konfig, "_config_path", get_project_root() / "config.yaml"))
+        try:
+            await asyncio.to_thread(darstellung_schreiben, pfad, ziel)
+            konfig.reload()
+        except Exception as fehler:  # noqa: BLE001
+            return ToolResult.failure(f"Die Einstellung liess sich nicht schreiben: {fehler}")
+        await self._bus.publish(NEU_LADEN, {"grund": "animation_wechseln"})
+        namen = {"drei_kugeln": "die drei Kugeln", "synaptix": "das Gehirn",
+                 "energie": "den Energie-Orb", "klassisch": "die klassische Animation"}
+        return ToolResult.success(f"Erledigt, ich zeige jetzt {namen[ziel]}.")
+
+
 def build_animation_tools(event_bus: Any) -> list[Tool]:
     """Baut die Animations-Werkzeuge."""
 
     return [
         AnimationAnpassenTool(event_bus),
         OberflaecheNeuBauenTool(event_bus),
+        AnimationWechselnTool(event_bus),
     ]

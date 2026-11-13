@@ -115,6 +115,15 @@ class OpenAITtsEngine(TtsEngine):
             "instructions": self._regie(request),
             "response_format": "wav",
         }
+        # Strom statt Datei (13.11.2026): Bisher wartete der Orb, bis der
+        # ganze Satz als WAV fertig war - gemessen 1,1 bis 1,6 s vor der
+        # ersten Silbe. Als PCM-Strom beginnt er nach den ersten Millisekunden.
+        from backend.tts.base_engine import DATEI_NOETIG
+
+        if bool(self.option("streaming", True)) and not DATEI_NOETIG.get():
+            ergebnis = self._als_strom(dict(payload, response_format="pcm"), target)
+            if ergebnis is not None:
+                return ergebnis
         http_request = urllib.request.Request(
             _API_URL,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -176,6 +185,80 @@ class OpenAITtsEngine(TtsEngine):
                 "voice": payload["voice"],
                 "instructions": payload["instructions"],
                 "local": False,
+            },
+        )
+
+    def _als_strom(self, payload: dict[str, Any], target: Path) -> SpeechResult | None:
+        """Startet die Sprachausgabe als PCM-Strom (24 kHz, 16 Bit, mono).
+
+        ``None`` heisst: Strom ging nicht - der gewohnte Weg uebernimmt.
+        """
+
+        import threading
+
+        from backend.tts.pocket_tts_engine import PcmAudioStream
+
+        anfrage = urllib.request.Request(
+            _API_URL,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        started = self._now()
+        try:
+            antwort = urllib.request.urlopen(anfrage, timeout=self._timeout)
+        except Exception as fehler:  # noqa: BLE001
+            logger.info("OpenAI-TTS-Strom nicht moeglich (%s) - Datei-Weg.", fehler)
+            return None
+
+        strom = PcmAudioStream(sample_rate=24000)
+
+        def lesen() -> None:
+            teile: list[bytes] = []
+            rest = b""
+            try:
+                with antwort:
+                    while not strom.cancelled:
+                        block = antwort.read(4800)
+                        if not block:
+                            break
+                        block = rest + block
+                        gerade = len(block) // 2 * 2
+                        rest = block[gerade:]
+                        if gerade:
+                            teile.append(block[:gerade])
+                            strom.push(block[:gerade])
+                daten = b"".join(teile)
+                if daten:
+                    with wave.open(str(target), "wb") as datei:
+                        datei.setnchannels(1)
+                        datei.setsampwidth(2)
+                        datei.setframerate(24000)
+                        datei.writeframes(daten)
+                strom.finish(duration_seconds=len(daten) / 48000.0,
+                             error="" if daten else "OpenAI-TTS lieferte keinen Ton.")
+            except Exception as fehler:  # noqa: BLE001
+                strom.finish(error=f"OpenAI-TTS-Strom abgebrochen: {fehler}")
+
+        threading.Thread(target=lesen, name="openai-tts-strom", daemon=True).start()
+        if not strom.wait_for_first(self._timeout) or (strom.error and not strom.has_audio):
+            strom.cancel()
+            return None
+        # Ein kleiner Vorsprung gegen Netzschwankungen - sonst stockt der
+        # Satz, wenn ein Paket einen Moment laenger braucht.
+        vorsprung = max(0.0, min(1.0, float(self.option("prebuffer_ms", 250)) / 1000.0))
+        strom.wait_for_buffer(vorsprung, 3.0)
+        return SpeechResult(
+            audio_path=target,
+            engine=self.name,
+            processing_seconds=self._now() - started,
+            context={
+                "model": self._model,
+                "voice": payload["voice"],
+                "instructions": payload["instructions"],
+                "local": False,
+                "streaming": True,
+                "pcm_stream": strom,
             },
         )
 

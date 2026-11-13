@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 from collections.abc import AsyncIterator
 from typing import Any
@@ -374,13 +375,28 @@ class OpenAICompatibleProvider(BaseProvider):
                 "model": self._model,
                 "messages": self._api_messages(messages),
             }
+        # Denkmodelle von OpenAI (gpt-5*, o*) kennen weder "max_tokens" noch
+        # eine eigene Temperatur, dafuer "reasoning_effort" (13.11.2026). Mit
+        # "minimal"/"none" antworten sie fast so schnell wie gpt-4.1-mini.
+        denkmodell = bool(re.match(r"(?:openai/)?(?:gpt-5|o\d)", str(self._model or "").lower()))
         if temperature is None and self._settings.get("temperature") is not None:
             temperature = float(self._settings["temperature"])
-        if temperature is not None:
+        if temperature is not None and not denkmodell:
             payload["temperature"] = temperature
         if max_tokens is not None:
             mindestens = int(self._settings.get("minimum_predict_tokens", 0) or 0)
-            payload["max_tokens"] = max(int(max_tokens), mindestens)
+            schluessel = "max_completion_tokens" if denkmodell else "max_tokens"
+            payload[schluessel] = max(int(max_tokens), mindestens)
+        aufwand = str(self._settings.get("reasoning_effort", "") or "").strip()
+        # Ohne Angabe denkt ein GPT-5-Modell "mittel" - mehrere Sekunden vor
+        # jedem Wort. Fuer ein Gespraech ist "minimal" richtig (13.11.2026).
+        if not aufwand and denkmodell and "messages" in payload:
+            aufwand = "minimal"
+        if aufwand and "messages" in payload:
+            payload["reasoning_effort"] = aufwand
+        wortfuelle = str(self._settings.get("verbosity", "") or "").strip()
+        if wortfuelle and denkmodell and "messages" in payload:
+            payload["verbosity"] = wortfuelle
         denken = self._settings.get("thinking")
         if (
             denken is not None

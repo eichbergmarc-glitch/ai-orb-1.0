@@ -25,6 +25,7 @@ import { MovementEngine } from "./movement";
 import { PresenceEngine } from "./presence";
 import { OrbRenderer } from "./renderer";
 import { SynaptixBrain } from "./synaptix_brain";
+import { DreiKugeln } from "./drei_kugeln";
 import { ORB_STATES, StateMachine, type OrbStateName, type StateAppearance } from "./states";
 
 /** Die von `preload.ts` bereitgestellte, abgesicherte Schnittstelle. */
@@ -153,12 +154,21 @@ async function bootstrap(): Promise<void> {
   // `orb.synaptix: false` bringt sofort die bisherige Anzeige zurueck.
   const synaptixAktiv = readConfig<boolean>(config, "orb.synaptix", false) === true;
 
-  const orb = synaptixAktiv
+  // Welche Darstellung (13.11.2026): "drei_kugeln", "synaptix", "energie"
+  // oder "klassisch". Gewechselt per Sprache ("wechsle zur Kugel-Animation").
+  const darstellung = String(readConfig<string>(config, "orb.darstellung", "") || "").trim();
+
+  const orb = darstellung === "drei_kugeln"
+    ? new DreiKugeln(
+        { tempo: animation.tempo, helligkeit: animation.helligkeit },
+        renderer.renderer.getPixelRatio()
+      )
+    : (darstellung ? darstellung === "synaptix" : synaptixAktiv)
     ? new SynaptixBrain(
         { tempo: animation.tempo, helligkeit: animation.helligkeit },
         renderer.renderer.getPixelRatio()
       )
-    : energieAktiv
+    : (darstellung ? darstellung === "energie" : energieAktiv)
       ? new EnergyOrb(
           { tempo: animation.tempo, helligkeit: animation.helligkeit },
           renderer.renderer.getPixelRatio()
@@ -170,8 +180,8 @@ async function bootstrap(): Promise<void> {
   // Beide lebendigen Darstellungen teilen sich dieselbe Schnittstelle
   // (Augen/Netz, Gefuehl, Fortschritt, Blitz). Alles Weitere im Modul
   // unterscheidet deshalb nicht mehr zwischen ihnen.
-  const energyOrb: EnergyOrb | SynaptixBrain | null =
-    orb instanceof EnergyOrb || orb instanceof SynaptixBrain ? orb : null;
+  const energyOrb: EnergyOrb | SynaptixBrain | DreiKugeln | null =
+    orb instanceof EnergyOrb || orb instanceof SynaptixBrain || orb instanceof DreiKugeln ? orb : null;
   const orbMenu = document.getElementById("orb-menu") as HTMLElement | null;
   const orbInfo = document.getElementById("orb-info") as HTMLElement | null;
   const chatPanel = document.getElementById("chat-panel") as HTMLElement | null;
@@ -677,7 +687,7 @@ function pegelAus(event: BackendEvent, bisher: number): number {
 
 function handleEmotionEvent(
   event: BackendEvent,
-  orb: EnergyOrb | SynaptixBrain | null
+  orb: EnergyOrb | SynaptixBrain | DreiKugeln | null
 ): void {
   if (orb === null) return;
   const aliases: Record<string, OrbEmotionName> = {
@@ -698,7 +708,7 @@ function handleEmotionEvent(
 /** ProfessorSession entscheidet fachlich; der Renderer zeichnet nur. */
 function handleProfessorEvent(
   event: BackendEvent,
-  orb: EnergyOrb | SynaptixBrain | null
+  orb: EnergyOrb | SynaptixBrain | DreiKugeln | null
 ): void {
   if (orb === null || event.event !== "orb.professor.changed") return;
   const active = (event.payload as { active?: unknown } | undefined)?.active;

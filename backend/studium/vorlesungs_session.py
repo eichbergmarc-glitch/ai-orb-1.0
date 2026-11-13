@@ -482,7 +482,16 @@ class VorlesungsSession:
             self.aktiv or hat_lehrwort or len(worte) <= 3
         )
         if darf_fortsetzen and any(wendung in klein for wendung in self._FORTSETZEN):
-            genannt = self._thema_aus(text) if hat_lehrwort else ""
+            # Nur ein ausdruecklich genanntes Thema zaehlt. Ohne Muster gab
+            # _thema_aus den ganzen Satz zurueck - und "Fahre mit der
+            # Vorlesung fort" galt als neues Thema (12.11.2026).
+            roh = " ".join(str(text or "").split())
+            ausdruecklich = hat_lehrwort and any(
+                muster.search(roh)
+                for muster in (self._THEMA_MUSTER, self._THEMA_DOPPELPUNKT,
+                               self._THEMA_STICHWORT, self._THEMA_LEHRVERB)
+            )
+            genannt = self._thema_aus(text) if ausdruecklich else ""
             bisher = _normalisieren(self.stand.thema)
             neu = _normalisieren(genannt)
             if neu and bisher and neu not in bisher and bisher not in neu:

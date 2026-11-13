@@ -29,6 +29,7 @@ import array
 import math
 import platform
 import threading
+import time
 import wave
 from pathlib import Path
 from typing import Any, Callable
@@ -73,6 +74,13 @@ class AudioPlayer:
         self._target_rms = max(0.06, min(0.18, float(target_rms)))
         self._trim_boundary_silence = bool(trim_boundary_silence)
         self._leading_silence_ms = max(0.0, min(120.0, float(leading_silence_ms)))
+        try:
+            from backend.config import get_config
+
+            self._anlauf_ms = max(0.0, float(get_config().get("voice.output.anlauf_ms", 300)))
+        except Exception:  # noqa: BLE001
+            self._anlauf_ms = 300.0
+        self._letztes_ende = 0.0
         self._trailing_silence_ms = max(20.0, min(180.0, float(trailing_silence_ms)))
         self._on_level = on_level
         self._on_started = on_started
@@ -251,6 +259,11 @@ class AudioPlayer:
 
         buffered_reported = False
         with output:
+            pause = time.monotonic() - float(getattr(self, "_letztes_ende", 0.0) or 0.0)
+            anlauf_ms = getattr(self, "_anlauf_ms", 300.0) if pause > 1.5 else 40.0
+            stille = int(int(stream.sample_rate) * anlauf_ms / 1000.0)
+            if stille > 0:
+                output.write(b"\x00\x00" * int(stream.channels) * stille)
             for frames in stream.iter_chunks():
                 if self._stop_requested.is_set():
                     stream.cancel()
@@ -319,6 +332,16 @@ class AudioPlayer:
                 return False
 
             with stream:
+                # Anlauf (12.11.2026): Ein frisch geoeffnetes Ausgabegeraet
+                # verschluckt unter Windows (und erst recht ueber Bluetooth)
+                # die ersten Millisekunden - "der Anfang ist abgehackt".
+                # Nach einer Pause deshalb erst etwas Stille hineinschreiben;
+                # zwischen zwei Saetzen derselben Antwort nur ganz wenig.
+                pause = time.monotonic() - float(getattr(self, "_letztes_ende", 0.0) or 0.0)
+                anlauf_ms = self._anlauf_ms if pause > 1.5 else min(self._anlauf_ms, 40.0)
+                stille = int(rate * anlauf_ms / 1000.0)
+                if stille > 0:
+                    stream.write(b"\x00\x00" * channels * stille)
                 while True:
                     if self._stop_requested.is_set():
                         return False
@@ -349,6 +372,7 @@ class AudioPlayer:
 
                     stream.write(frames)
 
+        self._letztes_ende = time.monotonic()
         return not self._stop_requested.is_set()
 
     def _normalization_gain(self, path: Path) -> float:

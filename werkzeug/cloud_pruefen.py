@@ -26,8 +26,8 @@ DIENSTE = {
     "openai": {
         "url": "https://api.openai.com/v1",
         "schluessel": "OPENAI_API_KEY",
-        "wunsch": ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5-mini", "gpt-5-mini",
-                   "gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1-nano"],
+        "wunsch": ["gpt-4.1-mini", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5-mini",
+                   "gpt-5-mini", "gpt-5-nano", "gpt-4.1-nano", "gpt-4o-mini"],
     },
     "grok": {
         "url": "https://api.x.ai/v1",
@@ -51,6 +51,21 @@ DIENSTE = {
         "wunsch": ["Hermes-4.3-36B", "Hermes-4-70B", "Hermes-4-405B"],
         # Nous fuehrt auch fremde Modelle; schnelle Kandidaten mit aufnehmen.
         "muster": ["hermes", "flash", "mini", "fast"],
+    },
+    # Neu 13.11.2026: die schnellsten Anbieter laut Messungen 2026.
+    # Schluessel kostenlos: console.groq.com bzw. aistudio.google.com
+    "groq": {
+        "url": "https://api.groq.com/openai/v1",
+        "schluessel": "GROQ_API_KEY",
+        "wunsch": ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b",
+                   "meta-llama/llama-4-maverick-17b-128e-instruct"],
+    },
+    "gemini": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "schluessel": "GEMINI_API_KEY",
+        "wunsch": ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-lite-latest",
+                   "gemini-flash-latest"],
+        "muster": ["flash"],
     },
     "openrouter": {
         "url": "https://openrouter.ai/api/v1",
@@ -95,7 +110,8 @@ def modelle(dienst: dict, schluessel: str) -> list[str]:
     anfrage = urllib.request.Request(f"{dienst['url']}/models", headers=kopf(schluessel))
     with urllib.request.urlopen(anfrage, timeout=15) as antwort:
         daten = json.loads(antwort.read().decode("utf-8"))
-    return [str(m.get("id")) for m in daten.get("data", []) if m.get("id")]
+    # Gemini nennt seine Modelle "models/gemini-...".
+    return [str(m.get("id")).removeprefix("models/") for m in daten.get("data", []) if m.get("id")]
 
 
 def frage(dienst_name: str, dienst: dict, schluessel: str, modell: str) -> dict:
@@ -105,13 +121,17 @@ def frage(dienst_name: str, dienst: dict, schluessel: str, modell: str) -> dict:
         "messages": [
             {"role": "system", "content": "Du bist Synapse, ein deutschsprachiger "
              "Assistent. Antworte in ein bis zwei kurzen Saetzen."},
-            {"role": "user", "content": "Wie geht es dir heute?"},
+            {"role": "user", "content": "Erklaer mir kurz, was der Neue Realismus von Markus Gabriel behauptet."},
         ],
     }
     if dienst_name == "openai":
         nutzlast["max_completion_tokens"] = 400
+        if modell.startswith(("gpt-5", "o")):
+            nutzlast["reasoning_effort"] = "minimal"
     else:
-        nutzlast["max_tokens"] = 150
+        nutzlast["max_tokens"] = 300
+        if "gpt-oss" in modell:
+            nutzlast["reasoning_effort"] = "low"
     anfrage = urllib.request.Request(
         f"{dienst['url']}/chat/completions",
         data=json.dumps(nutzlast).encode("utf-8"),

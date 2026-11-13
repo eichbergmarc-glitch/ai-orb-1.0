@@ -455,6 +455,16 @@ class Transcriber:
                 text = str((antwort.json() or {}).get("text", "")).strip()
             except ValueError:
                 text = antwort.text.strip()
+            # Der Hinweis mit Marcs Woertern (Ortsnamen usw.) darf nicht als
+            # Gesagtes zurueckkommen: Bei Stille wiederholen Modelle ihn gern.
+            if hinweis and text:
+                gesagt = {w.strip(".,!?;:").lower() for w in text.split() if w.strip(".,!?;:")}
+                vorgabe = {w.strip(".,!?;:").lower() for w in hinweis.split() if w.strip(".,!?;:")}
+                fremd = gesagt - vorgabe - {"context", "kontext", "prompt", "hinweis"}
+                # "Context: Synapse, Melchnau, ..." kam am 12.11. als Frage durch.
+                if gesagt and len(gesagt) >= 3 and len(fremd) <= 1:
+                    logger.info("Cloud-Erkennung gab nur den Hinweis zurueck - verworfen.")
+                    text = ""
             rechenzeit = time.perf_counter() - started
             wartezeit = (time.monotonic() - abgegeben) - rechenzeit if abgegeben else 0.0
             logger.info(

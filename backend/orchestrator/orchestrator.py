@@ -2988,6 +2988,14 @@ class Orchestrator:
         )
         if len(woerter) < 4 and not verlangt_quellen:
             return False
+        # Tempo (13.11.2026): Die Portalsuche vor jeder Fachfrage kostete
+        # 6-7 Sekunden (Bing/Yahoo/GDELT, oft ins Leere). Nur noch, wenn
+        # Marc ausdruecklich nach Quellen oder Recherche fragt.
+        konfig = getattr(self, "_config", None)
+        if konfig is not None and bool(
+            (konfig.get("recherche.favoriten", {}) or {}).get("nur_auf_wunsch", True)
+        ):
+            return verlangt_quellen
         if looks_academic(text):
             return True
         # Der Professor baut den Systemprompt, wenn er übernimmt. Steht er
