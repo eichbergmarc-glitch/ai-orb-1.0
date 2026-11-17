@@ -1,4 +1,4 @@
-"""Sprachausgabe über einen eigenen entfernten TTS-Server (z. B. CSM-1B).
+"""Sprachausgabe über einen eigenen entfernten TTS-Server (z. B. Chatterbox Multilingual V3).
 
 Manche Stimmen sind zu schwer für den eigenen Rechner. CSM-1B von Sesame –
 die Stimme hinter „Miles“ – ist so eine: Sie klingt wunderbar natürlich,
@@ -31,7 +31,7 @@ Stimme zurück, wie bei jeder anderen Engine auch.
 Ein POST mit ``{"text": ...}`` beantwortet er mit den rohen Bytes einer
 WAV-Datei (``Content-Type: audio/wav``). Mehr ist nicht nötig; die
 Abtastrate ist gleichgültig, der Player von AI-Orb kommt mit jeder zurecht.
-Ein Beispielserver liegt unter ``server/csm_tts_server.py`` bei.
+Der GPU-Server für Chatterbox liegt im Notebook ``server/AI_Orb_CSM_1B_Colab.ipynb``.
 """
 
 from __future__ import annotations
@@ -143,8 +143,8 @@ class RemoteTtsEngine(TtsEngine):
 
     def installation_hint(self) -> str:
         return (
-            "Kein TTS-Server eingetragen. Starte den Server aus "
-            "server/csm_tts_server.py (Anleitung in docs/STIMME_CSM.md) und "
+            "Kein TTS-Server eingetragen. Starte den Chatterbox-GPU-Server aus "
+            "server/AI_Orb_CSM_1B_Colab.ipynb (Anleitung in docs/STIMME_CSM.md) und "
             "trage seine Adresse unter voice.output.remote.endpoint in "
             "config.yaml ein."
         )
