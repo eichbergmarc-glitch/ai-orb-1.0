@@ -27,14 +27,24 @@ class ChatterboxEngine(TtsEngine):
     name = "chatterbox"
 
     _EMOTION_EXAGGERATION: dict[str, float] = {
+        # Deutsche Namen kommen direkt aus backend.tts.emotion.
         "neutral": 1.00,
-        "freundlich": 1.06,
-        "aufmerksam": 1.04,
-        "nachdenklich": 0.88,
-        "erfreut": 1.22,
-        "bedauernd": 0.86,
-        "dringlich": 1.16,
+        "freundlich": 1.10,
+        "aufmerksam": 1.06,
+        "nachdenklich": 0.90,
+        "erfreut": 1.24,
+        "bedauernd": 0.88,
+        "dringlich": 1.18,
         "leise": 0.82,
+        # Englische Aliase bleiben fuer direkte Engine-Aufrufe kompatibel.
+        "friendly": 1.10,
+        "curious": 1.06,
+        "thinking": 0.90,
+        "happy": 1.24,
+        "excited": 1.28,
+        "warning": 1.18,
+        "error": 0.88,
+        "calm": 0.82,
     }
 
     def __init__(
