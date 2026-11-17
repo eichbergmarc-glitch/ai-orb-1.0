@@ -828,7 +828,11 @@ voice:
     # CPU brauchte fuer einen Satz fast so lange, wie er dauert (RTF 0,9-1,1)
     # - dazwischen entstanden Pausen, die Antworten klangen abgehackt.
     # Ohne Netz oder Guthaben spricht wie bisher Supertonic (F1).
+    # Orb-Ausdrucksstimme: eigener GPU-TTS-Server zuerst (Chatterbox Multilingual V3).
+    # Ohne erreichbaren Server bleibt die bestehende lokale/Cloud-Kette erhalten.
     engines:
+    - remote
+    - chatterbox
     - openai_tts
     - supertonic
     - sapi
@@ -951,10 +955,12 @@ voice:
       token_env: SPEECHGEN_TOKEN
       email_env: SPEECHGEN_EMAIL
     remote:
-      endpoint: ''
+      endpoint: ''  # Nach Start des Colab-Notebooks mit dessen HTTPS-Adresse befüllen.
       token_env: REMOTE_TTS_TOKEN
       speaker: 0
       timeout: 60
+      connect_timeout: 1.5
+      probe_cache_seconds: 30
 # Der taegliche Nachrichtenlauf: Schlagzeilen direkt von den Zeitungen (RSS)
 # und die Meldungslage je Thema (GDELT). Ohne diesen Abschnitt gab es die
 # Quellen zwar, aber niemanden, der sie ruft.
