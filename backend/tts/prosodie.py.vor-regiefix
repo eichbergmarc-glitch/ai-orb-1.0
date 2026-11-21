@@ -1,0 +1,597 @@
+"""Prosodie-Markup: Tempo, Pausen und Betonung, die das Sprachmodell setzt.
+
+Marc, 17.11.2026: Die Stimme klingt zu monoton. Der Sprechtakt regelt
+schon die Stille ZWISCHEN den Saetzen; dieses Modul regelt, was INNERHALB
+eines Satzes passiert.
+
+Das Sprachmodell schreibt dazu ein kleines Markup in seine Antwort:
+
+    <slow>…</slow>          ruhiger, langsamer sprechen
+    <emphasis>…</emphasis>  hervorheben (etwas langsamer, etwas lauter)
+    <breath>                kurzes Luftholen (Stille, kein Atemgeraeusch)
+    <pause 0.6>             Stille in Sekunden (auch 0,6 / 0.6s / sekunden=0.6)
+
+Aus dem Text wird eine Liste von Segmenten mit Stilangaben. Der
+TtsManager erzeugt jedes Segment einzeln und haengt sie zu EINER Datei
+zusammen - der Player und der Satzstrom merken davon nichts.
+
+Drei Grundsaetze, aus den Erfahrungen der letzten Tage:
+
+* **Nie vorlesen.** Was nach einem Tag aussieht, aber keiner ist, wird
+  trotzdem entfernt. Spitze Klammern gesprochen waeren schlimmer als
+  jede Monotonie.
+* **Nicht zerhacken.** Jeder Schnitt in einem Satz ist ein Bruch in der
+  Satzmelodie - die Stimme setzt neu an. Kurze Betonungen (ein, zwei
+  Woerter) werden deshalb NICHT abgetrennt, sondern der Stimme als
+  Regieanweisung mitgegeben. Gleichartige Nachbarn werden verschmolzen.
+* **Keine Klicks.** Jede Naht wird ein paar Millisekunden ein- und
+  ausgeblendet (17.11.: Klickgeraeusche bei der Sprechdynamik).
+"""
+
+from __future__ import annotations
+
+import random
+import re
+import threading
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Sequence
+
+# --- Markup ---------------------------------------------------------------------------
+
+#: Bekannte Tags (englisch wie im Prompt, deutsch als Nachsicht).
+_NAMEN = {
+    "slow": "slow", "langsam": "slow",
+    "emphasis": "emphasis", "betont": "emphasis", "em": "emphasis",
+    "breath": "breath", "atem": "breath",
+    "pause": "pause",
+}
+
+#: Ein Tag: <slow>, </slow>, <breath/>, <pause 0.5>, <pause sekunden=0,5s/>
+_TAG = re.compile(
+    r"<\s*(/?)\s*(slow|langsam|emphasis|betont|em|breath|atem|pause)\b([^<>]{0,40}?)\s*/?\s*>",
+    re.IGNORECASE,
+)
+#: Alles, was wie ein (auch kaputter) Prosodie-Tag aussieht - fuer das
+#: Entfernen. Faengt auch einen halben Tag am Ende ab ("<pau").
+_TAG_RESTE = re.compile(
+    r"<\s*/?\s*(?:slow|langsam|emphasis|betont|em|breath|atem|pause)\b[^<>]{0,40}>?"
+    r"|<\s*/?\s*(?:s|sl|slo|e|emp|emph|empha|b|br|bre|brea|p|pa|pau|paus)?\s*$",
+    re.IGNORECASE,
+)
+_ZAHL = re.compile(r"(\d+(?:[.,]\d+)?)")
+
+#: Laute (17.11.2026, Colab-Stimme): Lachen, Schmunzeln, Nachdenk-"Hmm" ...
+#: Nur der eigene Sprachserver (Kartoffelbox) kann sie hoerbar machen; fuer
+#: alle anderen Stimmen werden sie entfernt (siehe ``laute_entfernen``).
+LAUT_NAMEN = ("lachen", "schmunzeln", "hmm", "oh", "wow", "ach", "seufzen")
+_LAUT = re.compile(r"<\s*(?:" + "|".join(LAUT_NAMEN) + r")\s*/?\s*>", re.IGNORECASE)
+#: Alles Markup, das beim Aufbereiten des Textes geschuetzt werden muss.
+MARKUP = re.compile(_TAG.pattern + "|" + _LAUT.pattern, re.IGNORECASE)
+
+#: Wie oft ein offener Tag hoechstens in den naechsten Satz getragen wird.
+#: Vergisst das Modell ein </slow>, soll nicht die ganze Antwort schleppen.
+MAX_FORTSETZUNG = 2
+
+
+def hat_tags(text: str) -> bool:
+    """Ob der Text Prosodie-Markup enthaelt."""
+
+    return bool(_TAG.search(str(text or "")))
+
+
+def hat_laute(text: str) -> bool:
+    """Ob der Text Laut-Tags (<lachen> ...) enthaelt."""
+
+    return bool(_LAUT.search(str(text or "")))
+
+
+def laute_entfernen(text: str) -> str:
+    """Nur die Laut-Tags entfernen - fuer Stimmen, die sie nicht koennen."""
+
+    text = str(text or "")
+    if not _LAUT.search(text):
+        return text
+    ohne = re.sub(r"[ \t]{2,}", " ", _LAUT.sub(" ", text))
+    return re.sub(r" +([.,;:!?…])", r"\1", ohne).strip()
+
+
+def entfernen(text: str, *, laute_behalten: bool = False) -> str:
+    """Der Text ohne Markup - fuer Anzeige, Verlauf, PDF und Rueckfall.
+
+    ``laute_behalten`` laesst <lachen> & Co. stehen: Der Sprechweg braucht
+    sie bis zur Wahl der Stimme (erst dort wird entschieden, ob sie bleiben).
+    """
+
+    text = str(text or "")
+    if not laute_behalten:
+        text = laute_entfernen(text)
+    if not _TAG_RESTE.search(text):
+        return text  # Ohne Markup bleibt der Text Zeichen fuer Zeichen gleich.
+    ohne = _TAG_RESTE.sub(" ", text)
+    ohne = re.sub(r"[ \t]{2,}", " ", ohne)
+    # Ein entfernter Tag vor einem Satzzeichen hinterliess " ." - zusammenziehen.
+    ohne = re.sub(r" +([.,;:!?…])", r"\1", ohne)
+    return ohne.strip()
+
+
+def satzzeichen_nach_aussen(text: str) -> str:
+    """``<slow>Wichtig.</slow> Weiter`` -> ``<slow>Wichtig</slow>. Weiter``.
+
+    Sonst erkennt die Satzzerlegung hinter ``.</slow>`` kein Satzende, und
+    zwei Saetze laufen als ein Stueck in die Sprachausgabe.
+    """
+
+    return re.sub(
+        r"([.!?…]+)(\s*</\s*(?:slow|langsam|emphasis|betont|em)\s*>)",
+        lambda m: m.group(2).strip() + m.group(1),
+        str(text or ""),
+        flags=re.IGNORECASE,
+    )
+
+
+# --- Segmente ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Segment:
+    """Ein Stueck Rede mit einheitlichem Stil - oder eine Stille.
+
+    Ist ``text`` leer, ist das Segment eine Pause von ``pause`` Sekunden.
+    """
+
+    text: str = ""
+    langsam: bool = False
+    betont: bool = False
+    pause: float = 0.0
+    #: Kurz betonte Woerter IN diesem Segment (nur als Regieanweisung).
+    hervorheben: tuple[str, ...] = ()
+
+    @property
+    def ist_pause(self) -> bool:
+        return not self.text
+
+    def stil(self) -> tuple[bool, bool]:
+        return (self.langsam, self.betont)
+
+
+@dataclass
+class Einstellungen:
+    """Die Werte aus ``voice.output.prosodie`` - mit vorsichtigen Vorgaben."""
+
+    eingeschaltet: bool = True
+    tempo_langsam: float = 0.88
+    tempo_betont: float = 0.96
+    lautstaerke_betont: float = 1.12
+    atem_sekunden: float = 0.28
+    pause_hoechstens: float = 1.5
+    #: Betonungen mit weniger Woertern werden nicht abgetrennt.
+    betonung_mindestwoerter: int = 3
+    #: Zufaellige Streuung: Tempo +-3 %, Pausen +-15 %.
+    tempo_streuung: float = 0.03
+    pausen_streuung: float = 0.15
+    #: Naht-Ueberblendung gegen Klicks.
+    blende_ms: float = 8.0
+
+    @classmethod
+    def aus_config(cls, werte: dict[str, Any] | None) -> "Einstellungen":
+        werte = werte or {}
+        basis = cls()
+
+        def zahl(schluessel: str, vorgabe: float) -> float:
+            try:
+                return float(werte.get(schluessel, vorgabe))
+            except (TypeError, ValueError):
+                return vorgabe
+
+        return cls(
+            eingeschaltet=bool(werte.get("enabled", basis.eingeschaltet)),
+            tempo_langsam=max(0.75, min(1.0, zahl("tempo_langsam", basis.tempo_langsam))),
+            tempo_betont=max(0.8, min(1.05, zahl("tempo_betont", basis.tempo_betont))),
+            lautstaerke_betont=max(1.0, min(1.4, zahl("lautstaerke_betont", basis.lautstaerke_betont))),
+            atem_sekunden=max(0.1, min(0.6, zahl("atem_sekunden", basis.atem_sekunden))),
+            pause_hoechstens=max(0.2, min(3.0, zahl("pause_hoechstens", basis.pause_hoechstens))),
+            betonung_mindestwoerter=int(zahl("betonung_mindestwoerter", basis.betonung_mindestwoerter)),
+            tempo_streuung=max(0.0, min(0.08, zahl("tempo_streuung", basis.tempo_streuung))),
+            pausen_streuung=max(0.0, min(0.4, zahl("pausen_streuung", basis.pausen_streuung))),
+            blende_ms=max(0.0, min(30.0, zahl("blende_ms", basis.blende_ms))),
+        )
+
+
+def _pausenlaenge(argumente: str, hoechstens: float) -> float:
+    treffer = _ZAHL.search(argumente or "")
+    if not treffer:
+        return 0.4  # <pause> ohne Angabe: eine kurze, deutliche Pause
+    wert = float(treffer.group(1).replace(",", "."))
+    if "ms" in (argumente or "").lower():
+        wert /= 1000.0
+    return max(0.05, min(hoechstens, wert))
+
+
+def zerlegen(text: str, einstellungen: Einstellungen | None = None) -> list[Segment]:
+    """Wandelt markierten Text in Segmente um.
+
+    Offene Tags gelten bis zum Ende des Textes, ueberzaehlige schliessende
+    werden uebergangen - das Modell schreibt nicht immer sauber.
+    """
+
+    e = einstellungen or Einstellungen()
+    roh: list[Segment] = []
+    tiefe = {"slow": 0, "emphasis": 0}
+    puffer: list[str] = []
+
+    def abschliessen() -> None:
+        stueck = " ".join("".join(puffer).split())
+        puffer.clear()
+        if stueck:
+            roh.append(Segment(stueck, langsam=tiefe["slow"] > 0, betont=tiefe["emphasis"] > 0))
+
+    position = 0
+    for treffer in _TAG.finditer(str(text or "")):
+        puffer.append(text[position:treffer.start()])
+        position = treffer.end()
+        schliessend = bool(treffer.group(1))
+        name = _NAMEN[treffer.group(2).lower()]
+        if name in tiefe:
+            abschliessen()
+            if schliessend:
+                tiefe[name] = max(0, tiefe[name] - 1)
+            else:
+                tiefe[name] += 1
+            continue
+        if schliessend:
+            continue  # </pause> und </breath> bedeuten nichts
+        abschliessen()
+        dauer = e.atem_sekunden if name == "breath" else _pausenlaenge(treffer.group(3), e.pause_hoechstens)
+        roh.append(Segment(pause=dauer))
+    puffer.append(str(text or "")[position:])
+    abschliessen()
+
+    # Uebrig gebliebene Bruchstuecke ("<pau") nie vorlesen.
+    roh = [replace(s, text=entfernen(s.text, laute_behalten=True)) if s.text else s for s in roh]
+    roh = [s for s in roh if s.ist_pause or s.text]
+    return _glaetten(roh, e)
+
+
+def _glaetten(segmente: list[Segment], e: Einstellungen) -> list[Segment]:
+    """Kurze Betonungen einbetten, Gleiches verschmelzen, Randpausen streichen."""
+
+    # 1. Kurze Betonung -> Regiehinweis am Nachbarn statt eigener Synthese.
+    eingebettet: list[Segment] = []
+    for segment in segmente:
+        kurz = (
+            segment.betont
+            and not segment.ist_pause
+            and len(segment.text.split()) < e.betonung_mindestwoerter
+        )
+        if kurz:
+            segment = replace(segment, betont=False, hervorheben=(segment.text,))
+        eingebettet.append(segment)
+
+    # 1b. Fuehrende Satzzeichen ("." / ", weiter") an das vorige Sprechstueck
+    #     haengen: Ein Punkt allein ist keine Rede, und ein Komma am Anfang
+    #     laesst die Stimme falsch ansetzen.
+    angehaengt: list[Segment] = []
+    for segment in eingebettet:
+        if not segment.ist_pause and angehaengt and not angehaengt[-1].ist_pause:
+            treffer = re.match(r"^[\s.,;:!?…]+", segment.text)
+            if treffer:
+                zeichen = treffer.group(0).strip()
+                vorher = angehaengt[-1]
+                angehaengt[-1] = replace(vorher, text=vorher.text + zeichen)
+                segment = replace(segment, text=segment.text[treffer.end():].strip())
+                if not segment.text:
+                    continue
+        angehaengt.append(segment)
+
+    # 2. Gleichartige Nachbarn verschmelzen; Pausen addieren.
+    verschmolzen: list[Segment] = []
+    for segment in angehaengt:
+        if verschmolzen:
+            vorher = verschmolzen[-1]
+            if segment.ist_pause and vorher.ist_pause:
+                verschmolzen[-1] = replace(
+                    vorher, pause=min(e.pause_hoechstens, vorher.pause + segment.pause)
+                )
+                continue
+            if not segment.ist_pause and not vorher.ist_pause and segment.stil() == vorher.stil():
+                verschmolzen[-1] = replace(
+                    vorher,
+                    text=_verbinden(vorher.text, segment.text),
+                    hervorheben=vorher.hervorheben + segment.hervorheben,
+                )
+                continue
+        verschmolzen.append(segment)
+
+    # 3. Pausen am Rand des Satzes regelt der Sprechtakt - hier weg damit,
+    #    sonst schneidet der Player sie ohnehin ab.
+    while verschmolzen and verschmolzen[0].ist_pause:
+        verschmolzen.pop(0)
+    while verschmolzen and verschmolzen[-1].ist_pause:
+        verschmolzen.pop()
+    return verschmolzen
+
+
+def _verbinden(links: str, rechts: str) -> str:
+    if not links:
+        return rechts
+    if not rechts:
+        return links
+    if rechts[:1] in ",.;:!?…":
+        return f"{links}{rechts}"
+    return f"{links} {rechts}"
+
+
+def braucht_segmente(segmente: Sequence[Segment]) -> bool:
+    """Ob sich ein Zerlegen lohnt - oder der Satz am Stueck gesprochen wird."""
+
+    if len(segmente) > 1:
+        return True
+    return bool(segmente) and (segmente[0].langsam or segmente[0].betont)
+
+
+# --- Fortsetzung ueber Satzgrenzen -----------------------------------------------------
+
+
+class Fortsetzung:
+    """Traegt offene Tags in den naechsten Satz.
+
+    Der Satzstrom zerlegt die Antwort, BEVOR die Sprachausgabe sie sieht.
+    ``<slow>Erster Satz. Zweiter Satz.</slow>`` kaeme sonst als zwei Saetze
+    an, und nur der erste klaenge langsam.
+    """
+
+    def __init__(self) -> None:
+        self._offen: list[str] = []
+        self._getragen = 0
+        self._sperre = threading.Lock()
+
+    def zuruecksetzen(self) -> None:
+        with self._sperre:
+            self._offen = []
+            self._getragen = 0
+
+    def weiter(self, satz: str) -> str:
+        """Der Satz mit vorangestellten, noch offenen Tags."""
+
+        with self._sperre:
+            praefix = "".join(f"<{name}>" for name in self._offen)
+            offen = list(self._offen)
+            for treffer in _TAG.finditer(str(satz or "")):
+                name = _NAMEN[treffer.group(2).lower()]
+                if name not in ("slow", "emphasis"):
+                    continue
+                if treffer.group(1):
+                    if name in offen:
+                        offen.remove(name)
+                else:
+                    offen.append(name)
+            if offen:
+                self._getragen = self._getragen + 1 if self._offen else 1
+                if self._getragen > MAX_FORTSETZUNG:
+                    offen, self._getragen = [], 0
+            else:
+                self._getragen = 0
+            self._offen = offen
+            return praefix + str(satz or "")
+
+
+# --- Zufaellige Varianz ------------------------------------------------------------------
+
+_zufall = random.Random()
+
+
+def tempo_streuen(tempo: float, streuung: float, zufall: random.Random | None = None) -> float:
+    """Tempo mit kleiner Zufallsabweichung, auf 0,01 gerundet.
+
+    Die Rundung haelt den Zwischenspeicher der Stimme brauchbar: Ein
+    haeufiger Satz faellt auf eine von wenigen Stufen statt auf unendlich
+    viele.
+    """
+
+    if streuung <= 0:
+        return tempo
+    z = zufall or _zufall
+    return round(tempo * (1.0 + z.uniform(-streuung, streuung)), 2)
+
+
+def pause_streuen(sekunden: float, streuung: float, zufall: random.Random | None = None) -> float:
+    if streuung <= 0 or sekunden <= 0:
+        return sekunden
+    z = zufall or _zufall
+    return max(0.0, sekunden * (1.0 + z.uniform(-streuung, streuung)))
+
+
+# --- Regie fuer Stimmen mit Anweisungen (OpenAI) ---------------------------------------
+
+
+def regie_fuer(segment: Segment) -> str:
+    """Eine knappe Regieanweisung fuer dieses Segment - oder leer."""
+
+    teile: list[str] = []
+    if segment.langsam:
+        teile.append("Sprich diesen Teil langsamer und ruhiger, mit Gewicht, ohne Silben zu dehnen.")
+    if segment.betont:
+        teile.append("Hebe diesen Teil deutlich hervor - mit Nachdruck, aber natuerlich.")
+    for wort in segment.hervorheben[:3]:
+        teile.append(f"Betone «{wort}» hoerbar, ohne es abzusetzen.")
+    return " ".join(teile)
+
+
+def _kurz(text: str, woerter: int = 6) -> str:
+    teile = entfernen(text).split()
+    return " ".join(teile[:woerter]) + (" …" if len(teile) > woerter else "")
+
+
+def regie_fuer_satz(segmente: Sequence[Segment]) -> str:
+    """Die ganze Gestaltung eines Satzes als EINE Regieanweisung.
+
+    19.11.2026: Fuer Stimmen, die Anweisungen verstehen (OpenAI), wird der
+    Satz nicht mehr in Stuecke geschnitten. Jedes Stueck setzte die
+    Satzmelodie neu an - das klang gestueckelt statt menschlich. Stattdessen
+    bekommt die Stimme den ganzen Satz und dazu, wo sie langsamer wird,
+    was sie betont und wo sie Luft holt.
+    """
+
+    hinweise: list[str] = []
+    for index, segment in enumerate(segmente):
+        if segment.ist_pause:
+            folgend = next((s for s in segmente[index + 1:] if not s.ist_pause), None)
+            if folgend is None:
+                continue
+            anfang = _kurz(folgend.text, 3)
+            if segment.pause <= 0.3:
+                hinweise.append(f"vor «{anfang}» kurz und leise Luft holen")
+            else:
+                hinweise.append(f"vor «{anfang}» eine spuerbare Pause von etwa {segment.pause:.1f} Sekunden")
+            continue
+        if segment.langsam:
+            hinweise.append(f"«{_kurz(segment.text)}» langsamer und mit Gewicht")
+        if segment.betont:
+            hinweise.append(f"«{_kurz(segment.text)}» mit Nachdruck")
+        for wort in segment.hervorheben[:3]:
+            hinweise.append(f"«{wort}» betonen")
+    if not hinweise:
+        return ""
+    return (
+        "Gestaltung dieses Satzes: " + "; ".join(hinweise[:5]) + ". "
+        "Den Satz trotzdem in einem Bogen sprechen - die Stellen nicht absetzen oder vorlesen."
+    )
+
+
+# --- Zusammenfuegen ---------------------------------------------------------------------
+
+
+def wavs_verbinden(
+    teile: Sequence[tuple[Path | None, float, float]],
+    ziel: Path,
+    *,
+    blende_ms: float = 8.0,
+    stille_schwelle: float = 0.008,
+    rand_ms: float = 25.0,
+) -> float:
+    """Haengt WAV-Dateien und Pausen zu einer Datei zusammen.
+
+    Args:
+        teile: Folge aus (Datei, Pause in Sekunden, Lautstaerkefaktor).
+            Ist die Datei ``None``, steht der Eintrag fuer reine Stille.
+        ziel: Die entstehende WAV-Datei (16 Bit).
+        blende_ms: Ein-/Ausblenden an jeder Naht gegen Klicks.
+        stille_schwelle: Unter diesem Pegel gilt ein Rand als Stille.
+        rand_ms: Wie viel Rand-Stille je Segment stehen bleibt.
+
+    Returns:
+        Die Dauer in Sekunden.
+
+    Raises:
+        ValueError, OSError: Wenn eine Datei nicht lesbar ist. Der Aufrufer
+            faellt dann auf den Satz am Stueck zurueck.
+    """
+
+    import wave
+
+    import numpy as np
+
+    rate = 0
+    kanaele = 1
+    stuecke: list[Any] = []
+
+    def lesen(pfad: Path) -> tuple[Any, int, int]:
+        with wave.open(str(pfad), "rb") as h:
+            breite = h.getsampwidth()
+            r = h.getframerate()
+            k = h.getnchannels()
+            roh = h.readframes(h.getnframes())
+        if breite == 2:
+            daten = np.frombuffer(roh, dtype="<i2").astype(np.float32) / 32768.0
+        elif breite == 4:
+            daten = np.frombuffer(roh, dtype="<i4").astype(np.float32) / 2147483648.0
+        else:
+            raise ValueError(f"Nicht unterstuetzte Samplebreite {breite}")
+        return daten.reshape(-1, k), r, k
+
+    for pfad, pause, faktor in teile:
+        if pfad is None:
+            stuecke.append(("stille", pause))
+            continue
+        daten, r, k = lesen(pfad)
+        if not rate:
+            rate, kanaele = r, k
+        if k != kanaele:
+            daten = daten.mean(axis=1, keepdims=True)
+            if kanaele > 1:
+                daten = np.repeat(daten, kanaele, axis=1)
+        if r != rate and len(daten):
+            # Lineare Umrechnung - nur fuer den seltenen Stimmwechsel mitten im Satz.
+            neu = int(round(len(daten) * rate / r))
+            alt_x = np.linspace(0.0, 1.0, num=len(daten))
+            neu_x = np.linspace(0.0, 1.0, num=max(1, neu))
+            daten = np.stack([np.interp(neu_x, alt_x, daten[:, c]) for c in range(kanaele)], axis=1)
+        stuecke.append(("ton", daten.astype(np.float32) * float(faktor)))
+        if pause > 0:
+            stuecke.append(("stille", pause))
+
+    if not rate:
+        raise ValueError("Keine Tondatei zum Verbinden.")
+
+    blende = int(rate * blende_ms / 1000.0)
+    rand = int(rate * rand_ms / 1000.0)
+    ausgabe: list[Any] = []
+    for art, inhalt in stuecke:
+        if art == "stille":
+            ausgabe.append(np.zeros((int(rate * float(inhalt)), kanaele), dtype=np.float32))
+            continue
+        daten = inhalt
+        # Rand-Stille kuerzen: Jede Stimme legt eigene Polster an; sonst
+        # waeren die Pausen laenger als gewollt und je Stimme verschieden.
+        laut = np.where(np.abs(daten).max(axis=1) > stille_schwelle)[0]
+        if len(laut):
+            anfang = max(0, int(laut[0]) - rand)
+            ende = min(len(daten), int(laut[-1]) + 1 + rand)
+            daten = daten[anfang:ende].copy()
+        if blende and len(daten) > 2 * blende:
+            rampe = np.linspace(0.0, 1.0, blende, dtype=np.float32)[:, None]
+            daten[:blende] *= rampe
+            daten[-blende:] *= rampe[::-1]
+        ausgabe.append(daten)
+
+    gesamt = np.concatenate(ausgabe, axis=0) if ausgabe else np.zeros((0, kanaele), np.float32)
+    gesamt = np.clip(gesamt, -0.98, 0.98)
+    pcm = (gesamt * 32767.0).astype("<i2")
+    ziel.parent.mkdir(parents=True, exist_ok=True)
+    zwischen = ziel.with_suffix(".teil")
+    with wave.open(str(zwischen), "wb") as h:
+        h.setnchannels(kanaele)
+        h.setsampwidth(2)
+        h.setframerate(rate)
+        h.writeframes(pcm.tobytes())
+    zwischen.replace(ziel)
+    return len(gesamt) / float(rate)
+
+
+# --- Anweisung an das Sprachmodell ------------------------------------------------------
+
+PROMPT_HINWEIS = (
+    "SPRECHWEISE (Pflicht bei gesprochenen Antworten): Deine Antwort wird vorgelesen. Damit die "
+    "Stimme lebendig klingt und nicht monoton, setzt du Sprech-Markup. Es wird nicht vorgelesen.\n"
+    "- <slow>…</slow> fuer den Gedanken, der Gewicht hat oder Ruhe braucht.\n"
+    "- <emphasis>…</emphasis> fuer das Wort oder die kurze Wendung, auf die es ankommt.\n"
+    "- <breath> vor einem neuen Gedanken mitten in einem laengeren Satz.\n"
+    "- <pause 0.5> fuer eine bewusste Kunstpause (Sekunden, hoechstens 1.5).\n"
+    "- Laute, sehr sparsam und nur wenn es wirklich passt: <schmunzeln> oder <lachen> bei etwas "
+    "Lustigem, <hmm> beim Nachdenken, <oh> bei Ueberraschung, <ach> bei Bedauern. Hoechstens "
+    "einer je Antwort, oft keiner; nie in ernsten Antworten.\n"
+    "Regeln: Ab zwei Saetzen setzt du IMMER mindestens eine und hoechstens drei Markierungen, "
+    "bei einem einzigen kurzen Satz hoechstens eine. Schliesse Tags vor dem Satzzeichen, nie "
+    "ueber Satzgrenzen hinweg. Keine Pausen am Satzanfang oder -ende. Nie in Code, "
+    "Zahlenkolonnen oder Werkzeugaufrufen.\n"
+    "Beispiel: Das ist <emphasis>der eigentliche Punkt</emphasis>. <breath> Und genau deshalb "
+    "<slow>lohnt es sich, hier genauer hinzuschauen</slow>."
+)
+
+#: Kurzer Vermerk an der aktuellen Frage - steht direkt vor der Antwort.
+FRAGE_VERMERK = (
+    "(Gesprochene Antwort: setze Sprech-Markup wie in der Anweisung SPRECHWEISE - "
+    "<emphasis>, <slow>, <breath>, <pause 0.4> - ab zwei Saetzen mindestens eine, hoechstens "
+    "drei Markierungen. Das Markup wird nicht vorgelesen.)"
+)

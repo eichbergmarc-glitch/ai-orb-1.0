@@ -207,6 +207,17 @@ def build_router(runtime: Runtime) -> ApiRouter:
 
         return {"messages": runtime.orchestrator.conversations.history()}
 
+    def chat_verlauf(params: dict[str, Any]) -> dict[str, Any]:
+        """Der Verlauf der Anfragen und Antworten fuer das Chatfenster (16.11.2026)."""
+
+        try:
+            anzahl = int(str((params or {}).get("anzahl", "80")).strip() or 80)
+        except ValueError:
+            anzahl = 80
+        verlauf = getattr(runtime, "chatverlauf", None)
+        return {"eintraege": verlauf.letzte(anzahl) if verlauf is not None else []}
+
+    router.get("/chat/verlauf", chat_verlauf)
     router.post("/ask", ask)
     router.post("/conversation/end", end_conversation)
     router.get("/conversation/history", history)
@@ -622,8 +633,14 @@ def build_router(runtime: Runtime) -> ApiRouter:
                 str(name).lower() == "x-orb-ausgabe" and str(wert).strip().lower() == "pc"
                 for name, wert in (_kopfzeilen or {}).items()
             )
+            kann_offen = any(
+                str(name).lower() == "x-orb-offen" and str(wert).strip() == "1"
+                for name, wert in (_kopfzeilen or {}).items()
+            )
             return runtime.run(
-                runtime.stimme_vom_geraet(pfad, dauer=dauer, ausgabe_pc=ausgabe_pc),
+                runtime.stimme_vom_geraet(
+                    pfad, dauer=dauer, ausgabe_pc=ausgabe_pc, kann_offen=kann_offen
+                ),
                 timeout=300.0,
             )
         finally:
@@ -692,7 +709,11 @@ def build_router(runtime: Runtime) -> ApiRouter:
         ziel = dokument_pfad(str(params.get("id", "")).strip())
         if ziel is None:
             return {"_status": 404, "_bytes": b"", "_type": "", "error": "unbekannt"}
-        typ = "application/pdf" if ziel.suffix.lower() == ".pdf" else "application/octet-stream"
+        typ = {
+            ".pdf": "application/pdf",
+            # Uebersichtsseiten (16.11.2026) - von Synapse selbst erzeugt.
+            ".html": "text/html; charset=utf-8",
+        }.get(ziel.suffix.lower(), "application/octet-stream")
         return {"_bytes": ziel.read_bytes(), "_type": typ, "_status": 200}
 
     router.get("/dokument", dokument)
@@ -711,6 +732,17 @@ def build_router(runtime: Runtime) -> ApiRouter:
         return {"ok": True}
 
     router.post("/stimme/meldung", stimme_meldung)
+
+    def stimme_standort(body: dict[str, Any]) -> dict[str, Any]:
+        """Das iPhone meldet seine GPS-Position (17.11.2026) - nur im Arbeitsspeicher."""
+
+        from backend.tools.handy_tools import standort_merken
+
+        body = body or {}
+        ok = standort_merken(body.get("breite"), body.get("laenge"), body.get("genauigkeit", 0))
+        return {"ok": ok}
+
+    router.post("/stimme/standort", stimme_standort)
 
     def stimme_version(_: dict[str, Any]) -> dict[str, Any]:
         """Fingerabdruck der Handy-Oberflaeche (12.11.2026).
@@ -795,6 +827,92 @@ def build_router(runtime: Runtime) -> ApiRouter:
     router.post("/stimme/vorlesung/pause", stimme_vorlesung_pause)
     router.post_raw("/stimme/aufnahme", stimme_aufnahme)
     router.get("/stimme/ton", stimme_ton)
+
+    # --- Kurzbefehl (iPhone gesperrt) ----------------------------------------
+    #
+    # 17.11.2026: Bei gesperrtem iPhone darf keine App und keine Webseite das
+    # Mikrofon benutzen - das laesst iOS nicht zu. Siri darf es. Der Weg ist
+    # deshalb ein Apple-Kurzbefehl: Siri diktiert, der Kurzbefehl schickt den
+    # TEXT hierher und spielt die Antwort ab, die als EINE Tondatei zurueck-
+    # kommt (Kurzbefehle koennen keine Stuecke nacheinander abholen).
+    #
+    #   GET /stimme/kurzbefehl?text=...            -> audio/wav (Synapses Stimme)
+    #   GET /stimme/kurzbefehl?text=...&format=text -> {"antwort": "..."}
+
+    def stimme_kurzbefehl(params: dict[str, Any]) -> dict[str, Any]:
+        import time as _zeit
+
+        from backend.tts import prosodie as _prosodie
+        from backend.tts.base_engine import DATEI_NOETIG
+
+        text = " ".join(str((params or {}).get("text", "")).split())[:600]
+        nur_text = str((params or {}).get("format", "")).strip().lower() == "text"
+        if not text:
+            return {"_status": 400, "_bytes": b"", "_type": "", "error": "kein text"}
+        logger.info("Frage per Kurzbefehl: %s", text)
+
+        ergebnis = runtime.run(runtime._geraet_beantworten(text), timeout=240.0)
+        antwort = _prosodie.entfernen(str(ergebnis.get("antwort", "") or ""))
+        auftrag = str(ergebnis.get("auftrag", "") or "")
+
+        if nur_text:
+            # Die Antwort entsteht satzweise ("offen"): auf den letzten Satz
+            # warten und den Text aus den Stuecken zusammensetzen.
+            frist = _zeit.monotonic() + 180.0
+            eintrag = getattr(runtime, "_sprechauftraege", {}).get(auftrag) if auftrag else None
+            while eintrag is not None and eintrag.get("offen") and _zeit.monotonic() < frist:
+                _zeit.sleep(0.25)
+            if eintrag is not None and eintrag.get("teile"):
+                antwort = _prosodie.entfernen(" ".join(str(t) for t in eintrag["teile"]))
+            return {"frage": text, "antwort": antwort}
+
+        ordner = Path(runtime.voice.tts.output_directory)
+        dateien: list[Path] = []
+        if auftrag:
+            # Alle Stuecke einsammeln - auch die, die erst noch entstehen.
+            frist = _zeit.monotonic() + 180.0
+            nummer = 0
+            while _zeit.monotonic() < frist:
+                stand, name = runtime.sprechstueck(auftrag, nummer)
+                if stand == "da":
+                    dateien.append(ordner / name)
+                    nummer += 1
+                elif stand == "kommt":
+                    _zeit.sleep(0.25)
+                elif stand == "nichts":
+                    nummer += 1  # ein gescheitertes Stueck reisst den Rest nicht mit
+                else:
+                    break
+        if not dateien and antwort:
+            # Keine Stuecke (z. B. Bedienbefehl): die Antwort am Stueck sprechen.
+            async def _sprechen() -> Any:
+                marke = DATEI_NOETIG.set(True)
+                try:
+                    return await runtime.voice.tts.speak(antwort[:800], emotion="freundlich")
+                finally:
+                    DATEI_NOETIG.reset(marke)
+
+            gesprochen = runtime.run(_sprechen(), timeout=120.0)
+            if gesprochen.audio_path is not None and gesprochen.audio_path.exists():
+                dateien.append(gesprochen.audio_path)
+        dateien = [d for d in dateien if d.is_file()]
+        if not dateien:
+            return {"_status": 404, "_bytes": b"", "_type": "", "error": "kein ton"}
+
+        ziel = ordner / f"kurzbefehl-{auftrag or 'einzeln'}-{int(_zeit.time())}.wav"
+        teile: list[tuple[Path | None, float, float]] = []
+        for index, datei in enumerate(dateien):
+            teile.append((datei, 0.0, 1.0))
+            if index + 1 < len(dateien):
+                teile.append((None, 0.22, 1.0))
+        try:
+            _prosodie.wavs_verbinden(teile, ziel)
+        except Exception:  # noqa: BLE001 - dann wenigstens das erste Stueck.
+            logger.exception("Kurzbefehl: Stuecke liessen sich nicht verbinden.")
+            ziel = dateien[0]
+        return {"_bytes": ziel.read_bytes(), "_type": "audio/wav", "_status": 200}
+
+    router.get("/stimme/kurzbefehl", stimme_kurzbefehl)
 
     router.get("/voice", voice_status)
     router.post("/voice/start", voice_start)

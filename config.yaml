@@ -43,7 +43,7 @@ window:
 orb:
   # Animation (13.11.2026): drei_kugeln, synaptix, energie oder klassisch.
   # Wechsel per Sprache: "Hey Synapse, zeig die drei Kugeln" / "... das Gehirn".
-  darstellung: synaptix   # Kugeln: "Hey Synapse, zeig die drei Kugeln"
+  darstellung: nebel
   scale: 0.4
   energie: true
   synaptix: true
@@ -189,6 +189,10 @@ ai:
   # gpt-4.1-mini 0,49 s bis zum ersten Wort, gpt-4o-mini 0,66 s - schneller
   # als alles andere. OpenRouter (Gratis-Kontingent 50/Tag, heute
   # aufgebraucht) und LM Studio bleiben als Ersatz dahinter.
+  # Wettlauf (14.11.2026): Die ersten zwei Cloud-Modelle (gpt-4.1-mini und
+  # gpt-4o-mini) bekommen jede Frage gleichzeitig - wer zuerst antwortet,
+  # spricht. Faengt Haenger eines Dienstes ab. 0 = aus.
+  wettlauf: 2
   primary:
     engine: openai
     preset: openai
@@ -647,7 +651,12 @@ evolution:
 system:
   restart_command: ''
 security:
-  mode: offen
+  # 15.11.2026: geschuetzt statt offen. "Aendere die Animation auf das Gehirn"
+  # hatte im offenen Modus ohne Rueckfrage eine Codeaenderung am Orb gestartet.
+  # Kritische Rechte (eigener Code, Befehle, Loeschen, Mail senden ...) werden
+  # jetzt jedes Mal erfragt; Alltaegliches ist unten vorab freigegeben.
+  # Zurueck: mode: offen (Sicherung: config.yaml.vor-geschuetzt).
+  mode: geschuetzt
   consent_timeout_seconds: 120
   audit_enabled: true
   never_allow: []
@@ -658,6 +667,14 @@ security:
   - screen_capture
   - microphone
   - network
+  - launch_application
+  - list_directory
+  - search_files
+  - read_email
+  - read_calendar
+  - write_calendar
+  - read_bookmarks
+  - music
   audit_max_entries: 5000
   biometric_identity:
     provider: windows_hello
@@ -690,10 +707,10 @@ voice:
   # AUS seit 12.11.2026: Der "Stopp"-Spaeher rechnete waehrend jeder Antwort
   # pausenlos (1,2 s Ton = bis 2,9 s Rechenzeit) - die Stimme stockte.
   # Unterbrechen: Escape-Taste, auf dem Handy der Pause-Knopf.
-  stop_spaeher_aktiv: false   # 13.11. Ruecknahme: zuerst Tempo pruefen
+  stop_spaeher_aktiv: true   # 21.11.2026: Stop-Wort wieder an, ueber den Cloud-Spaeher (keine lokale Rechenlast)
   # 13.11.2026: "Stop Synapse" wieder an - der Spaeher erkennt jetzt in der
   # Cloud (keine Rechenlast am PC, ca. 0,1 Rappen pro Minute Sprechzeit).
-  stop_spaeher_cloud: false
+  stop_spaeher_cloud: true   # 21.11.2026: Mithorchen in der Cloud -> Stimme bleibt fluessig
   stop_initial_prompt: Hallo Synapse. Hey Synapse.
   stop_model_size: base
   interrupt_key: Escape
@@ -761,6 +778,13 @@ voice:
       # Ortsnamen und Schweizer Klang. Kommt nur dieser Hinweis zurueck,
       # wird er verworfen.
       prompt: 'Synapse, Melchnau, Giuch, Ostermundigen, Langenthal, Bern, Roggwil, Markus Gabriel, Neuer Realismus, Philosophie, Vorlesung.'
+      # Schneller vorweg (14.11.2026): Groq Whisper, kostenlos und ohne Karte
+      # (console.groq.com). Greift erst, wenn GROQ_API_KEY in der .env steht;
+      # sonst und bei jedem Fehler uebernimmt OpenAI wie bisher.
+      vorweg:
+      - base_url: https://api.groq.com/openai/v1
+        api_key_env: GROQ_API_KEY
+        model: whisper-large-v3-turbo
       models:
       - gpt-4o-mini-transcribe   # 13.11.: schneller als gpt-4o-transcribe
       - gpt-4o-transcribe
@@ -828,6 +852,10 @@ voice:
     # CPU brauchte fuer einen Satz fast so lange, wie er dauert (RTF 0,9-1,1)
     # - dazwischen entstanden Pausen, die Antworten klangen abgehackt.
     # Ohne Netz oder Guthaben spricht wie bisher Supertonic (F1).
+    # 20.11.2026: Zuverlaessige OpenAI-Stimme 'marin' als Hauptstimme. Die
+    # Colab-Stimme (remote) ist bewusst NICHT aktiv - sie brabbelte am Satz-
+    # anfang und haengt an einem laufenden Colab-Notebook. Zum Reaktivieren
+    # 'remote' wieder an den Anfang der engines-Liste setzen.
     engines:
     - openai_tts
     - supertonic
@@ -847,12 +875,45 @@ voice:
     anlauf_ms: 300   # 12.11.2026: Stille vor der ersten Silbe nach einer Pause - sonst fehlt der Anfang
     trailing_silence_ms: 70
     sentence_pause_ms: 60
+    # Sprechtakt (17.11.2026): Pause zwischen Saetzen nach Satzzeichen und
+    # Satzlaenge (nach einer Frage ~0,34 s, nach einem Komma ~0,07 s, vor
+    # "Aber/Also" etwas mehr). false = immer sentence_pause_ms.
+    sprechtakt: true
     human_timing:
       enabled: true
       fillers_enabled: false
       filler_cooldown_seconds: 120
       minimum_words: 9
       adapt_to_user_rhythm: true
+    # Sprechdynamik (16.11.2026): Die Stimme bekommt je Satz hoechstens EINE
+    # kleine Zutat - Atempause, Denkpause, Raeuspern, Schmunzeln - und meistens
+    # keine. Wirkt nur mit der OpenAI-Stimme. Klingt etwas aufgesetzt, den
+    # einzelnen Schalter auf false stellen; enabled: false schaltet alles ab.
+    sprechdynamik:
+      # 17.11.2026 AUS: Marc hoerte danach Klicken und Stoergeraeusche
+      # ("Mach das rueckgaengig"). Zum Wiedereinschalten auf true stellen.
+      enabled: false
+      atempausen: true
+      raeuspern: true
+      lachen: true
+      raeuspern_abstand_sekunden: 600
+      lachen_abstand_sekunden: 60
+    # Prosodie (17.11.2026): Das Sprachmodell setzt sparsam <slow>,
+    # <emphasis>, <breath> und <pause 0.5> in gesprochene Antworten. Jedes
+    # Stueck wird mit eigenem Tempo/Pegel erzeugt und zu EINER Datei
+    # verbunden; Naehte werden ein-/ausgeblendet (keine Klicks). Das Markup
+    # wird nie vorgelesen und nie angezeigt. enabled: false schaltet es ab.
+    prosodie:
+      enabled: true
+      tempo_langsam: 0.88
+      tempo_betont: 0.96
+      lautstaerke_betont: 1.12
+      atem_sekunden: 0.28
+      pause_hoechstens: 1.5
+      betonung_mindestwoerter: 3   # kuerzere Betonung = nur Regiehinweis, kein Schnitt
+      tempo_streuung: 0.03         # +-3 % Zufall im Tempo (0 = aus)
+      pausen_streuung: 0.15        # +-15 % Zufall in Pausen (0 = aus)
+      blende_ms: 8
     emotions_enabled: true
     cache_enabled: true
     failure_cooldown_seconds: 90
@@ -908,14 +969,24 @@ voice:
       voice: marin   # weiblich (cedar ist maennlich)
       api_key_env: OPENAI_API_KEY
       timeout: 25
-      instructions: Sprich auf Deutsch wie ein spontaner, intelligenter Mensch in einem direkten Gespraech.
-        Natuerlich, warm, praesent und praezise. Du bist ein erstklassiger Mentor und Professor, aber
-        ohne akademisches Gehabe. Klinge locker und reagiere unmittelbar, nicht wie ein Lehrbuch, Nachrichtensprecher,
-        Hoerbuch oder Kundendienst. Variiere Satzmelodie, Rhythmus und Tempo unaufdringlich. Kurze Saetze
-        und Satzfragmente duerfen impulsiv klingen. Setze kleine natuerliche Pausen nur an Sinnstellen;
-        nie lange, dramatische oder gleichfoermige Pausen. Ein trockenes, leicht ironisches Schnauben
-        oder kurzes Lachen darf hoerbar werden, wenn der Text es wirklich traegt, aber nie als Ritual.
-        Keine uebertriebene Freundlichkeit, kein Schauspiel und kein Roboterklang.
+      # 19.11.2026: gegliedert wie die Vorlagen auf openai.fm (Stimme, Ton,
+      # Tempo, Pausen, Gefuehl, Atem). Die Fassung davor steht in
+      # config.yaml.vor-menschlich.
+      instructions: >-
+        Sprache: Deutsch, natuerlich und unangestrengt, wie im echten Gespraech.
+        Stimme: warm, wach und nah - eine kluge Frau, die einem guten Freund etwas erklaert;
+        Mentorin und Professorin, aber ohne akademisches Gehabe.
+        Ton: locker und zugewandt, mit leiser Ironie, wo es passt; nie belehrend, nie
+        Kundendienst, nie Nachrichtensprecherin oder Hoerbuch.
+        Tempo: lebendig wechselnd - Wichtiges etwas langsamer und mit Gewicht, Nebensaechliches
+        und Aufzaehlungen zuegiger; kurze Saetze duerfen spontan und impulsiv klingen.
+        Satzmelodie: nicht jeden Satz gleich absenken; Fragen hoerbar heben, Gedanken auch mal
+        offen enden lassen, Betonung auf das eine Wort legen, auf das es ankommt.
+        Pausen: kurze, natuerliche Pausen an Sinnstellen, wie beim Nachdenken mitten im Satz;
+        nie im gleichmaessigen Takt, nie lange oder dramatisch.
+        Gefuehl: hoerbar beteiligt - Neugier, Freude, Bedauern duerfen anklingen, ohne Schauspiel.
+        Atem und Laute: gelegentlich ein leises Luftholen vor einem laengeren Gedanken; ein
+        kurzes Schmunzeln oder trockenes Lachen nur, wenn der Text es wirklich traegt.
     chatterbox:
       reference_audio: data/voice/orb-reference.wav
       language: de
@@ -951,10 +1022,15 @@ voice:
       token_env: SPEECHGEN_TOKEN
       email_env: SPEECHGEN_EMAIL
     remote:
-      endpoint: ''
+      # Colab-Notebook server/AI_Orb_Stimme_Kartoffelbox.ipynb meldet sich per
+      # Tailscale unter diesem festen Namen an (Ersatz: trycloudflare-Adresse).
+      endpoint: http://orb-stimme.tailb73873.ts.net:8800
       token_env: REMOTE_TTS_TOKEN
       speaker: 0
-      timeout: 60
+      timeout: 15
+      connect_timeout: 1.5
+      probe_cache_seconds: 60
+      laute: true   # <lachen>, <schmunzeln>, <hmm> ... nur diese Stimme kann sie
 # Der taegliche Nachrichtenlauf: Schlagzeilen direkt von den Zeitungen (RSS)
 # und die Meldungslage je Thema (GDELT). Ohne diesen Abschnitt gab es die
 # Quellen zwar, aber niemanden, der sie ruft.

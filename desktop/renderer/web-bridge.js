@@ -190,6 +190,14 @@
     var behaelter = document.getElementById("chat-messages");
     if (!behaelter || !text) return;
 
+    // Dieselbe Zeile kommt seit 16.11.2026 auch als Verlaufsmeldung vom
+    // Kern. Steht sie unter den letzten schon da, nicht verdoppeln.
+    var klasse = "chat-message--" + (wer === "user" ? "user" : "orb");
+    var letzte = Array.prototype.slice.call(behaelter.children, -6);
+    for (var i = 0; i < letzte.length; i++) {
+      if (letzte[i].classList.contains(klasse) && letzte[i].textContent === text) return;
+    }
+
     var zeile = document.createElement("div");
     zeile.className = "chat-message chat-message--" + (wer === "user" ? "user" : "orb");
     zeile.textContent = text;

@@ -63,6 +63,26 @@ def parse_development_request(text: str) -> str | None:
         r"\b(implementier|setz|ändere|aendere|pass|beheb|reparier|baue|mach)\w*\b", compact
     ):
         return None
+    # 17.11.2026: "Du hast die Stimme umgeschaltet, dass sie klickt. Mach das
+    # rueckgaengig." loeste eine Codeaenderung aus - 40 s, Rueckfrage, am Ende
+    # verworfen. Zwei Fehler steckten darin:
+    #
+    # * Verb und Ziel standen in VERSCHIEDENEN Saetzen ("Stimme" im ersten,
+    #   "Mach" im zweiten). Ein Auftrag nennt beides im selben Satz.
+    # * Wer etwas rueckgaengig haben will oder schildert, was der Orb getan
+    #   hat, gibt keinen Bauauftrag. Fuers Zuruecknehmen gibt es ein eigenes
+    #   Werkzeug, das das Modell waehlen kann.
+    if re.search(
+        r"r[uü]ckg[aä]ngig|zur[uü]ck\s*(?:nehmen|setzen|stellen)|\bwie\s+vorher\b", compact
+    ) or re.match(r"(?:synapse,?\s+)?du\s+(?:hast|hattest)\b", compact):
+        return None
+    saetze = [teil.strip() for teil in re.split(r"[.!;]+", compact) if teil.strip()]
+    return text.strip() if any(_ist_auftragssatz(satz) for satz in saetze) else None
+
+
+def _ist_auftragssatz(compact: str) -> bool:
+    """Ob EIN Satz Umsetzungsverb und Ziel aus dem Orb-Kontext enthaelt."""
+
     action = re.search(
         r"\b(implementier\w*|setz\w*|ändere\w*|aendere\w*|pass\w*\s+an|"
         r"beheb\w*|reparier\w*|entwickl\w*|programmier\w*|baue\w*|füg\w*\s+hinzu|"
@@ -81,7 +101,7 @@ def parse_development_request(text: str) -> str | None:
         r"cmd|powershell|oberfläche|oberflaeche|backend|renderer)\b",
         compact,
     )
-    return text.strip() if action and target else None
+    return bool(action and target)
 
 
 class LiveDevelopmentService:

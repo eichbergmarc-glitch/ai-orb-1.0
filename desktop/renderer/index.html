@@ -19,7 +19,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data: blob:; manifest-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*;"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data: blob:; manifest-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*; frame-src https://maps.google.com https://www.google.com;"
     />
     <title>AI-Orb</title>
     <!--
@@ -62,7 +62,7 @@
       <div id="orb-info" class="orb-info" aria-live="polite">Bereit</div>
     </nav>
     <section id="chat-panel" class="chat-panel" hidden aria-label="Chat mit AI-Orb">
-      <header><strong>AI-Orb Chat</strong><button id="chat-close" type="button" aria-label="Chat schließen">×</button></header>
+      <header><strong>AI-Orb Chat</strong><span class="chat-kopf-knoepfe"><button id="chat-groesse" type="button" aria-label="Chat auf den ganzen Bildschirm vergrössern" title="Ganzer Bildschirm">⛶</button><button id="chat-close" type="button" aria-label="Chat schließen">×</button></span></header>
       <div id="chat-messages" class="chat-messages" aria-live="polite">
         <div class="chat-message chat-message--orb">Hallo! Wie kann ich dir helfen?</div>
       </div>

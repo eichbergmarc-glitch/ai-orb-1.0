@@ -452,6 +452,13 @@ class VorlesungsSession:
         klein = _normalisieren(text)
         if not klein:
             return ""
+        # "Welche Vorlesungen gibt es?" will eine Uebersicht sehen und keine
+        # Vorlesung hoeren (16.11.2026). Ohne diese Zeile begann darauf eine
+        # Vorlesung - das Wort allein reichte als Startzeichen.
+        from backend.tools.uebersicht_tools import uebersichtswunsch
+
+        if uebersichtswunsch(text):
+            return ""
         worte = klein.split()
         hat_lehrwort = bool(
             _enthaelt_vorlesungswort(klein)

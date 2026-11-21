@@ -132,6 +132,11 @@ const api = {
     ipcRenderer.send("window:chat-focus", { active });
   },
 
+  /** Vergroessert das Orb-Fenster fuer den Chat auf die Arbeitsflaeche und zurueck. */
+  setChatExpanded: (expanded: boolean): void => {
+    ipcRenderer.send("window:chat-expand", { expanded });
+  },
+
   /**
    * Meldet dem Hauptprozess, ob der Orb gerade spricht.
    *

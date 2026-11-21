@@ -29,6 +29,7 @@ from typing import Any
 from backend.config import get_config
 from backend.system.logging_setup import get_logger
 from backend.tts import emotion as emotion_module
+from backend.tts import prosodie
 from backend.tts.base_engine import SpeechRequest, SpeechResult, TtsEngine
 from backend.tts.chatterbox_engine import ChatterboxEngine
 from backend.tts.edge_neural_engine import EdgeNeuralEngine
@@ -145,6 +146,10 @@ class TtsManager:
             config.get("voice.output.allow_voice_fallback", False)
         )
         self._emotions_enabled = bool(config.get("voice.output.emotions_enabled", True))
+        # Prosodie-Markup (17.11.2026): <slow>, <emphasis>, <breath>, <pause>.
+        self._prosodie = prosodie.Einstellungen.aus_config(
+            config.get("voice.output.prosodie", {}) or {}
+        )
         self._failure_cooldown_seconds = max(
             5.0, float(config.get("voice.output.failure_cooldown_seconds", 90))
         )
@@ -325,6 +330,17 @@ class TtsManager:
         active = getattr(self, "_active", None)
         if not getattr(self, "_consistent_voice", False) or active not in engines:
             return engines
+        # Der eigene Sprachserver (Colab) hat Vorrang, sobald er wieder
+        # erreichbar ist - sonst bliebe der Orb nach einem Colab-Neustart bei
+        # der Ersatzstimme haengen, bis diese einmal ausfaellt.
+        erste = engines[0] if engines else None
+        if (
+            erste is not None
+            and erste is not active
+            and erste.name == "remote"
+            and erste.is_available()
+        ):
+            return engines
         return [active, *(engine for engine in engines if engine is not active)]
 
     @staticmethod
@@ -399,6 +415,17 @@ class TtsManager:
         """
 
         without_code = _CODE_BLOCK.sub(" Ich habe dir Code geschrieben, er steht im Fenster. ", text)
+        # Prosodie-Tags vor dem Entfernen der Auszeichnung schuetzen: '>'
+        # gehoert zu den Stoerzeichen und wuerde aus <slow> ein "<slow" machen.
+        geschuetzt: list[str] = []
+
+        def _schuetzen(treffer: re.Match[str]) -> str:
+            geschuetzt.append(treffer.group(0))
+            return f"\x00{len(geschuetzt) - 1}\x00"
+
+        without_code = prosodie.MARKUP.sub(
+            _schuetzen, prosodie.satzzeichen_nach_aussen(without_code)
+        )
         without_noise = _SPOKEN_NOISE.sub(" ", without_code)
         # Aufzählungsstriche am Zeilenanfang entfernen.
         without_bullets = re.sub(r"(?m)^\s*[-–—]\s+", "", without_noise)
@@ -409,6 +436,9 @@ class TtsManager:
         # eine kurze Nebenbemerkung.
         sprechbar = re.sub(r"\.{3,}|…+", ". ", sprechbar)
         sprechbar = re.sub(r"\s+[–—]\s+", ", ", sprechbar)
+        sprechbar = re.sub(
+            r"\x00(\d+)\x00", lambda m: geschuetzt[int(m.group(1))], sprechbar
+        )
         return re.sub(r"\s+", " ", sprechbar).strip()
 
     def split_into_chunks(self, text: str, *, max_characters: int = 0) -> list[str]:
@@ -514,6 +544,19 @@ class TtsManager:
             return SpeechResult(error="Die Sprachausgabe ist ausgeschaltet.")
 
         prepared = self.prepare_text(text)
+        einstellungen = getattr(self, "_prosodie", None) or prosodie.Einstellungen()
+        segmente: list[prosodie.Segment] = []
+        if prosodie.hat_tags(prepared) and einstellungen.eingeschaltet:
+            segmente = prosodie.zerlegen(prepared, einstellungen)
+        nur_markup = prosodie.hat_tags(prepared)
+        # Markup wird NIE vorgelesen - auch nicht, wenn die Prosodie aus ist.
+        # Laute (<lachen> ...) bleiben bis zur Wahl der Stimme stehen.
+        prepared = prosodie.entfernen(prepared, laute_behalten=True)
+        if not prepared and nur_markup:
+            # Ein Stueck, das nur aus einem Tag bestand ("<pause 0.4>" am Ende
+            # der Antwort): kurze Stille statt Fehler - sonst bricht das Handy
+            # das Vorlesen an dieser Stelle ab.
+            return self._stille(0.3)
         if not prepared:
             return SpeechResult(error="Es gab nichts zu sagen.")
 
@@ -529,6 +572,34 @@ class TtsManager:
         # die Rede nie so beschleunigen, dass sie unverständlich wird –
         # und nie so bremsen, dass sie einschläft.
         final_speed = max(0.75, min(1.15, (speed or self._base_speed) * profile.speed))
+        if not speed and not _bypass_cache:
+            # Kleine Zufallsstreuung im Tempo, damit derselbe Satz nicht jedes
+            # Mal identisch klingt. Ein fest verlangtes Tempo bleibt fest.
+            final_speed = max(
+                0.75,
+                min(1.15, prosodie.tempo_streuen(final_speed, einstellungen.tempo_streuung)),
+            )
+
+        satz_regie = ""
+        if prosodie.braucht_segmente(segmente) and self._regie_statt_schnitt():
+            # Die Stimme versteht Anweisungen: ganzer Satz, Gestaltung als Regie.
+            satz_regie = prosodie.regie_fuer_satz(segmente)
+            segmente = []
+
+        if prosodie.braucht_segmente(segmente):
+            ergebnis = await self._speak_segmente(
+                segmente,
+                einstellungen=einstellungen,
+                profile=profile,
+                speed=final_speed,
+                volume=(volume or self._base_volume),
+                voice=voice,
+            )
+            if ergebnis is not None and ergebnis.succeeded:
+                self._last_result = ergebnis
+                self._spoken_count += 1
+                return ergebnis
+            # Sonst: derselbe Satz am Stueck, ohne Markup. Lieber flach als stumm.
 
         request = SpeechRequest(
             text=prepared,
@@ -543,6 +614,8 @@ class TtsManager:
             * (1.0 if self._stable_volume else profile.volume),
             emotion=profile.name,
         )
+        if satz_regie:
+            request._sprechdynamik = satz_regie  # type: ignore[attr-defined]
 
         result = (
             await self._synthesize_with_fallback(request, bypass_cache=True)
@@ -553,6 +626,171 @@ class TtsManager:
         if result.succeeded:
             self._spoken_count += 1
         return result
+
+    async def _speak_segmente(
+        self,
+        segmente: list[prosodie.Segment],
+        *,
+        einstellungen: prosodie.Einstellungen,
+        profile: Any,
+        speed: float,
+        volume: float,
+        voice: str,
+    ) -> SpeechResult | None:
+        """Erzeugt jedes Segment einzeln und verbindet sie zu EINER Datei.
+
+        Eine Datei, weil Satzstrom, Player, Stop-Spaeher und iPad-Auslieferung
+        alle mit einer Datei je Satz rechnen. Scheitert irgendetwas, kommt
+        ``None`` zurueck und der Aufrufer spricht den Satz am Stueck.
+        """
+
+        from backend.tts.base_engine import DATEI_NOETIG
+
+        start = time.perf_counter()
+        eligible = self._eligible_engines()
+        cloud = bool(eligible) and eligible[0].name not in LOCAL_ENGINE_NAMES
+        # Cloud-Stimmen parallel (je Segment ein Abruf), lokale nacheinander.
+        sperre = asyncio.Semaphore(3 if cloud else 1)
+
+        async def _eines(segment: prosodie.Segment) -> SpeechResult:
+            tempo = speed
+            if segment.langsam:
+                tempo *= einstellungen.tempo_langsam
+            if segment.betont:
+                tempo *= einstellungen.tempo_betont
+            request = SpeechRequest(
+                text=segment.text,
+                voice=voice,
+                speed=max(0.75, min(1.15, round(tempo, 2))),
+                pitch=profile.pitch,
+                volume=volume,
+                emotion=profile.name,
+            )
+            # Regie fuer Stimmen, die Anweisungen verstehen (OpenAI). Andere
+            # Verfahren ignorieren das Feld. Gesetzt (auch leer) verhindert es
+            # zugleich, dass die Sprechdynamik je Segment neu wuerfelt.
+            request._sprechdynamik = prosodie.regie_fuer(segment)  # type: ignore[attr-defined]
+            async with sperre:
+                marke = DATEI_NOETIG.set(True)
+                try:
+                    ergebnis = await self._synthesize_with_fallback(request)
+                finally:
+                    DATEI_NOETIG.reset(marke)
+            strom = ergebnis.context.get("pcm_stream")
+            if strom is not None:
+                # Ein Strom ist noch keine Datei - zum Verbinden fertig machen.
+                await asyncio.to_thread(strom.wait_until_done, self._frist_fuer(request))
+                if getattr(strom, "error", None):
+                    ergebnis.audio_path = None
+                ergebnis.context.pop("pcm_stream", None)
+            return ergebnis
+
+        try:
+            sprechteile = [s for s in segmente if not s.ist_pause]
+            ergebnisse = await asyncio.gather(*(_eines(s) for s in sprechteile))
+            if not all(e.audio_path is not None and e.audio_path.exists() for e in ergebnisse):
+                fehler = "; ".join(e.error for e in ergebnisse if e.error)
+                logger.warning("Prosodie: ein Segment fehlt (%s) - Satz am Stueck.", fehler)
+                return None
+
+            teile: list[tuple[Path | None, float, float]] = []
+            fertig = iter(ergebnisse)
+            for segment in segmente:
+                if segment.ist_pause:
+                    pause = prosodie.pause_streuen(segment.pause, einstellungen.pausen_streuung)
+                    teile.append((None, pause, 1.0))
+                else:
+                    faktor = einstellungen.lautstaerke_betont if segment.betont else 1.0
+                    teile.append((next(fertig).audio_path, 0.0, faktor))
+
+            import hashlib
+
+            kennung = hashlib.sha256(
+                repr([(str(t[0]), round(t[1], 3), t[2]) for t in teile]).encode("utf-8")
+            ).hexdigest()[:24]
+            ziel = self._output_directory / f"prosodie-{kennung}.wav"
+            dauer = await asyncio.to_thread(
+                prosodie.wavs_verbinden, teile, ziel, blende_ms=einstellungen.blende_ms
+            )
+        except Exception:  # noqa: BLE001 - nie die Rede aufhalten.
+            logger.exception("Prosodie-Segmente liessen sich nicht verbinden.")
+            return None
+
+        return SpeechResult(
+            audio_path=ziel,
+            engine=ergebnisse[0].engine,
+            duration_seconds=dauer,
+            processing_seconds=time.perf_counter() - start,
+            context={"prosodie_segmente": len(segmente)},
+        )
+
+    def _regie_statt_schnitt(self) -> bool:
+        """Ob die Stimme, die gleich spricht, Gestaltung als Anweisung versteht.
+
+        Dann wird ein Satz NICHT in Stuecke geschnitten (19.11.2026): Jedes
+        Stueck setzte die Satzmelodie neu an. Gilt standardmaessig fuer die
+        OpenAI-Stimme; abschaltbar mit ``regie_statt_schnitt: false``.
+        """
+
+        try:
+            verfuegbar = self.available_engines()
+        except Exception:  # noqa: BLE001
+            return False
+        if not verfuegbar:
+            return False
+        erste = verfuegbar[0]
+        # Auch die Colab-Stimme (remote): jedes Stueck kostete dort einen eigenen
+        # GPU-Durchlauf von mehreren Sekunden - daraus wurden lange Sprechpausen
+        # mitten im Satz (19.11.2026). Ein Satz = ein Durchlauf.
+        return bool(erste.option("regie_statt_schnitt", erste.name in ("openai_tts", "remote")))
+
+    @staticmethod
+    def _nur_datei_gewuenscht() -> bool:
+        """Ob dieser Auftrag fuer Handy/iPad ist (Datei statt Wiedergabe am PC)."""
+
+        try:
+            from backend.tts.base_engine import DATEI_NOETIG
+
+            return bool(DATEI_NOETIG.get())
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _fuer_stimme(request: SpeechRequest, engine: TtsEngine) -> SpeechRequest | None:
+        """Der Auftrag so, wie DIESE Stimme ihn bekommen soll.
+
+        ``None`` heisst: Fuer diese Stimme bleibt nichts zu sagen (der Satz
+        bestand nur aus einem Laut) - dann eine kurze Stille.
+        """
+
+        if not prosodie.hat_laute(request.text):
+            return request
+        if engine.name == "remote" and bool(engine.option("laute", True)):
+            return request
+        text = prosodie.laute_entfernen(request.text)
+        if not text:
+            return None
+        import dataclasses
+
+        kopie = dataclasses.replace(request, text=text)
+        vermerk = getattr(request, "_sprechdynamik", None)
+        if vermerk is not None:
+            kopie._sprechdynamik = vermerk  # type: ignore[attr-defined]
+        return kopie
+
+    def _stille(self, sekunden: float) -> SpeechResult:
+        """Eine kurze stille WAV-Datei (24 kHz, 16 Bit, mono)."""
+
+        import wave
+
+        ziel = self._output_directory / f"stille-{int(sekunden * 1000)}ms.wav"
+        if not ziel.exists():
+            with wave.open(str(ziel), "wb") as h:
+                h.setnchannels(1)
+                h.setsampwidth(2)
+                h.setframerate(24000)
+                h.writeframes(b"\x00\x00" * int(24000 * sekunden))
+        return SpeechResult(audio_path=ziel, engine="stille", duration_seconds=sekunden)
 
     def _frist_fuer(self, request: SpeechRequest) -> float:
         """Wie lange ein einzelnes Verfahren fuer diesen Satz brauchen darf.
@@ -593,11 +831,26 @@ class TtsManager:
             if failed_until > time.monotonic():
                 problems.append(f"{engine.name}: nach Fehler voruebergehend pausiert")
                 continue
+            if engine.name == "remote" and self._nur_datei_gewuenscht():
+                # Handy/iPad (19.11.2026): Sie bekommen die ganze Antwort erst,
+                # wenn ALLE Stuecke fertig sind, und fragen viele Stuecke
+                # gleichzeitig an. Die Colab-Stimme erzeugt sie nacheinander in
+                # Sprechdauer - das Handy wartete 15 s und laenger und bekam
+                # dann gar nichts. Dort spricht deshalb die naechste Stimme.
+                problems.append(f"{engine.name}: nur fuer die Ausgabe am PC")
+                continue
             if not engine.is_available():
                 problems.append(f"{engine.name}: nicht einsatzbereit")
                 continue
 
-            target = engine.target_path(request)
+            # Laute (<lachen> ...) kann nur der eigene Sprachserver; fuer alle
+            # anderen Stimmen werden sie hier entfernt, damit nichts davon
+            # vorgelesen wird.
+            auftrag = self._fuer_stimme(request, engine)
+            if auftrag is None:
+                return self._stille(0.3)
+
+            target = engine.target_path(auftrag)
 
             if (
                 not bypass_cache
@@ -615,10 +868,10 @@ class TtsManager:
                     from_cache=True,
                 )
 
-            frist = self._frist_fuer(request)
+            frist = self._frist_fuer(auftrag)
             try:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(engine.synthesize_blocking, request, target),
+                    asyncio.to_thread(engine.synthesize_blocking, auftrag, target),
                     timeout=frist,
                 )
             except asyncio.TimeoutError:
@@ -651,8 +904,13 @@ class TtsManager:
                 else time.monotonic() + self._failure_cooldown_seconds
             )
             getattr(self, "_engine_failure_reasons", {})[engine.name] = result.error
+            # Die Colab-Stimme (remote) ist kein Zeichen fuer ein fehlendes
+            # Netz: Faellt nur sie aus, spricht die naechste Cloud-Stimme
+            # (OpenAI) weiter. Vorher schaltete ihr Ausfall auf den langsamen
+            # lokalen Stimmklon (19.11.2026, 47 s bis zum ersten Wort).
             if (
                 engine.name not in LOCAL_ENGINE_NAMES
+                and engine.name != "remote"
                 and self._is_network_failure(result.error)
             ):
                 local_only_for_request = True

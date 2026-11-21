@@ -69,6 +69,8 @@ const flipperCenter = new FlipperCenter(RENDERER_DIR);
 let config: Record<string, any> = {};
 
 let orbWindow: BrowserWindow | null = null;
+/** Fenstermasse vor dem grossen Chat - null, solange der Chat klein ist. */
+let chatRestoreBounds: Electron.Rectangle | null = null;
 let tray: Tray | null = null;
 const lectureVisual = new LectureVisualWindow((visible, bounds) => {
   setLectureVisualMode(visible, bounds);
@@ -569,6 +571,8 @@ function sendOrbOffset(
  * @param targetY Ziel der Orb-Mitte, senkrecht.
  */
 function moveOrbTo(window: BrowserWindow, targetX: number, targetY: number): void {
+  // Der grosse Chat fuellt den Bildschirm - solange wird nichts verschoben.
+  if (chatRestoreBounds !== null) return;
   if (window.isDestroyed()) {
     return;
   }
@@ -631,6 +635,8 @@ function setLectureVisualMode(
   if (!visible || bounds === undefined || orbWindow === null || orbWindow.isDestroyed()) {
     return;
   }
+  // Solange der Chat den ganzen Bildschirm fuellt, bleibt das Fenster stehen.
+  if (chatRestoreBounds !== null) return;
 
   const display = screen.getDisplayMatching(bounds);
   const [width, height] = orbWindow.getSize();
@@ -864,6 +870,30 @@ function registerIpcHandlers(): void {
     if (active) {
       orbWindow.show();
       orbWindow.focus();
+    }
+  });
+
+  ipcMain.on("window:chat-expand", (_event, { expanded }: { expanded: boolean }) => {
+    if (orbWindow === null || orbWindow.isDestroyed()) return;
+    // Chat auf dem ganzen Bildschirm (16.11.2026): Das Orb-Fenster ist
+    // klein und nicht in der Groesse veraenderbar. Fuer den grossen Chat
+    // wird es auf die Arbeitsflaeche seines Bildschirms gesetzt und beim
+    // Verkleinern genau dorthin zurueckgestellt, wo es vorher war.
+    const resizable = orbWindow.isResizable();
+    if (expanded) {
+      if (chatRestoreBounds === null) chatRestoreBounds = orbWindow.getBounds();
+      const area = screen.getDisplayMatching(orbWindow.getBounds()).workArea;
+      desktopManager?.setSuspended("chat-gross", true);
+      orbWindow.setResizable(true);
+      orbWindow.setBounds({ x: area.x, y: area.y, width: area.width, height: area.height });
+      orbWindow.setResizable(resizable);
+    } else if (chatRestoreBounds !== null) {
+      const zurueck = chatRestoreBounds;
+      chatRestoreBounds = null;
+      orbWindow.setResizable(true);
+      orbWindow.setBounds(zurueck);
+      orbWindow.setResizable(resizable);
+      desktopManager?.setSuspended("chat-gross", false);
     }
   });
 

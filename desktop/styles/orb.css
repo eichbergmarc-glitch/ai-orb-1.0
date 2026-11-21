@@ -485,3 +485,59 @@ body {
   background: rgba(26, 111, 181, 0.92);
   border-color: rgba(120, 220, 255, 0.8);
 }
+
+/* --- Chat auf dem ganzen Bildschirm (16.11.2026) --------------------------
+ *
+ * Der Knopf im Chatkopf schaltet um. Am Rechner vergroessert der
+ * Hauptprozess dazu das Orb-Fenster auf die Arbeitsflaeche; im Browser
+ * (iPad) reicht die Klasse. Unten bleibt im Browser Platz fuer den
+ * Sprachknopf - sonst waere im grossen Chat das Mikrofon verdeckt.
+ */
+.chat-kopf-knoepfe { display: inline-flex; align-items: center; gap: 6px; }
+.chat-panel header #chat-groesse { font-size: 16px; opacity: 0.85; }
+.chat-panel header #chat-groesse:hover { opacity: 1; }
+
+.chat-panel.chat-panel--gross {
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  height: auto;
+  z-index: 60;
+  border-radius: 0;
+  font-size: 15px;
+  background: rgba(2, 13, 33, 0.985);
+}
+.chat-panel--gross .chat-messages { padding: 16px 22px; }
+.chat-panel--gross .chat-message { max-width: 72%; padding: 10px 13px; line-height: 1.45; }
+.chat-panel--gross .chat-form { grid-template-columns: 1fr 52px; padding: 14px 22px; }
+.chat-panel--gross .chat-form input { padding: 12px 14px; font-size: 15px; }
+
+[data-orb-web] .chat-panel.chat-panel--gross {
+  height: auto;
+  top: env(safe-area-inset-top);
+  left: env(safe-area-inset-left);
+  right: env(safe-area-inset-right);
+  bottom: calc(112px + env(safe-area-inset-bottom));
+}
+
+/* Verlauf: Zeitmarke und Herkunft (gesprochen, getippt, iPad). */
+.chat-message[data-zeit]::after {
+  content: attr(data-zeit);
+  display: block;
+  margin-top: 3px;
+  font-size: 0.78em;
+  opacity: 0.55;
+}
+.chat-tag {
+  margin: 12px auto 6px;
+  width: fit-content;
+  padding: 2px 10px;
+  border-radius: 9px;
+  color: #8ccde8;
+  background: rgba(23, 80, 131, 0.35);
+  font-size: 0.82em;
+}
+/* Im Browser sitzt oben rechts der Knopf "Ton: hier/PC" - die Knoepfe des
+ * grossen Chats ruecken deshalb nach links, sonst laegen sie darunter. */
+[data-orb-web] .chat-panel--gross header { padding-right: 138px; }

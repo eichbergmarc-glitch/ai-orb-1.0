@@ -383,19 +383,35 @@ class Launcher:
         freundlich und knapp; niemand will beim Hochfahren einen Vortrag.
         """
 
-        from datetime import datetime
+        # 17.11.2026: Jedes Mal anders, ab und zu passend zur Tageszeit.
+        try:
+            from backend.presence.begruessung import erzeugen
 
-        hour = datetime.now().hour
-        if hour < 11:
-            tageszeit = "Guten Morgen"
-        elif hour < 18:
-            tageszeit = "Hallo"
-        else:
-            tageszeit = "Guten Abend"
+            name = ""
+            try:
+                config = get_config()
+                name = str(
+                    config.get("user.name", "")
+                    or config.get("vision.kamera.name", "")
+                    or ""
+                ).strip()
+            except Exception:  # noqa: BLE001
+                name = ""
+            return erzeugen(name=name, einschraenkungen=bool(result.limitations))
+        except Exception:  # noqa: BLE001 - der alte Gruss als sichere Rueckfallebene.
+            from datetime import datetime
 
-        if result.limitations:
-            return f"{tageszeit}. Ich bin bereit, mit ein paar Einschränkungen."
-        return f"{tageszeit}. Ich bin bereit."
+            hour = datetime.now().hour
+            if hour < 11:
+                tageszeit = "Guten Morgen"
+            elif hour < 18:
+                tageszeit = "Hallo"
+            else:
+                tageszeit = "Guten Abend"
+
+            if result.limitations:
+                return f"{tageszeit}. Ich bin bereit, mit ein paar Einschränkungen."
+            return f"{tageszeit}. Ich bin bereit."
 
     @staticmethod
     def _describe_blocking(failures: list[Any]) -> str:

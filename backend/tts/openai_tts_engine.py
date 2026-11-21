@@ -84,7 +84,35 @@ class OpenAITtsEngine(TtsEngine):
             teile.append(
                 "Sprich eine Spur ruhiger, aber ohne gedehnte Silben oder lange Pausen."
             )
+        # Sprechdynamik (16.11.2026): je Satz hoechstens EINE kleine Zutat -
+        # Atem, Denkpause, Raeuspern, Schmunzeln - und meistens keine.
+        zutat = self._dynamik(request)
+        if zutat:
+            teile.append(zutat)
         return " ".join(teil for teil in teile if teil).strip()
+
+    @staticmethod
+    def _dynamik(request: SpeechRequest) -> str:
+        """Die Zutat fuer diesen Satz - je Auftrag genau einmal entschieden.
+
+        ``_regie`` wird fuer denselben Auftrag mehrfach gerufen (Dateiname,
+        Anfrage). Die Entscheidung haengt an der Satznummer und darf sich
+        dazwischen nicht aendern; sie wird deshalb am Auftrag vermerkt.
+        """
+
+        vermerkt = getattr(request, "_sprechdynamik", None)
+        if vermerkt is None:
+            try:
+                from backend.tts import sprechdynamik
+
+                vermerkt = sprechdynamik.aktuelle().regie(request.text, request.emotion)
+            except Exception:  # noqa: BLE001 - die Stimme spricht auch ohne Zutat.
+                vermerkt = ""
+            try:
+                request._sprechdynamik = vermerkt  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+        return vermerkt
 
     def target_path(self, request: SpeechRequest) -> Path:
         einstellungen = "|".join(

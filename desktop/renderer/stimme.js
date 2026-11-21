@@ -43,7 +43,19 @@
   //: Wie lange still sein muss, damit die Aufnahme von selbst endet.
   //: Kuerzer schneidet Denkpausen mitten im Satz ab; laenger haengt am
   //: Ende jeder Frage als Wartezeit dran.
-  var STILLE_MS = 1100;
+  var STILLE_MS = 850;
+
+  //: Sprechtakt (17.11.2026): Wer nur "Hey Synapse" sagt, setzt danach neu
+  //: an - hier wartet die Aufnahme laenger. Wer schon einen Satz gesprochen
+  //: hat, ist nach 0,85 s Stille fertig. Vorher galten fuer beide 1,1 s:
+  //: zu kurz fuer das Ansetzen, zu lang als Wartezeit nach jeder Frage.
+  var STILLE_NACH_ANSATZ_MS = 1500;
+  var ANSATZ_MS = 900;
+
+  //: Obergrenze der Geraeuschschwelle. Wer beim Einschalten schon spricht,
+  //: eicht sonst die eigene Stimme als "Raum" - danach galt nichts mehr als
+  //: Sprache, und die Aufnahme kam nie zustande (17.11.2026 vormittags).
+  var SCHWELLE_HOECHSTENS = 0.05;
 
   //: Vor dieser Zeit wird nicht abgebrochen, auch wenn es still ist.
   var MINDESTDAUER_MS = 700;
@@ -62,6 +74,7 @@
   var schwelle = GRUNDSCHWELLE;
   var grundrauschen = [];
   var letzteStimme = 0;
+  var gesprochenMs = 0;
   var beginn = 0;
   var etwasGehoert = false;
 
@@ -227,6 +240,7 @@
     etwasGehoert = false;
     beginn = Date.now();
     letzteStimme = beginn;
+    gesprochenMs = 0;
 
     verarbeiter.onaudioprocess = function (ereignis) {
       if (!laeuft) return;
@@ -243,7 +257,7 @@
         grundrauschen.push(laut);
         if (grundrauschen.length === 5) {
           var mittel = grundrauschen.reduce(function (a, b) { return a + b; }, 0) / 5;
-          schwelle = Math.max(GRUNDSCHWELLE, mittel * 3.5);
+          schwelle = Math.min(SCHWELLE_HOECHSTENS, Math.max(GRUNDSCHWELLE, mittel * 3.5));
         }
         return;
       }
@@ -251,6 +265,7 @@
       if (laut > schwelle) {
         letzteStimme = jetzt;
         etwasGehoert = true;
+        gesprochenMs += eingang.length / kontext.sampleRate * 1000;
         return;
       }
 
@@ -259,6 +274,7 @@
       if (dauer && !etwasGehoert && stuecke.length > 8) {
         stuecke = stuecke.slice(-4);
         beginn = jetzt;
+        gesprochenMs = 0;
         return;
       }
 
@@ -266,7 +282,7 @@
       if (
         etwasGehoert &&
         jetzt - beginn > MINDESTDAUER_MS &&
-        jetzt - letzteStimme > STILLE_MS
+        jetzt - letzteStimme > (gesprochenMs < ANSATZ_MS ? STILLE_NACH_ANSATZ_MS : STILLE_MS)
       ) {
         void beenden();
       }
@@ -406,6 +422,8 @@
       var kennung = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       kopf["X-Orb-Id"] = kennung;
       if (ausgabeAmPc()) kopf["X-Orb-Ausgabe"] = "pc";
+      // Diese Seite kann offene Antworten (Satz fuer Satz) abspielen.
+      kopf["X-Orb-Offen"] = "1";
       var ergebnis = await abgebenMitWiederholung(blob, kopf, kennung);
       if (ergebnis === "abgewiesen") {
         melde("Nicht angemeldet.");
@@ -429,8 +447,10 @@
       // Ein Bedienbefehl wirkt sofort, noch bevor die Bestaetigung
       // gesprochen ist. Wer "Chat aktivieren" sagt, will den Chat sehen
       // und nicht zuerst hoeren, dass er gleich kommt.
-      if (ergebnis.befehl === "chat_auf") window.orbWeb.chatZeigen(true);
-      if (ergebnis.befehl === "chat_zu") window.orbWeb.chatZeigen(false);
+      // Bei Ausgabe am PC gilt der Chatbefehl dem Chat des Rechners
+      // (16.11.2026) - der Kern meldet ihn dorthin.
+      if (ergebnis.befehl === "chat_auf" && !ergebnis.am_pc) window.orbWeb.chatZeigen(true);
+      if (ergebnis.befehl === "chat_zu" && !ergebnis.am_pc) window.orbWeb.chatZeigen(false);
       if (ergebnis.befehl === "ausgabe_pc" || ergebnis.befehl === "ausgabe_hier") {
         try { window.localStorage.setItem("orbAusgabe", ergebnis.befehl === "ausgabe_pc" ? "pc" : "hier"); } catch (f) { /* egal */ }
         ausgabeKnopfBeschriften();
@@ -498,10 +518,97 @@
    * "Reiseplan oeffnen".
    */
   var aktionsLeiste = null;
-  var SYMBOLE = { anruf: "📞", nachricht: "💬", app: "📱", kurzbefehl: "⚡", dokument: "📄" };
+  var SYMBOLE = { anruf: "📞", nachricht: "💬", app: "📱", kurzbefehl: "⚡", dokument: "📄", standort: "📍" };
+
+  /**
+   * Standort (17.11.2026): Bei "Wo bin ich?" oeffnet sich sofort und ohne
+   * Fingertipp eine Karte von Google Maps mit der exakten Position. Geortet
+   * wird mit dem GPS dieses iPhones - der PC kennt die Position nicht.
+   *
+   * Die Karte liegt IN der Seite (eingebettetes Google Maps), nicht in der
+   * Google-Maps-App: iOS laesst eine Webseite eine andere App nur nach einem
+   * Fingertipp oeffnen. So bleibt Synapse dahinter offen und hoert weiter zu.
+   */
+  var karte = null;
+
+  function karteSchliessen() {
+    if (karte) { karte.remove(); karte = null; }
+  }
+
+  function karteZeigen() {
+    karteSchliessen();
+    karte = document.createElement("div");
+    karte.setAttribute("role", "dialog");
+    karte.style.cssText =
+      "position:fixed;inset:0;z-index:10000;display:flex;flex-direction:column;" +
+      "background:#0b1220;font-family:system-ui,-apple-system,sans-serif;";
+    var kopf = document.createElement("div");
+    kopf.style.cssText =
+      "display:flex;align-items:center;gap:10px;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;" +
+      "color:#fff;font-size:17px;font-weight:600;background:#111a2c;";
+    var titel = document.createElement("div");
+    titel.style.cssText = "flex:1;";
+    titel.textContent = "📍 Standort wird per GPS ermittelt …";
+    var zu = document.createElement("button");
+    zu.type = "button";
+    zu.setAttribute("aria-label", "Karte schliessen");
+    zu.textContent = "✕";
+    zu.style.cssText =
+      "width:44px;height:44px;border:0;border-radius:22px;background:#24324d;color:#fff;font-size:20px;";
+    zu.addEventListener("click", function (ereignis) { ereignis.stopPropagation(); karteSchliessen(); });
+    kopf.appendChild(titel);
+    kopf.appendChild(zu);
+    var flaeche = document.createElement("div");
+    flaeche.style.cssText = "flex:1;position:relative;color:#cfe0ff;padding:20px;font-size:16px;";
+    karte.appendChild(kopf);
+    karte.appendChild(flaeche);
+    document.body.appendChild(karte);
+
+    function fehler(text) {
+      titel.textContent = "📍 Standort nicht verfügbar";
+      flaeche.textContent = text;
+    }
+    if (!window.isSecureContext || !navigator.geolocation) {
+      fehler("Orten geht nur über die https-Adresse des Orb (Tailscale).");
+      handyMeldung("Standort: keine sichere Verbindung - Orten nicht moeglich");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(function (lage) {
+      if (!karte) return;
+      var breite = lage.coords.latitude, laenge = lage.coords.longitude;
+      var genau = Math.round(lage.coords.accuracy || 0);
+      titel.textContent = "📍 Dein Standort" + (genau ? "  (± " + genau + " m)" : "");
+      var rahmen = document.createElement("iframe");
+      rahmen.title = "Google Maps - dein Standort";
+      rahmen.setAttribute("referrerpolicy", "no-referrer-when-downgrade");
+      rahmen.src = "https://maps.google.com/maps?q=" +
+        encodeURIComponent(breite.toFixed(6) + "," + laenge.toFixed(6)) + "&z=17&output=embed";
+      rahmen.style.cssText = "position:absolute;inset:0;width:100%;height:100%;border:0;";
+      flaeche.style.padding = "0";
+      flaeche.textContent = "";
+      flaeche.appendChild(rahmen);
+      handyMeldung("Standort: Karte gezeigt (± " + genau + " m)");
+      void fetch("/stimme/standort", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ breite: breite, laenge: laenge, genauigkeit: genau }),
+      }).catch(function () { /* die Karte steht trotzdem */ });
+    }, function (fehlerart) {
+      fehler(fehlerart && fehlerart.code === 1
+        ? "Ortung nicht erlaubt. iPhone: Einstellungen › Datenschutz › Ortungsdienste › Safari-Websites › „Beim Verwenden“."
+        : fehlerart && fehlerart.code === 3
+          ? "Kein GPS-Signal in 20 Sekunden. Draussen nochmal versuchen."
+          : "Der Standort liess sich nicht ermitteln.");
+      handyMeldung("Standort: Fehler " + (fehlerart ? fehlerart.code : "?"));
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+  }
 
   function zeigeAktionen(aktionen) {
     if (!aktionen || !aktionen.length) return;
+    // Der Standort ist kein Knopf: die Karte geht sofort auf (17.11.2026).
+    if (aktionen.some(function (aktion) { return aktion.art === "standort"; })) karteZeigen();
+    aktionen = aktionen.filter(function (aktion) { return aktion.art !== "standort"; });
+    if (!aktionen.length) return;
     if (aktionsLeiste) aktionsLeiste.remove();
     aktionsLeiste = document.createElement("div");
     aktionsLeiste.setAttribute("role", "dialog");
@@ -1126,6 +1233,7 @@
    * Nur wenn gerade nichts laeuft - nie mitten in einer Antwort.
    */
   var eigeneVersion = null;
+  var abweichend = 0;
   async function versionPruefen() {
     try {
       var antwort = await fetch("/stimme/version", { cache: "no-store", credentials: "same-origin" });
@@ -1133,7 +1241,11 @@
       var v = (await antwort.json()).version || "";
       if (!v) return;
       if (eigeneVersion === null) { eigeneVersion = v; return; }
-      if (v !== eigeneVersion && !abgabeLaeuft && !sprichtNoch) {
+      if (v !== eigeneVersion) abweichend++;
+      // Nach drei Minuten abweichender Fassung auch dann neu laden, wenn
+      // die Seite meint, sie spreche noch - sonst blieb eine haengende
+      // alte Seite fuer immer (14.11.2026).
+      if (v !== eigeneVersion && ((!abgabeLaeuft && !sprichtNoch) || abweichend > 3)) {
         handyMeldung("neue Fassung - Seite wird neu geladen");
         window.location.reload();
       }
@@ -1189,4 +1301,86 @@
       }).catch(function () {});
     } catch (f) { /* egal */ }
   }
+
+  /**
+   * Nach dem Entsperren sofort weiterhoeren (17.11.2026).
+   *
+   * Sperrt Marc das iPhone, haelt iOS die Seite an: Das Mikrofon geht aus,
+   * der Ton-Kontext schlaeft ein, und die Bildschirmsperre-Freigabe
+   * (Wake Lock) faellt weg. Kommt die Seite zurueck, lief bisher nichts
+   * mehr - die Anzeige stand noch auf "Hey Synapse", aber niemand hoerte.
+   *
+   * Jetzt: Beim Zurueckkommen wird das tote Mikrofon abgebaut und neu
+   * gestartet. Laesst iOS das ohne Fingertipp nicht zu, erscheint wieder
+   * der Hinweis "Tippen" - EIN Tipp genuegt, dann laeuft es freihaendig.
+   *
+   * Was iOS NICHT erlaubt (und keine Webseite umgehen kann): Zuhoeren,
+   * waehrend das iPhone gesperrt ist. Dafuer gibt es den Kurzbefehl
+   * (siehe /stimme/kurzbefehl im Kern).
+   */
+  var verstecktSeit = 0;
+  var wiederAufnahmeLaeuft = false;
+
+  function mikrofonTot() {
+    try {
+      if (!strom) return true;
+      var spuren = strom.getAudioTracks ? strom.getAudioTracks() : strom.getTracks();
+      if (!spuren.length) return true;
+      return spuren.some(function (spur) { return spur.readyState === "ended" || spur.muted; });
+    } catch (f) {
+      return true;
+    }
+  }
+
+  async function nachEntsperren() {
+    if (wiederAufnahmeLaeuft || document.visibilityState !== "visible") return;
+    if (!freihaendigGewuenscht()) return;
+    wiederAufnahmeLaeuft = true;
+    try {
+      var weg = verstecktSeit ? Math.round((Date.now() - verstecktSeit) / 1000) : 0;
+      verstecktSeit = 0;
+      // Die Wiedergabe aufwecken, sonst bleibt die naechste Antwort stumm.
+      try { if (wiedergabe && wiedergabe.state === "suspended") await wiedergabe.resume(); } catch (f) { /* egal */ }
+
+      if (!dauer) {
+        // Freihaendig war gewuenscht, lief aber nicht (z. B. Seite neu geladen).
+        if (!document.getElementById("stimme-start")) automatischStarten();
+        return;
+      }
+      void wachHalten(true);
+      if (abgabeLaeuft) return; // Eine Antwort ist unterwegs - die bringt sich selbst zu Ende.
+
+      if (laeuft && !mikrofonTot() && kontext && kontext.state === "running") return;
+      if (laeuft) {
+        // Die Aufnahme lief durch die Sperre hindurch ins Leere: verwerfen.
+        abbruchOhneAbgabe = true;
+        await beenden();
+      }
+      var ergebnis = await starten();
+      if (ergebnis === "gesperrt" || !laeuft) {
+        // iOS will einen Fingertipp. Freihaendig bleibt gewuenscht.
+        dauer = false;
+        zustand("aus");
+        automatischStarten();
+        handyMeldung("nach Entsperren: Tipp noetig (" + weg + " s gesperrt)");
+      } else {
+        handyMeldung("nach Entsperren weiter freihaendig (" + weg + " s gesperrt)");
+      }
+    } finally {
+      wiederAufnahmeLaeuft = false;
+    }
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "hidden") {
+      verstecktSeit = Date.now();
+      return;
+    }
+    // Einen Augenblick warten: iOS gibt Mikrofon und Ton erst kurz nach
+    // dem Sichtbarwerden wieder frei.
+    window.setTimeout(function () { void nachEntsperren(); }, 350);
+  });
+  window.addEventListener("pageshow", function (ereignis) {
+    if (ereignis.persisted) window.setTimeout(function () { void nachEntsperren(); }, 350);
+  });
 })();

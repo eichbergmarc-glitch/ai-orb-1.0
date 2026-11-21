@@ -1,0 +1,24 @@
+AI-Orb - Bluetooth-Suche fuer die Lichtsteuerung
+Zeitpunkt: 20.11.2026 12:37:44
+============================================================
+
+9 Bluetooth-Geraet(e) gefunden (staerkstes Signal zuerst):
+
+- (ohne Namen)   [64:A0:41:52:EB:17]   Signal -60 dBm
+    Hersteller-Kennungen: 0x4c
+- (ohne Namen)   [FC:F1:36:B8:C8:D9]   Signal -60 dBm
+    Hersteller-Kennungen: 0x75
+- (ohne Namen)   [E1:55:AF:52:A9:D1]   Signal -62 dBm
+    Dienste: 0000fe0f-0000-1000-8000-00805f9b34fb
+- (ohne Namen)   [46:6D:B4:68:AB:30]   Signal -64 dBm
+    Hersteller-Kennungen: 0x4c
+- (ohne Namen)   [54:87:F5:B8:E2:62]   Signal -86 dBm
+    Hersteller-Kennungen: 0x4c
+- (ohne Namen)   [48:E1:5C:85:A1:5F]   Signal -87 dBm
+    Hersteller-Kennungen: 0x4c
+- (ohne Namen)   [60:F3:B7:51:7B:73]   Signal -88 dBm
+    Hersteller-Kennungen: 0x4c
+- (ohne Namen)   [77:F7:95:D3:11:0F]   Signal -97 dBm
+    Hersteller-Kennungen: 0x4c
+- (ohne Namen)   [5F:3E:FE:12:CA:0B]   Signal -97 dBm
+    Hersteller-Kennungen: 0x4c

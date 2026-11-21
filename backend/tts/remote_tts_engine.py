@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -57,6 +58,10 @@ class RemoteTtsEngine(TtsEngine):
 
     name = "remote"
 
+
+    #: Nur ein Satz zur Zeit geht an den Server (siehe synthesize_blocking).
+    _nacheinander = threading.Lock()
+
     def __init__(self, *, output_directory: Path, options: dict[str, Any] | None = None) -> None:
         super().__init__(output_directory=output_directory, options=options)
         # Die Adresse steht in der Konfiguration – sie ist kein Geheimnis,
@@ -73,6 +78,8 @@ class RemoteTtsEngine(TtsEngine):
         self._probe_frist = float(self.option("connect_timeout", 1.5))
         self._probe_zeit = 0.0
         self._probe_ergebnis: bool | None = None
+        self._probe_laeuft = False
+        self._probe_sperre = threading.Lock()
 
     @property
     def token(self) -> str:
@@ -83,37 +90,56 @@ class RemoteTtsEngine(TtsEngine):
     def is_available(self) -> bool:
         """Verfügbar, wenn eine Adresse eingetragen ist UND jemand antwortet.
 
-        Der zweite Teil ist neu, und er ist der Unterschied zwischen
-        „fällt zurück" und „fällt nach dreissig Sekunden zurück". Vorher
-        genügte ein Eintrag in der Konfiguration: Ein eingeschlafener
-        Colab-Server galt als verfügbar, jeder Satz lief in sein Zeitlimit,
-        und der Orb schwieg jedes Mal aufs Neue, bevor die lokale Stimme
-        übernahm.
+        19.11.2026: Die Prüfung läuft jetzt im HINTERGRUND. Vorher wartete
+        der Orb auf sie - und weil der Name eines nicht laufenden
+        Colab-Servers im Tailnet nicht aufgelöst werden kann, hing die
+        Namensauflösung jedes Mal mehrere Sekunden. In dieser Zeit stand
+        der ganze Orb: Antworten kamen 8 Sekunden später, das Handy meldete
+        "PC 90 Sekunden nicht erreichbar".
 
-        Geklopft wird kurz (anderthalb Sekunden) und höchstens einmal je
-        Minute - eine Erreichbarkeitsprüfung, die selbst zur Wartezeit
-        wird, hätte nichts gewonnen.
+        Jetzt gilt immer das letzte bekannte Ergebnis (am Anfang: nicht
+        verfügbar). Ist es älter als die Probefrist, wird im Hintergrund
+        neu geklopft - der aktuelle Satz wartet nie darauf.
         """
 
         if not self._endpoint:
             return False
 
         jetzt = time.monotonic()
-        if (
-            self._probe_ergebnis is not None
-            and (jetzt - self._probe_zeit) < self._probe_gueltig
-        ):
-            return self._probe_ergebnis
+        veraltet = (
+            self._probe_ergebnis is None
+            or (jetzt - self._probe_zeit) >= self._probe_gueltig
+        )
+        if veraltet:
+            self._probe_im_hintergrund()
+        return bool(self._probe_ergebnis)
 
-        self._probe_zeit = jetzt
-        self._probe_ergebnis = self._klopfen()
-        if not self._probe_ergebnis:
-            logger.info(
-                "Der TTS-Server unter %s antwortet nicht; es spricht die "
-                "lokale Stimme.",
-                self._endpoint,
-            )
-        return self._probe_ergebnis
+    def _probe_im_hintergrund(self) -> None:
+        with self._probe_sperre:
+            if self._probe_laeuft:
+                return
+            self._probe_laeuft = True
+            # Sofort als "geprüft" vermerken: nicht bei jedem Satz neu anstossen.
+            self._probe_zeit = time.monotonic()
+
+        def _lauf() -> None:
+            try:
+                vorher = self._probe_ergebnis
+                ergebnis = self._klopfen()
+                self._probe_ergebnis = ergebnis
+                self._probe_zeit = time.monotonic()
+                if ergebnis and not vorher:
+                    logger.info("Der TTS-Server unter %s ist erreichbar - er spricht ab jetzt.", self._endpoint)
+                elif not ergebnis and vorher is not False:
+                    logger.info(
+                        "Der TTS-Server unter %s antwortet nicht; es spricht die "
+                        "naechste Stimme.",
+                        self._endpoint,
+                    )
+            finally:
+                self._probe_laeuft = False
+
+        threading.Thread(target=_lauf, name="remote-tts-probe", daemon=True).start()
 
     def _klopfen(self) -> bool:
         """Ein kurzer Verbindungsversuch zur Serveradresse."""
@@ -130,6 +156,13 @@ class RemoteTtsEngine(TtsEngine):
                 return True
         except OSError:
             return False
+        # Die Namensauflösung selbst kennt keine Frist und kann hier lange
+        # dauern - deshalb läuft diese Methode nur noch im Hintergrund.
+
+    def _kuerzlich_gescheitert(self) -> bool:
+        """Ob gerade eben (< 20 s) ein Versuch scheiterte - dann nicht erneut warten."""
+
+        return self._probe_ergebnis is False and time.monotonic() - float(self._probe_zeit or 0.0) < 20.0
 
     def vermerke_fehlschlag(self) -> None:
         """Merkt sich einen gescheiterten Sprechversuch.
@@ -177,9 +210,16 @@ class RemoteTtsEngine(TtsEngine):
 
         started = self._now()
         try:
-            with urllib.request.urlopen(http_request, timeout=self._timeout) as response:
-                audio = response.read()
-                content_type = response.headers.get("Content-Type", "")
+            # Einer nach dem anderen (19.11.2026): Der Server spricht ohnehin
+            # nur einen Satz zur Zeit. Standen mehrere Anfragen gleichzeitig
+            # an, lief die Frist schon waehrend des Wartens ab, und alle
+            # scheiterten zusammen. So zaehlt die Frist erst ab dem eigenen Satz.
+            with RemoteTtsEngine._nacheinander:
+                if self._kuerzlich_gescheitert():
+                    return SpeechResult(engine=self.name, error="TTS-Server nicht erreichbar: eben erst gescheitert")
+                with urllib.request.urlopen(http_request, timeout=self._timeout) as response:
+                    audio = response.read()
+                    content_type = response.headers.get("Content-Type", "")
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:300]
             return SpeechResult(engine=self.name, error=f"TTS-Server meldete {error.code}: {detail}")

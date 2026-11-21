@@ -217,12 +217,40 @@ uniform float uWach;      // 1 = wach, 0 = offline/schlafend (entsaettigt)
 uniform vec3  uTief;      // dunkle Grundfarbe der synaptischen Haelfte
 uniform vec3  uFluid;     // Hauptton der fliessenden Haelfte
 uniform vec3  uLicht;     // Spitzlichter, Rand und Naht
+uniform float uPlastik;   // 0 = flach wie frueher, 1 = plastisch (14.11.2026)
+uniform float uDreh;      // scheinbare Drehung: Windungen wandern ueber die Woelbung
+uniform vec3  uLichtRichtung;
 
 varying vec2 vLage;
 
 ${GLSL_GEHIRN}
 ${GLSL_RAUSCHEN}
 ${GLSL_WINKEL}
+
+// --- Plastik (14.11.2026) --------------------------------------------------
+// Marc wollte, dass das Gehirn dreidimensional wirkt. Aus der Kontur wird
+// eine Woelbung (Hoehenfeld), darauf liegen Windungen aus "gefaltetem"
+// Rauschen. Aus dem Hoehenfeld entsteht eine Flaechennormale - und damit
+// echtes Licht, Schatten in den Furchen und ein Glanzlicht.
+float falten(vec2 p) {
+  // Gestreckt und verbogen: so werden aus Flecken lange, gewundene Wuelste.
+  vec2 q = p * vec2(5.2, 6.4) + 1.9 * vec2(rauschen(p * 1.9), rauschen(p * 1.9 + 4.1));
+  float a = 1.0 - abs(rauschen(q) * 2.0 - 1.0);
+  float b = 1.0 - abs(rauschen(q * 1.9 + 7.3) * 2.0 - 1.0);
+  return pow(a, 1.6) * 0.75 + pow(b, 1.6) * 0.25;
+}
+
+float woelbung(float d) {
+  return sqrt(clamp(-d / 0.62, 0.0, 1.0));
+}
+
+float hoehe(vec2 p) {
+  float dom = woelbung(gehirnAbstand(p));
+  // Je hoeher die Stelle, desto weiter wandern die Windungen beim Drehen:
+  // So sieht es aus, als drehe sich eine Kugelflaeche, nicht ein Bild.
+  vec2 s = p + vec2(uDreh * 0.24 * dom, 0.0);
+  return dom * 0.95 + falten(s) * 0.11 * smoothstep(0.0, 0.3, dom);
+}
 
 void main() {
   vec2 p = vLage;
@@ -289,6 +317,33 @@ void main() {
   dunkel += uFluid * 0.10 * smoothstep(0.55, 0.95, schimmer);
 
   vec3 farbe = mix(fluid, dunkel, seite);
+
+  // --- Plastik: Licht und Schatten auf der Woelbung ------------------------
+  if (uPlastik > 0.001 && innen > 0.001) {
+    float e = 0.007;
+    float hx = hoehe(p + vec2(e, 0.0)) - hoehe(p - vec2(e, 0.0));
+    float hy = hoehe(p + vec2(0.0, e)) - hoehe(p - vec2(0.0, e));
+    vec3 n = normalize(vec3(-hx / (2.0 * e), -hy / (2.0 * e), 1.0));
+    vec3 l = normalize(uLichtRichtung);
+    float dom = woelbung(d);
+    float furche = falten(p + vec2(uDreh * 0.24 * dom, 0.0));
+
+    float diffus = max(dot(n, l), 0.0);
+    float glanz = pow(max(dot(n, normalize(l + vec3(0.0, 0.0, 1.0))), 0.0), 34.0);
+    float kante = pow(1.0 - clamp(n.z, 0.0, 1.0), 2.2);
+    // Furchen liegen im Schatten - das ist, was eine Windung lesbar macht.
+    float verdeckt = mix(0.42, 1.0, smoothstep(0.05, 0.75, furche));
+
+    vec3 plastisch = farbe * (0.16 + 1.25 * diffus) * verdeckt;
+    // Die Netzhaelfte bekommt eine eigene, gedaempfte Hirnoberflaeche -
+    // sonst bliebe sie ein flaches schwarzes Loch.
+    plastisch += uFluid * seite * (0.05 + 0.62 * diffus * diffus) * verdeckt;
+    plastisch += uLicht * glanz * (0.65 + 0.25 * uStimme) * mix(1.0, 0.75, seite);
+    plastisch += mix(uFluid, uLicht, 0.4) * kante * 0.28;
+    // Die energetische Haelfte leuchtet auch selbst - nicht ganz abdunkeln.
+    plastisch += fluid * (1.0 - seite) * 0.12 * verdeckt;
+    farbe = mix(farbe, plastisch, uPlastik);
+  }
 
   // --- Naht, Rand und Atem ---------------------------------------------
   // Die Naht bleibt bewusst INNERHALB der Form (Faktor innen). Ohne das
@@ -544,7 +599,9 @@ function netzBauen(anzahl: number, keim: number): Netz {
       y,
       // Eine leichte Tiefenstreuung. Sie ist winzig, macht aber aus einer
       // flachen Zeichnung ein Netz, das bei der Neigung zur Maus atmet.
-      z: (wuerfel() - 0.5) * 0.16,
+      // Die Knoten liegen auf der Woelbung (14.11.2026): Bei jeder Neigung
+      // verschieben sich die hohen gegen die tiefen - das gibt Tiefe.
+      z: 0.22 * Math.sqrt(Math.min(1, Math.max(0, -gehirnAbstand(x, y) / 0.62))) + (wuerfel() - 0.5) * 0.08,
       g: 5.5 + wuerfel() * 7.5,
       k: wuerfel(),
     });
@@ -662,6 +719,7 @@ export class SynaptixBrain {
   private gefuehlRest = 0;
   private reizRest = 0;
   private qualitaet = 2;
+  private readonly plastik: number;
 
   private readonly farbTief = new THREE.Color(IDLE_BILD.tief);
   private readonly farbFluid = new THREE.Color(IDLE_BILD.fluid);
@@ -670,8 +728,9 @@ export class SynaptixBrain {
   private readonly farbSignal = new THREE.Color(IDLE_BILD.signal);
   private readonly hilfsfarbe = new THREE.Color();
 
-  constructor(options?: { tempo?: number; helligkeit?: number }, pixelRatio = 1) {
+  constructor(options?: { tempo?: number; helligkeit?: number; plastisch?: boolean }, pixelRatio = 1) {
     this.pixelRatio = Math.max(1, pixelRatio);
+    this.plastik = options?.plastisch === false ? 0 : 1;
     this.grundTempo = options?.tempo ?? 1.0;
     // Der Wert aus config.yaml ist auf den alten Orb geeicht (1.69). Das
     // Gehirn leuchtet flaechig statt punktuell; ungedaempft uebernommen
@@ -723,6 +782,9 @@ export class SynaptixBrain {
       uTief: { value: this.farbTief },
       uFluid: { value: this.farbFluid },
       uLicht: { value: this.farbLicht },
+      uPlastik: { value: this.plastik },
+      uDreh: { value: 0 },
+      uLichtRichtung: { value: new THREE.Vector3(-0.5, 0.6, 0.7) },
     };
     this.koerper = new THREE.Mesh(
       flaeche.clone(),
@@ -1061,8 +1123,18 @@ export class SynaptixBrain {
     // --- Neigung zur Maus -------------------------------------------------
     const folgen = 1 - Math.exp(-schritt * 6.0);
     this.zeiger.lerp(this.zeigerZiel, folgen);
-    this.group.rotation.y = this.zeiger.x * 0.26;
+    // Plastik: ein langsames Hin- und Herdrehen. Die Ebene neigt sich nur
+    // leicht; die eigentliche Drehung entsteht im Shader, wo die Windungen
+    // ueber die Woelbung wandern und das Licht mitgeht.
+    const pendel = this.plastik * Math.sin(this.eigenzeit * 0.23);
+    this.group.rotation.y = this.zeiger.x * 0.26 + pendel * 0.10;
     this.group.rotation.x = -this.zeiger.y * 0.18;
+    this.uKoerper.uDreh.value = pendel * 0.9 + this.zeiger.x * 0.6;
+    (this.uKoerper.uLichtRichtung.value as THREE.Vector3).set(
+      -0.55 - pendel * 0.35 + this.zeiger.x * 0.3,
+      0.62 + this.zeiger.y * 0.25,
+      0.72
+    );
     // Das Netz sitzt eine Spur vor dem Koerper. Bei der Neigung entsteht
     // dadurch echte Parallaxe – das Gehirn bekommt Tiefe, obwohl es aus
     // flachen Ebenen besteht.

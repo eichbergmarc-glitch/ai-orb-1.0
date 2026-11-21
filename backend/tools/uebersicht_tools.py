@@ -1,0 +1,505 @@
+"""Uebersichten zum Ansehen: was der Orb kann, und welche Vorlesungen es gibt.
+
+Marc, 16.11.2026: Der Orb soll auf Anfrage "in einer grafischen Darstellung
+anzeigen koennen, was er alles fuer Funktionen hat und welche Befehle man
+sagen muss, um sie zu nutzen" - und ebenso "eine Uebersicht der moeglichen
+Vorlesungen".
+
+Vorgelesen ist so eine Liste nutzlos: Niemand merkt sich vierzig Befehle
+vom Zuhoeren. Deshalb entsteht eine Seite - eine einzige HTML-Datei ohne
+Abhaengigkeiten - und wird dort gezeigt, wo Marc hinsieht: am Rechner im
+Browser, oder auf dem Handy ueber einen Knopf.
+
+Zwei Dinge sind Absicht:
+
+* Die Funktionsuebersicht zeigt nur, was wirklich angemeldet ist. Ein
+  Eintrag, dessen Werkzeuge fehlen (Gmail nicht verbunden, TIDAL nicht
+  eingerichtet), erscheint nicht - eine Uebersicht, die etwas verspricht,
+  das dann nicht geht, waere schlimmer als keine.
+* Die Vorlesungsuebersicht wird aus derselben Landkarte gebaut, aus der der
+  Professor liest. Sie kann der Wirklichkeit also nicht davonlaufen.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import html
+import re
+import time
+from pathlib import Path
+from typing import Any
+
+from backend.system.logging_setup import get_logger
+from backend.tools.base_tool import Tool, ToolResult
+
+logger = get_logger(__name__)
+
+
+# --- Erkennen, dass eine Uebersicht gewuenscht ist ------------------------------
+
+#: Eindeutig - diese Wendungen meinen immer den Orb.
+_FUNKTIONEN = re.compile(
+    r"was\s+(?:kannst|k[oö]nntest)\s+du\s+(?:denn\s+)?(?:alles|so|eigentlich)"
+    r"|was\s+du\s+(?:alles\s+)?(?:kannst|f[uü]r\s+funktionen)"
+    r"|funktions(?:[uü]bersicht|liste|umfang)"
+    r"|befehls(?:[uü]bersicht|liste)"
+    r"|hilfe(?:seite|[uü]bersicht)"
+    r"|(?:zeig|[oö]ffne)\w*\s+(?:mir\s+)?(?:die\s+)?hilfe\b",
+    re.IGNORECASE,
+)
+
+#: Nur zusammen mit einer Anrede. "Welche Funktionen hat die Leber?" ist eine
+#: Wissensfrage und keine Bitte um die Uebersicht.
+_FUNKTIONEN_SCHWACH = re.compile(
+    r"\b(?:welche|deine|deiner|der|alle|aller|an|f[uü]r)\s+"
+    r"(?:funktionen|f[aä]higkeiten|befehle|sprachbefehle|kommandos|m[oö]glichkeiten)\b",
+    re.IGNORECASE,
+)
+_ANREDE = re.compile(r"\b(?:du|dir|dich|dein\w*|synapse|orb)\b", re.IGNORECASE)
+
+_VORLESUNGEN = re.compile(
+    r"(?:welche|was\s+f[uü]r|m[oö]gliche[nr]?|alle[nr]?|verf[uü]gbare[nr]?)\s+vorlesungen"
+    r"|vorlesungs(?:[uü]bersicht|verzeichnis|angebot|liste|katalog|programm|themen)"
+    r"|(?:[uü]bersicht|liste|verzeichnis|auswahl|katalog|themen)\s+(?:der|von|[uü]ber|aller|deiner|f[uü]r)\s+"
+    r"(?:(?:den|die|m[oö]glichen|verf[uü]gbaren|deine[nr]?)\s+)*vorlesungen"
+    r"|vorlesungen\s+(?:gibt\s+es|hast\s+du|kannst\s+du|bietest\s+du|stehen|sind\s+m[oö]glich|anzeigen|zeigen|auflisten)"
+    r"|(?:zeig|nenn|list)\w*\s+(?:mir\s+)?(?:bitte\s+)?(?:die\s+|deine\s+|alle\s+)?(?:m[oö]glichen\s+)?vorlesungen"
+    r"|wor[uü]ber\s+kannst\s+du\s+(?:eine\s+)?vorlesung",
+    re.IGNORECASE,
+)
+
+
+def uebersichtswunsch(text: str) -> str:
+    """Liefert ``"funktionen"``, ``"vorlesungen"`` oder ``""``.
+
+    Die Vorlesungen werden zuerst geprueft: "Zeig mir eine Uebersicht der
+    Vorlesungen" enthaelt kein Funktionswort, aber "Welche Funktionen hast
+    du fuer Vorlesungen?" soll die Funktionen zeigen - das regelt die
+    Reihenfolge der Muster, nicht ein Sonderfall.
+    """
+
+    knapp = " ".join(str(text or "").lower().split())
+    if not knapp:
+        return ""
+    if _VORLESUNGEN.search(knapp):
+        return "vorlesungen"
+    if _FUNKTIONEN.search(knapp):
+        return "funktionen"
+    if _FUNKTIONEN_SCHWACH.search(knapp) and _ANREDE.search(knapp):
+        return "funktionen"
+    return ""
+
+
+# --- Der Funktionskatalog --------------------------------------------------------
+#
+# Je Eintrag: Titel, ein Satz, Beispielsaetze, und die Werkzeuge, von denen
+# er abhaengt. Ein leeres Werkzeug-Tupel heisst: gehoert zum Kern und ist
+# immer da.
+
+_KATALOG: tuple[tuple[str, str, tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...]], ...] = (
+    ("Sprechen und Zuhören", "🎙", (
+        ("Ansprechen", "Mit dem Weckwort beginnen. Danach hört Synapse zwei Minuten ohne Weckwort weiter zu.",
+         ("Hallo Synapse", "Hey Synapse, wie spät ist es?"), ()),
+        ("Unterbrechen", "Hält die laufende Antwort sofort an.",
+         ("Stopp", "Halt", "Pause"), ()),
+        ("Wo die Antwort erklingt", "Vom iPad oder Handy aus sprechen und die Antwort am Rechner hören - oder umgekehrt.",
+         ("Antworte am PC", "Antworte hier"), ()),
+        ("Stimme einlernen", "Synapse lernt deine Stimme und reagiert dann auch ohne Weckwort auf dich.",
+         ("Lerne meine Stimme", "Vergiss meine Stimme"), ("stimme_lernen",)),
+    )),
+    ("Chat und Anzeige", "💬", (
+        ("Chat", "Schreiben statt sprechen. Der Chat zeigt den Verlauf aller Anfragen und Antworten.",
+         ("Chat aktivieren", "Chat schliessen", "Chat vergrössern", "Chat verkleinern"), ()),
+        ("Diese Übersicht", "Zeigt alle Funktionen mit ihren Befehlen.",
+         ("Was kannst du alles?", "Zeig mir deine Funktionen"), ()),
+        ("Animation wechseln", "Schaltet die Darstellung des Orb um.",
+         ("Wechsle auf das Gehirn", "Zeig die drei Kugeln", "Ändere die Animation auf den Energie-Orb"),
+         ("animation_wechseln",)),
+        ("Animation anpassen", "Verändert Farben, Tempo oder Form der Animation. Fragt vorher nach.",
+         ("Mach die Ringe langsamer", "Ändere die Farbe der Animation auf Blau"), ("animation_anpassen",)),
+    )),
+    ("Vorlesungen und Lernen", "🎓", (
+        ("Vorlesung halten", "Eine Vorlesung in Abschnitten, mit Tafelbild am Rechner.",
+         ("Halte mir eine Vorlesung über Sokrates", "Weiter", "Pause", "Neue Vorlesung über die Lautverschiebung"), ()),
+        ("Vorlesungsübersicht", "Zeigt alle Fächer und Themen, zu denen es einen Lehrplan gibt.",
+         ("Welche Vorlesungen gibt es?", "Zeig mir die Vorlesungsübersicht"), ()),
+        ("Wissen aneignen", "Synapse arbeitet sich im Hintergrund in ein Thema ein.",
+         ("Eigne dir Wissen über die Römer an", "Was weisst du über Kant?"),
+         ("wissen_aneignen", "wissen_nachsehen")),
+        ("Karteikarten", "Lernkarten anlegen und abfragen lassen.",
+         ("Leg eine Karteikarte an", "Frag mich Karteikarten ab"), ("karteikarte_anlegen", "karteikarten_abfragen")),
+        ("Aus einer Datei lernen", "Liest ein Dokument und merkt sich den Inhalt.",
+         ("Lies die Datei … und merk dir das Wichtigste",), ("wissen_aus_datei",)),
+    )),
+    ("Suchen und Nachrichten", "🔎", (
+        ("Im Internet suchen", "Aktuelles nachschlagen und zusammenfassen.",
+         ("Such nach …", "Was gibt es Neues zu …?", "Nachrichten aus aller Welt"), ("internet_suchen",)),
+        ("Webseite lesen", "Liest eine Seite und fasst sie zusammen.",
+         ("Lies mir die Seite … vor", "Fass diese Webseite zusammen"), ("webseite_lesen",)),
+        ("Wetter", "Wetter für heute und die nächsten Tage, direkt vom Wetterdienst.",
+         ("Wie wird das Wetter morgen in Bern?", "Regnet es heute?"), ("wetter",)),
+        ("Zug und Bus", "Verbindungen aus dem Fahrplan, mit Erinnerung an die Abfahrt.",
+         ("Wann fährt der nächste Zug von Langenthal nach Bern?", "Erinnere mich an die Abfahrt"),
+         ("verbindung_suchen",)),
+        ("Tagesüberblick", "Termine, Wetter und Neuigkeiten in einem.",
+         ("Gib mir den Tagesüberblick",), ("tagesueberblick",)),
+    )),
+    ("Mails und Kalender", "✉", (
+        ("Mails lesen", "Liest neue Mails vor oder sucht in Gmail.",
+         ("Lies mir meine letzten zwei Mails vor", "Such Mails von …"), ("mails_lesen",)),
+        ("Mail schreiben", "Entwirft eine Mail und sendet sie erst nach deiner Bestätigung.",
+         ("Schreib eine Mail an … dass …", "Sende den Entwurf"), ("mail_entwerfen",)),
+        ("Termine", "Kalender ansehen, Termine eintragen, ändern oder löschen.",
+         ("Was steht morgen im Kalender?", "Trag einen Termin ein: Freitag 14 Uhr Zahnarzt"),
+         ("termine_ansehen",)),
+        ("Erinnerungen", "Erinnert dich zu einer Zeit an etwas.",
+         ("Erinnere mich in 20 Minuten an den Ofen", "Welche Erinnerungen habe ich?"), ("erinnerung_setzen",)),
+    )),
+    ("Handy", "📱", (
+        ("Anrufen", "Nur wenn du über das Handy sprichst: Es erscheint ein Knopf zum Anrufen.",
+         ("Ruf … an",), ("anrufen",)),
+        ("SMS und WhatsApp", "Bereitet eine Nachricht vor; du tippst zum Senden.",
+         ("Schreib … eine WhatsApp: …", "Schick … eine SMS"), ("nachricht_senden",)),
+        ("Apps und Kurzbefehle", "Öffnet eine App oder startet einen Kurzbefehl auf dem Handy.",
+         ("Öffne die Karten-App", "Starte den Kurzbefehl …"), ("app_oeffnen",)),
+        ("Standort", "Ortet dich mit dem GPS des iPhones und zeigt deinen genauen Standort in Google Maps.",
+         ("Wo bin ich?", "Orte mich", "Zeig mir meinen Standort"), ("standort_zeigen",)),
+    )),
+    ("Musik", "🎵", (
+        ("Musik abspielen", "Spielt Titel, Alben oder Playlists über TIDAL.",
+         ("Spiel … von …", "Pause", "Nächster Titel", "Lauter"), ("musik_abspielen",)),
+        ("Playlists", "Playlists ansehen, anlegen und ergänzen.",
+         ("Erstelle eine Playlist mit …", "Zeig meine Playlists"), ("playlist_erstellen",)),
+    )),
+    ("Dokumente und Bilder", "📄", (
+        ("PDF erstellen", "Schreibt ein Dokument und speichert es als PDF.",
+         ("Erstelle eine PDF mit einem Reiseplan für …",), ("pdf_erstellen",)),
+        ("Diagramm und Infografik", "Zeichnet Diagramme und Schaubilder.",
+         ("Zeichne ein Diagramm zu …", "Mach eine Infografik über …"), ("diagramm_zeichnen",)),
+        ("Bilder suchen und erzeugen", "Findet freie Fotos oder erzeugt ein Bild und zeigt es gross an.",
+         ("Such ein Bild von …", "Erzeuge ein Bild von …", "Zeig mir das Bild"), ("bild_suchen",)),
+        ("Tagebuch", "Diktieren, nachlesen und als Buch anzeigen.",
+         ("Tagebucheintrag: …", "Zeig mein Tagebuch"), ("tagebuch_zeigen",)),
+    )),
+    ("Rechner steuern", "🖥", (
+        ("Programme starten", "Öffnet Programme und den Browser.",
+         ("Starte …", "Öffne einen Browser mit …"), ("programm_starten",)),
+        ("Im Browser arbeiten", "Bedient Webseiten: klicken, ausfüllen, lesen.",
+         ("Öffne … und such dort nach …",), ("browser_bedienen",)),
+        ("Bildschirm ansehen", "Sieht sich an, was gerade auf dem Bildschirm ist.",
+         ("Was siehst du auf meinem Bildschirm?", "Lies vor, was da steht"), ("bildschirm_ansehen",)),
+        ("Dateien", "Sucht, liest und schreibt Dateien.",
+         ("Such die Datei …", "Lies die Datei … vor", "Leg einen Ordner … an"), ("dateien_suchen",)),
+        ("Terminal", "Führt einen Befehl aus. Fragt jedes Mal nach.",
+         ("Führe im Terminal … aus",), ("terminal_befehl_ausfuehren",)),
+    )),
+    ("Gedächtnis", "🧠", (
+        ("Merken", "Merkt sich Vorlieben und Angaben über dich.",
+         ("Merk dir, dass …", "Was weisst du über mich?", "Vergiss, dass …"), ("vorliebe_merken",)),
+        ("Wo waren wir?", "Knüpft an die letzte Arbeit an.",
+         ("Woran haben wir zuletzt gearbeitet?",), ("woran_weiter",)),
+    )),
+    ("Synapse selbst", "⚙", (
+        ("Neu starten", "Startet Synapse neu. Fragt vorher nach.",
+         ("Starte dich neu",), ("neu_starten",)),
+        ("Sich selbst ändern", "Synapse ändert den eigenen Code. Fragt jedes Mal nach.",
+         ("Ändere deinen Code so, dass …", "Nimm die letzte Änderung zurück"), ("entwicklungsauftrag_umsetzen",)),
+        ("Uhrzeit, Rechnen, Systeminfo", "Kleine Auskünfte ohne Umweg.",
+         ("Wie spät ist es?", "Was ist 17 Prozent von 380?"), ("aktuelle_zeit",)),
+    )),
+)
+
+
+def _erster_satz(text: str) -> str:
+    text = " ".join(str(text or "").split())
+    treffer = re.search(r"(?<=[.!?])\s", text)
+    return text[: treffer.start()] if treffer else text
+
+
+_STIL = """
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#04101f;color:#e8f6ff;font:16px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif}
+header{position:sticky;top:0;z-index:5;padding:22px 5vw 16px;background:linear-gradient(#04101f 78%,rgba(4,16,31,0))}
+h1{margin:0 0 4px;font-size:30px;color:#6fe0ff;letter-spacing:.3px}
+.unter{color:#9ccbe2;margin:0 0 14px}
+#suche{width:100%;max-width:560px;padding:12px 16px;border-radius:12px;border:1px solid #2b6f9c;
+ background:#0a2440;color:#fff;font-size:16px;outline:none}
+#suche:focus{border-color:#6fe0ff;box-shadow:0 0 10px rgba(80,200,255,.35)}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+nav a{padding:6px 12px;border-radius:999px;border:1px solid #235a80;color:#bfe9ff;text-decoration:none;font-size:14px;background:#08203a}
+nav a:hover{border-color:#6fe0ff}
+main{padding:6px 5vw 60px}
+section{margin-top:30px;scroll-margin-top:190px}
+h2{display:flex;align-items:center;gap:10px;margin:0 0 4px;font-size:22px;color:#fff}
+h2 .sym{display:inline-grid;place-items:center;width:38px;height:38px;border-radius:11px;background:#0e3a63;font-size:20px}
+.gebiet{color:#9ccbe2;margin:2px 0 12px}
+.raster{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.karte{padding:16px 18px;border-radius:16px;border:1px solid #1d4f74;background:linear-gradient(160deg,#0a2644,#071a30)}
+.karte h3{margin:0 0 4px;font-size:17px;color:#8ee8ff}
+.karte p{margin:0 0 10px;color:#cfe6f3;font-size:14.5px}
+.sag{display:flex;flex-wrap:wrap;gap:6px}
+.sag span{padding:5px 10px;border-radius:10px;background:#12406b;border:1px solid #2a6fa3;color:#fff;font-size:14px}
+.sag span::before{content:"„"}.sag span::after{content:"“"}
+.hinweis{margin-top:36px;padding:14px 18px;border-radius:14px;border:1px dashed #2b6f9c;color:#9ccbe2;font-size:14px}
+.rest{columns:260px;column-gap:26px;font-size:14px;color:#cfe6f3}
+.rest div{break-inside:avoid;margin-bottom:8px}.rest b{color:#8ee8ff;font-weight:600}
+.leer{display:none;color:#9ccbe2;margin-top:24px}
+footer{padding:0 5vw 40px;color:#6f9bb3;font-size:13px}
+@media print{header{position:static}body{background:#fff;color:#000}.karte{border-color:#999;background:#fff}
+ .karte h3,h1{color:#000}.karte p,.unter,.gebiet{color:#222}.sag span{background:#eee;color:#000;border-color:#999}#suche,nav{display:none}}
+"""
+
+_SKRIPT = """
+(function(){var f=document.getElementById('suche');if(!f)return;
+f.addEventListener('input',function(){var q=f.value.trim().toLowerCase(),n=0;
+document.querySelectorAll('.karte').forEach(function(k){var z=!q||k.textContent.toLowerCase().indexOf(q)>=0;k.style.display=z?'':'none';if(z)n++;});
+document.querySelectorAll('section').forEach(function(s){var a=s.querySelectorAll('.karte'),v=0;a.forEach(function(k){if(k.style.display!=='none')v++;});
+if(a.length)s.style.display=v?'':'none';});
+var l=document.getElementById('leer');if(l)l.style.display=n?'none':'block';});})();
+"""
+
+
+def _seite(titel: str, unter: str, sprungmarken: list[tuple[str, str]], inhalt: str, fuss: str) -> str:
+    marken = "".join(
+        f'<a href="#{html.escape(kennung)}">{html.escape(name)}</a>' for kennung, name in sprungmarken
+    )
+    return (
+        "<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        f"<title>{html.escape(titel)}</title><style>{_STIL}</style></head><body>"
+        f"<header><h1>{html.escape(titel)}</h1><p class=\"unter\">{html.escape(unter)}</p>"
+        "<input id=\"suche\" type=\"search\" placeholder=\"Suchen …\" autocomplete=\"off\">"
+        f"<nav>{marken}</nav></header><main>{inhalt}"
+        "<p id=\"leer\" class=\"leer\">Dazu steht hier nichts.</p></main>"
+        f"<footer>{html.escape(fuss)}</footer><script>{_SKRIPT}</script></body></html>"
+    )
+
+
+def _karte(titel: str, text: str, beispiele: tuple[str, ...] | list[str]) -> str:
+    saetze = "".join(f"<span>{html.escape(satz)}</span>" for satz in beispiele)
+    return (
+        f"<div class=\"karte\"><h3>{html.escape(titel)}</h3><p>{html.escape(text)}</p>"
+        f"<div class=\"sag\">{saetze}</div></div>"
+    )
+
+
+def funktionen_html(registry: Any = None) -> tuple[str, int]:
+    """Baut die Funktionsuebersicht. Liefert die Seite und die Zahl der Karten."""
+
+    vorhanden: set[str] | None = None
+    werkzeuge: dict[str, Any] = {}
+    if registry is not None:
+        try:
+            werkzeuge = {tool.name: tool for tool in registry.all()}
+            vorhanden = set(werkzeuge)
+        except Exception:  # noqa: BLE001 - dann eben der volle Katalog.
+            vorhanden = None
+
+    genannt: set[str] = set()
+    teile: list[str] = []
+    marken: list[tuple[str, str]] = []
+    karten = 0
+    for nummer, (bereich, symbol, eintraege) in enumerate(_KATALOG):
+        gebaut: list[str] = []
+        for titel, text, beispiele, braucht in eintraege:
+            genannt.update(braucht)
+            if braucht and vorhanden is not None and not any(n in vorhanden for n in braucht):
+                continue
+            gebaut.append(_karte(titel, text, beispiele))
+        if not gebaut:
+            continue
+        kennung = f"b{nummer}"
+        marken.append((kennung, bereich))
+        karten += len(gebaut)
+        teile.append(
+            f"<section id=\"{kennung}\"><h2><span class=\"sym\">{symbol}</span>"
+            f"{html.escape(bereich)}</h2><div class=\"raster\">{''.join(gebaut)}</div></section>"
+        )
+
+    # Was angemeldet ist, aber oben keine eigene Karte hat, wird nicht
+    # verschwiegen: Name und der erste Satz der Beschreibung.
+    uebrige = sorted(name for name in werkzeuge if name not in genannt)
+    if uebrige:
+        zeilen = "".join(
+            f"<div><b>{html.escape(name.replace('_', ' '))}</b> – "
+            f"{html.escape(_erster_satz(getattr(werkzeuge[name], 'description', '')))}</div>"
+            for name in uebrige
+        )
+        marken.append(("weitere", "Weitere"))
+        teile.append(
+            "<section id=\"weitere\"><h2><span class=\"sym\">＋</span>Weitere Werkzeuge</h2>"
+            "<p class=\"gebiet\">Diese nutzt Synapse von selbst, wenn eine Bitte dazu passt. "
+            "Du musst keinen bestimmten Satz sagen.</p>"
+            f"<div class=\"rest\">{zeilen}</div></section>"
+        )
+
+    teile.append(
+        "<div class=\"hinweis\">Die Sätze sind Beispiele. Du musst sie nicht wörtlich sagen – "
+        "Synapse versteht auch eigene Formulierungen. Was Folgen hat (Mail senden, Befehle "
+        "ausführen, eigenen Code ändern), wird vorher nachgefragt.</div>"
+    )
+    seite = _seite(
+        "Was Synapse kann",
+        "Alle Funktionen mit Beispielsätzen. Oben suchen oder einen Bereich antippen.",
+        marken,
+        "".join(teile),
+        "Stand: " + time.strftime("%d.%m.%Y, %H:%M") + " – erzeugt aus den angemeldeten Werkzeugen.",
+    )
+    return seite, karten
+
+
+def vorlesungen_html() -> tuple[str, int, int]:
+    """Baut die Vorlesungsuebersicht. Liefert Seite, Zahl der Faecher und der Themen."""
+
+    from backend.studium import landkarte
+
+    felder = list(landkarte.felder())
+    teile: list[str] = []
+    marken: list[tuple[str, str]] = []
+    themenzahl = 0
+    for feld in felder:
+        marken.append((feld.kennung, feld.titel))
+        bloecke: list[str] = []
+        for gebiet in feld.gebiete:
+            karten = []
+            for thema in gebiet.themen:
+                themenzahl += 1
+                abriss = _erster_satz(thema.abriss)
+                if len(abriss) > 230:
+                    abriss = abriss[:227].rsplit(" ", 1)[0] + " …"
+                karten.append(
+                    _karte(thema.titel, abriss, (f"Halte mir eine Vorlesung über {thema.titel}",))
+                )
+            bloecke.append(
+                f"<h3 style=\"margin:22px 0 2px;color:#fff;font-size:18px\">{html.escape(gebiet.titel)}</h3>"
+                f"<p class=\"gebiet\">{html.escape(gebiet.beschreibung)}</p>"
+                f"<div class=\"raster\">{''.join(karten)}</div>"
+            )
+        teile.append(
+            f"<section id=\"{html.escape(feld.kennung)}\"><h2><span class=\"sym\">🎓</span>"
+            f"{html.escape(feld.titel)}</h2><p class=\"gebiet\">{html.escape(feld.gegenstand)}</p>"
+            f"{''.join(bloecke)}</section>"
+        )
+
+    teile.append(
+        "<div class=\"hinweis\"><b>So steuerst du eine Vorlesung:</b> „Halte mir eine Vorlesung "
+        "über …“ beginnt. „Pause“ hält an, „Weiter“ setzt an derselben Stelle fort, „Neue "
+        "Vorlesung über …“ beginnt ein anderes Thema. Du kannst jederzeit dazwischenfragen. "
+        "Auch Themen, die hier nicht stehen, sind möglich – dann ohne festen Lehrplan.</div>"
+    )
+    seite = _seite(
+        "Vorlesungen",
+        f"{len(felder)} Fächer, {themenzahl} Themen mit Lehrplan. Oben suchen oder ein Fach antippen.",
+        marken,
+        "".join(teile),
+        "Stand: " + time.strftime("%d.%m.%Y, %H:%M") + " – erzeugt aus der Wissenslandkarte.",
+    )
+    return seite, len(felder), themenzahl
+
+
+# --- Anzeigen ---------------------------------------------------------------------
+
+
+def _ablage(name: str) -> Path:
+    from backend.utils.paths import get_data_dir
+
+    ordner = get_data_dir() / "uebersichten"
+    ordner.mkdir(parents=True, exist_ok=True)
+    return ordner / name
+
+
+def _im_browser_oeffnen(pfad: Path) -> bool:
+    import webbrowser
+
+    try:
+        return bool(webbrowser.open(pfad.resolve().as_uri(), new=2))
+    except Exception:  # noqa: BLE001
+        logger.exception("Die Uebersicht liess sich nicht oeffnen.")
+        return False
+
+
+async def _zeigen(pfad: Path, seite: str, titel: str, was: str) -> ToolResult:
+    """Speichert die Seite und zeigt sie dort, wo Marc gerade hinsieht."""
+
+    try:
+        await asyncio.to_thread(pfad.write_text, seite, "utf-8")
+    except Exception as fehler:  # noqa: BLE001
+        return ToolResult.failure(f"Die Übersicht liess sich nicht speichern: {fehler}")
+
+    from backend.tools import handy_tools
+
+    # Kommt die Frage vom Handy und soll die Antwort auch dort erklingen,
+    # gehoert die Seite aufs Handy. In allen anderen Faellen - am Rechner
+    # gefragt, oder vom iPad aus mit Ausgabe am PC - auf den Bildschirm.
+    if handy_tools.ist_geraet_aktiv() and not handy_tools.ausgabe_am_pc():
+        handy_tools.dokument_freigeben(pfad, titel)
+        return ToolResult.success(
+            f"Die Übersicht {was} ist fertig. Auf dem Handy erscheint ein Knopf zum Öffnen.",
+            pfad=str(pfad),
+        )
+
+    if not await asyncio.to_thread(_im_browser_oeffnen, pfad):
+        return ToolResult.failure(
+            f"Die Übersicht liegt unter {pfad}, aber der Browser liess sich nicht öffnen."
+        )
+    return ToolResult.success(
+        f"Ich zeige dir die Übersicht {was} jetzt auf dem Bildschirm.", pfad=str(pfad)
+    )
+
+
+class FunktionenZeigenTool(Tool):
+    """Zeigt, was der Orb kann - als Seite, nicht als Aufzaehlung."""
+
+    name = "funktionen_zeigen"
+    description = (
+        "Zeigt eine grafische Übersicht aller Funktionen von Synapse mit den Sätzen, "
+        "die man dafür sagt. Benutze das bei 'Was kannst du alles?', 'Zeig mir deine "
+        "Funktionen', 'Welche Befehle gibt es?' - statt die Funktionen vorzulesen."
+    )
+    permission = "compute"
+    parameters = ()
+
+    def __init__(self, registry: Any = None) -> None:
+        super().__init__()
+        self._registry = registry
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:  # noqa: ARG002
+        seite, karten = funktionen_html(self._registry)
+        ergebnis = await _zeigen(
+            _ablage("funktionen.html"), seite, "Was Synapse kann", "meiner Funktionen"
+        )
+        if ergebnis.ok:
+            logger.info("Funktionsuebersicht gezeigt (%d Karten).", karten)
+        return ergebnis
+
+
+class VorlesungenZeigenTool(Tool):
+    """Zeigt die Faecher und Themen, zu denen es einen Lehrplan gibt."""
+
+    name = "vorlesungen_zeigen"
+    description = (
+        "Zeigt eine grafische Übersicht aller möglichen Vorlesungen (Fächer und Themen). "
+        "Benutze das bei 'Welche Vorlesungen gibt es?', 'Zeig mir die Vorlesungsübersicht' - "
+        "statt die Themen vorzulesen."
+    )
+    permission = "compute"
+    parameters = ()
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:  # noqa: ARG002
+        try:
+            seite, faecher, themen = vorlesungen_html()
+        except Exception as fehler:  # noqa: BLE001
+            logger.exception("Die Vorlesungsuebersicht liess sich nicht bauen.")
+            return ToolResult.failure(f"Die Vorlesungsübersicht liess sich nicht bauen: {fehler}")
+        ergebnis = await _zeigen(
+            _ablage("vorlesungen.html"), seite, "Vorlesungen",
+            f"der Vorlesungen ({faecher} Fächer, {themen} Themen)",
+        )
+        if ergebnis.ok:
+            logger.info("Vorlesungsuebersicht gezeigt (%d Faecher, %d Themen).", faecher, themen)
+        return ergebnis
+
+
+def build_uebersicht_tools(registry: Any = None) -> list[Tool]:
+    return [FunktionenZeigenTool(registry), VorlesungenZeigenTool()]

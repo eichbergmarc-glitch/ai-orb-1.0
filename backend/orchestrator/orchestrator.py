@@ -75,6 +75,17 @@ from backend.system.terminal_control import parse_terminal_request
 logger = get_logger(__name__)
 
 
+def _prosodie_entfernen(text: str) -> str:
+    """Entfernt Sprech-Markup (<slow>, <pause …>) - fuer alles, was gelesen wird."""
+
+    try:
+        from backend.tts.prosodie import entfernen
+
+        return entfernen(text)
+    except Exception:  # noqa: BLE001 - lieber ein Tag zu viel als keine Antwort.
+        return text
+
+
 @dataclass(frozen=True)
 class TagebuchBefehl:
     """Ein ohne Sprachmodell eindeutig erkannter Tagebuchauftrag."""
@@ -1740,8 +1751,121 @@ class Orchestrator:
         # Ein klarer Entwicklungsauftrag wird nicht dem Zufall überlassen,
         # ob das Gesprächsmodell das richtige Werkzeug auswählt. Derselbe
         # Satz funktioniert dadurch im Chat und über die Sprachsteuerung.
+        # Uebersichten zum Ansehen (16.11.2026): "Was kannst du alles?" und
+        # "Welche Vorlesungen gibt es?" werden GEZEIGT, nicht vorgelesen -
+        # und zwar verlaesslich, nicht nur wenn das Modell daran denkt. Die
+        # Pruefung steht vor dem Entwicklungsauftrag: "Mach mir eine
+        # Uebersicht deiner Funktionen" enthaelt "mach" und "funktion" und
+        # galt sonst als Auftrag, den eigenen Code zu aendern.
+        from backend.tools.uebersicht_tools import uebersichtswunsch
+
+        uebersicht = "" if interner_vorlesungsauftrag else uebersichtswunsch(text)
+
+        # Neustart (17.11.2026): "Starte dich neu" landete beim Werkzeug fuer
+        # Programme, und das Modell antwortete "Ich kann mich nicht selbst neu
+        # starten" - obwohl es das Werkzeug dafuer gibt. Jetzt fest verdrahtet;
+        # die Rueckfrage des geschuetzten Modus bleibt.
+        if (
+            not interner_vorlesungsauftrag
+            and re.search(
+                r"\b(?:start|starte|startest)\s+(?:dich|synapse|den\s+orb|neu)\b.*\bneu\b"
+                r"|\bstarte\s+(?:dich\s+)?neu\b|\bneustart\b|\bstarte\s+den\s+orb\s+neu\b",
+                text,
+                re.IGNORECASE,
+            )
+            and self._tool_engine is not None
+            and self._tool_engine.enabled
+            and "neu_starten" in self._tool_engine.registry.names()
+        ):
+            run = await self._tool_engine.direkt_ausfuehren(
+                "neu_starten", {"grund": "Sprachbefehl: " + text[:80]}, actor="neustart"
+            )
+            response = (run.result.output if run.result.ok else run.result.error) or (
+                "Der Neustart liess sich nicht auslösen."
+            )
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response,
+                intent="neustart",
+                used_llm=False,
+                module="system",
+                data={"ok": run.result.ok},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
+        # Orten (17.11.2026): "Wo bin ich?" wird nicht dem Modell ueberlassen -
+        # es koennte raten oder nur ankuendigen. Das Werkzeug selbst sagt, wenn
+        # Marc gerade nicht ueber das iPhone spricht.
+        from backend.tools.handy_tools import standortwunsch
+
+        if (
+            not interner_vorlesungsauftrag
+            and standortwunsch(text)
+            and self._tool_engine is not None
+            and self._tool_engine.enabled
+        ):
+            run = await self._tool_engine.direkt_ausfuehren(
+                "standort_zeigen", {}, actor="standort"
+            )
+            response = (run.result.output if run.result.ok else run.result.error) or (
+                "Der Standort liess sich nicht abfragen."
+            )
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response,
+                intent="standort",
+                used_llm=False,
+                module="handy",
+                data={"ok": run.result.ok},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+        if (
+            uebersicht
+            and self._tool_engine is not None
+            and self._tool_engine.enabled
+        ):
+            run = await self._tool_engine.direkt_ausfuehren(
+                "funktionen_zeigen" if uebersicht == "funktionen" else "vorlesungen_zeigen",
+                {},
+                actor="uebersicht",
+            )
+            response = run.result.output if run.result.ok else run.result.error
+            response = response or "Die Übersicht liess sich nicht anzeigen."
+            if run.result.ok:
+                response += (
+                    " Dort stehen auch die Sätze, die du dafür sagen kannst."
+                    if uebersicht == "funktionen"
+                    else " Sag einfach: Halte mir eine Vorlesung über … und das Thema."
+                )
+            self.conversations.add_user_message(text)
+            self.conversations.add_assistant_message(response)
+            result = OrchestrationResult(
+                response=response,
+                intent="uebersicht",
+                used_llm=False,
+                module="uebersicht",
+                data={"art": uebersicht, "ok": run.result.ok},
+                duration_seconds=time.perf_counter() - started,
+            )
+            await self._publish("ai.response", result.to_dict())
+            return result
+
+        # Ein Umschaltwunsch fuer die Animation ist KEIN Entwicklungsauftrag
+        # (15.11.2026): "Aendere die Animation auf das Gehirn" loeste vorher
+        # eine Codeaenderung am Orb aus - 92 s, und im offenen Sicherheits-
+        # modus ohne Rueckfrage. Das Umschalten geschieht weiter unten.
+        from backend.tools.animation_tools import animationswunsch as _umschaltwunsch
+
         development_request = (
-            None if interner_vorlesungsauftrag else parse_development_request(text)
+            None
+            if interner_vorlesungsauftrag or _umschaltwunsch(text) or uebersicht
+            else parse_development_request(text)
         )
         if (
             development_request is not None
@@ -2181,6 +2305,32 @@ class Orchestrator:
                 )
                 vorab_ergebnisse["verbindung_suchen"] = fahrplan_kontext
                 vorab_ergebnisse["internet_suchen"] = fahrplan_kontext
+        # Animation umschalten (14.11.2026): Das Modell behauptete viermal,
+        # umgeschaltet zu haben, und rief das Werkzeug nie auf. Ein klarer
+        # Wunsch wird deshalb direkt ausgefuehrt.
+        if tools_available:
+            from backend.tools.animation_tools import animationswunsch
+
+            ziel = animationswunsch(text)
+            if ziel and self._tool_engine is not None:
+                try:
+                    lauf = await self._tool_engine.direkt_ausfuehren(
+                        "animation_wechseln", {"darstellung": text}
+                    )
+                    meldung = lauf.result.output if lauf.result.ok else (
+                        "Das Umschalten ist fehlgeschlagen: " + str(lauf.result.error))
+                except Exception as fehler:  # noqa: BLE001
+                    logger.exception("Animation liess sich nicht umschalten.")
+                    meldung = f"Das Umschalten ist fehlgeschlagen: {fehler}"
+                vorab_ergebnisse["animation_wechseln"] = meldung
+                context_block = "\n\n".join(
+                    part for part in (
+                        context_block,
+                        "Soeben ausgefuehrt (nicht noch einmal aufrufen): " + meldung
+                        + " Bestaetige das in einem kurzen Satz - nur wenn es geklappt hat.",
+                    ) if part
+                )
+
         # Wetter (13.11.2026): Dafuer gibt es das Werkzeug "wetter". Die
         # Vorabsuche brauchte 6,3 s und fand die "heute-show".
         wetterfrage = bool(re.search(r"\bwetter\w*|\bregnet|\btemperatur", text, re.IGNORECASE))
@@ -2345,6 +2495,12 @@ class Orchestrator:
                 # Kompatibel mit Plugins und kleinen Test-Doubles, die noch
                 # die fruehere parameterlose Signatur anbieten.
                 instructions = self._tool_engine.system_instructions()
+            # Deutlicher Auftrag (15.11.2026): Ganz am Schluss steht, dass
+            # jetzt gehandelt und nicht angekuendigt wird. Das spart das
+            # Nachhaken - eine volle Modellrunde.
+            auftragsregel = str(getattr(self._tool_engine, "AUFTRAGS_REGEL", "") or "")
+            if instructions and auftragsregel and faehigkeit.handlungsauftrag:
+                instructions = instructions + "\n\n" + auftragsregel
 
         # Das Netz unter dem Netz: eine Obergrenze fuer alles Beigelegte.
         #
@@ -2383,6 +2539,17 @@ class Orchestrator:
             context_block = "\n\n".join(
                 part for part in (context_block, instructions) if part
             )
+        # Prosodie-Markup (17.11.2026): Nur wenn wirklich gesprochen wird.
+        # Bewusst NACH der Kuerzung oben - davor angehaengt wurde die
+        # Anweisung bei jedem laengeren Kontext abgeschnitten und kam nie
+        # beim Modell an. Die Tags werden vor Verlauf, Anzeige und PDF
+        # wieder entfernt.
+        if spoken and bool(self._config.get("voice.output.prosodie.enabled", True)):
+            from backend.tts.prosodie import PROMPT_HINWEIS
+
+            context_block = "\n\n".join(
+                part for part in (context_block, PROMPT_HINWEIS) if part
+            )
 
         spoken_system = None
         if preferred_spoken:
@@ -2400,6 +2567,24 @@ class Orchestrator:
             system_prompt=spoken_system,
             recent_limit=(2 if preferred_spoken else None),
         )
+        # Prosodie (17.11.2026, Nachbesserung): Die Anweisung im Systemteil
+        # allein genuegte nicht - danach folgt der Verlauf, und darin stehen
+        # die frueheren Antworten ohne Markup. Das Modell ahmte dieses Muster
+        # nach. Ein kurzer Vermerk an der AKTUELLEN Frage steht unmittelbar
+        # vor der Antwort und wird befolgt. Nur fuer diese Anfrage; der
+        # gespeicherte Verlauf bleibt unveraendert.
+        if spoken and bool(self._config.get("voice.output.prosodie.enabled", True)):
+            import dataclasses as _dc
+
+            from backend.tts.prosodie import FRAGE_VERMERK
+
+            for _index in range(len(messages) - 1, -1, -1):
+                if messages[_index].role == "user":
+                    messages[_index] = _dc.replace(
+                        messages[_index],
+                        content=f"{messages[_index].content}\n\n{FRAGE_VERMERK}",
+                    )
+                    break
         logger.info(
             "[%s] Tor 6 Modellkontext: %d Nachrichten, %d Zeichen, "
             "Wunschprovider=%s, Werkzeuge=%s (%s, Konfidenz %.2f, Signale: %s).",
@@ -2477,7 +2662,11 @@ class Orchestrator:
             # entwertet und lud Bilder doppelt, ohne sie sichtbar zu machen.
             # Da das Audio zu diesem Zeitpunkt noch laeuft, begleitet die
             # Lehrtafel den Vortrag trotzdem rechtzeitig.
-            self._vorlesungsbild_planen(answer_text, text, infografik_erlaubt=True)
+            from backend.tts.prosodie import entfernen as _ohne_markup
+
+            self._vorlesungsbild_planen(
+                _ohne_markup(answer_text), text, infografik_erlaubt=True
+            )
             bild_geplant = True
         tool_runs = 0
         #: Welche Werkzeuge wirklich liefen. Die blosse Anzahl genuegte
@@ -2578,7 +2767,7 @@ class Orchestrator:
                     "pdf_erstellen",
                     {
                         "titel": pdf_titel_aus(text),
-                        "inhalt": answer_text,
+                        "inhalt": _prosodie_entfernen(answer_text),
                         "quellen": quellen,
                         "bilder": bilder,
                     },
@@ -2613,6 +2802,17 @@ class Orchestrator:
                 if await on_speech(rest):
                     wirklich_gesprochen = True
 
+        # Ab hier ist die Antwort Text, nicht mehr Rede: Verlauf, Anzeige,
+        # Lernstand und Rueckgabe bekommen sie ohne Prosodie-Markup. (Der
+        # Abgleich oben mit dem schon Gesprochenen brauchte es noch.)
+        if spoken:
+            import re as _re_prosodie
+
+            logger.info(
+                "Prosodie: %d Markierung(en) in der gesprochenen Antwort.",
+                len(_re_prosodie.findall(r"<\s*(?:slow|emphasis|breath|pause)\b", answer_text, _re_prosodie.I)),
+            )
+        answer_text = _prosodie_entfernen(answer_text)
         self.conversations.add_assistant_message(answer_text)
         lernstand = getattr(self, "_lernstand", None)
         if lernstand is not None:
@@ -2686,7 +2886,16 @@ class Orchestrator:
         """
 
         try:
-            begriffe = bildsuchbegriffe(abschnitt, auftrag)
+            # 19.11.2026: Zuerst plant das Sprachmodell die Tafel (Darstellung,
+            # Kernaussagen, EIN genauer Bildbegriff). Die Wortregeln von
+            # vorlesungs_bilder bleiben nur noch Rueckfallebene.
+            plan = await self._tafel_planen(abschnitt, auftrag)
+            if generation != self._vorlesungsbild_generation:
+                return
+            if plan is not None:
+                begriffe = [plan.bildbegriff] if plan.bildbegriff else []
+            else:
+                begriffe = bildsuchbegriffe(abschnitt, auftrag)
             bild: dict[str, str] | None = None
             for begriff in begriffe:
                 schluessel = begriff.casefold()
@@ -2740,8 +2949,14 @@ class Orchestrator:
                 return
             if not infografik_erlaubt:
                 return
-            karten = uebersichtskarten(abschnitt)
-            titel = vorlesungsfolie_titel(abschnitt, auftrag)
+            if plan is not None:
+                karten = plan.karten
+                titel = plan.titel
+                darstellung = plan.darstellung
+            else:
+                karten = uebersichtskarten(abschnitt)
+                titel = vorlesungsfolie_titel(abschnitt, auftrag)
+                darstellung = uebersichtsart(abschnitt)
             await self._publish(
                 event_types.LECTURE_VISUAL_CHANGED,
                 {
@@ -2752,20 +2967,54 @@ class Orchestrator:
                     "title": titel,
                     "topic": vorlesungsthema(auftrag),
                     "summary": karten,
-                    "layout": uebersichtsart(abschnitt),
+                    "layout": darstellung,
                     "generation": generation,
                 },
             )
             logger.info(
-                "Vorlesungstafel %d aktualisiert (%s, %d Orientierungskarten).",
+                "Vorlesungstafel %d aktualisiert (%s, %s, %d Karten, %s).",
                 generation,
                 "Foto" if bild else "ohne Foto",
+                darstellung,
                 len(karten),
+                "vom Modell geplant" if plan is not None else "nach Wortregeln",
             )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - Bildmaterial darf den Vortrag nie stoppen.
             logger.exception("Das Vorlesungsbild konnte nicht beschafft werden.")
+
+    async def _tafel_planen(self, abschnitt: str, auftrag: str) -> Any:
+        """Laesst das Sprachmodell die Lehrtafel planen - oder ``None``.
+
+        Kurzer, eigener Aufruf ohne Gespraechsverlauf und ohne Werkzeuge,
+        mit fester Frist. Er laeuft im Hintergrund des Vortrags; scheitert
+        er, zeigt die Tafel die Regel-Fassung wie bisher.
+        """
+
+        if not bool(self._config.get("studium.tafelplan", True)):
+            return None
+        try:
+            from backend.orchestrator.providers.base_provider import ChatMessage
+            from backend.studium.tafelplan import auswerten, nachrichten
+
+            botschaften = [
+                ChatMessage(role=rolle, content=inhalt)
+                for rolle, inhalt in nachrichten(abschnitt, vorlesungsthema(auftrag))
+            ]
+            antwort = await asyncio.wait_for(
+                self._providers.chat(botschaften, temperature=0.2, max_tokens=600),
+                timeout=float(self._config.get("studium.tafelplan_frist", 25) or 25),
+            )
+            plan = auswerten(getattr(antwort, "text", ""))
+            if plan is None:
+                logger.info("Tafelplan unbrauchbar - es gilt die Regel-Tafel.")
+            return plan
+        except asyncio.CancelledError:
+            raise
+        except Exception as fehler:  # noqa: BLE001 - die Tafel darf nie den Vortrag stoeren.
+            logger.info("Tafelplan nicht moeglich (%s) - es gilt die Regel-Tafel.", fehler)
+            return None
 
     async def _pdf_bilder_beschaffen(
         self, text: str, inhalt: str, quellen: str = ""

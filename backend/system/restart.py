@@ -242,8 +242,14 @@ class Neustarter:
             flags = 0
             flags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
             flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            # 17.11.2026: Der Helfer starb mit dem Orb. "taskkill /T" folgt
+            # der Eltern-Kette - und ein direkt gestartetes cmd ist Enkel der
+            # Huelle, gehoert also zum Baum, den es selbst beendet. Der Orb
+            # war weg, kam aber nicht wieder. Jetzt startet ein kurzlebiges
+            # cmd den Helfer ueber "start" und beendet sich sofort; der Helfer
+            # hat damit keinen lebenden Elternteil mehr im Baum und ueberlebt.
             subprocess.Popen(  # noqa: S603
-                ["cmd", "/c", str(helfer)],
+                ["cmd", "/c", "start", "", "/min", "cmd", "/c", str(helfer)],
                 creationflags=flags,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

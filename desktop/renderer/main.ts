@@ -26,6 +26,7 @@ import { PresenceEngine } from "./presence";
 import { OrbRenderer } from "./renderer";
 import { SynaptixBrain } from "./synaptix_brain";
 import { DreiKugeln } from "./drei_kugeln";
+import { NebelKreis } from "./nebel_kreis";
 import { ORB_STATES, StateMachine, type OrbStateName, type StateAppearance } from "./states";
 
 /** Die von `preload.ts` bereitgestellte, abgesicherte Schnittstelle. */
@@ -45,6 +46,8 @@ interface AiOrbBridge {
   setIgnoreMouseEvents(ignore: boolean): void;
   setInteractionLock(active: boolean, reason: string): void;
   setChatFocus(active: boolean): void;
+  /** Fehlt in den Browser-Bruecken (iPad) - dort reicht die CSS-Klasse. */
+  setChatExpanded?(expanded: boolean): void;
   setSpeaking(speaking: boolean): void;
   showLectureVisual(payload: {
     path?: string;
@@ -158,14 +161,24 @@ async function bootstrap(): Promise<void> {
   // oder "klassisch". Gewechselt per Sprache ("wechsle zur Kugel-Animation").
   const darstellung = String(readConfig<string>(config, "orb.darstellung", "") || "").trim();
 
-  const orb = darstellung === "drei_kugeln"
+  const orb = darstellung === "nebel"
+    ? new NebelKreis(
+        { tempo: animation.tempo, helligkeit: animation.helligkeit },
+        renderer.renderer.getPixelRatio()
+      )
+    : darstellung === "drei_kugeln"
     ? new DreiKugeln(
         { tempo: animation.tempo, helligkeit: animation.helligkeit },
         renderer.renderer.getPixelRatio()
       )
     : (darstellung ? darstellung === "synaptix" : synaptixAktiv)
     ? new SynaptixBrain(
-        { tempo: animation.tempo, helligkeit: animation.helligkeit },
+        {
+          tempo: animation.tempo,
+          helligkeit: animation.helligkeit,
+          // `orb.plastisch: false` bringt das flache Gehirn zurueck (14.11.2026).
+          plastisch: readConfig<boolean>(config, "orb.plastisch", true) !== false,
+        },
         renderer.renderer.getPixelRatio()
       )
     : (darstellung ? darstellung === "energie" : energieAktiv)
@@ -180,8 +193,9 @@ async function bootstrap(): Promise<void> {
   // Beide lebendigen Darstellungen teilen sich dieselbe Schnittstelle
   // (Augen/Netz, Gefuehl, Fortschritt, Blitz). Alles Weitere im Modul
   // unterscheidet deshalb nicht mehr zwischen ihnen.
-  const energyOrb: EnergyOrb | SynaptixBrain | DreiKugeln | null =
-    orb instanceof EnergyOrb || orb instanceof SynaptixBrain || orb instanceof DreiKugeln ? orb : null;
+  const energyOrb: EnergyOrb | SynaptixBrain | DreiKugeln | NebelKreis | null =
+    orb instanceof EnergyOrb || orb instanceof SynaptixBrain || orb instanceof DreiKugeln
+      || orb instanceof NebelKreis ? orb : null;
   const orbMenu = document.getElementById("orb-menu") as HTMLElement | null;
   const orbInfo = document.getElementById("orb-info") as HTMLElement | null;
   const chatPanel = document.getElementById("chat-panel") as HTMLElement | null;
@@ -345,7 +359,29 @@ async function bootstrap(): Promise<void> {
   backend.onEvent(handleVoiceMenu);
   window.aiOrb.onBackendEvent(handleVoiceMenu);
 
+  // Chat auf dem ganzen Bildschirm (16.11.2026).
+  let chatGross = false;
+  const setChatGross = (gross: boolean): void => {
+    if (gross === chatGross) return;
+    chatGross = gross;
+    chatPanel?.classList.toggle("chat-panel--gross", gross);
+    const knopf = document.getElementById("chat-groesse");
+    if (knopf !== null) {
+      knopf.textContent = gross ? "🗗" : "⛶";
+      knopf.title = gross ? "Wieder klein" : "Ganzer Bildschirm";
+    }
+    window.aiOrb.setChatExpanded?.(gross);
+    if (chatMessages !== null) {
+      window.setTimeout(() => {
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }, 120);
+    }
+  };
+
   const showChat = (show: boolean): void => {
+    // Beim Schliessen zuerst das Fenster verkleinern - sonst bliebe ein
+    // bildschirmgrosses, unsichtbares Fenster ueber allem liegen.
+    if (!show) setChatGross(false);
     chatOpen = show;
     if (chatPanel !== null) chatPanel.hidden = !show;
     window.aiOrb.setChatFocus(show);
@@ -361,9 +397,31 @@ async function bootstrap(): Promise<void> {
 
   const handleChatAndQuitRequests = (event: BackendEvent): void => {
     if (event.event === "orb.chat.requested") {
-      showChat(String(event.payload.action ?? "open") !== "close");
+      // "ziel" sagt, wo ein gesprochener Chatbefehl wirken soll: am Rechner
+      // oder auf dem Geraet (iPad). Ohne Angabe sind alle gemeint.
+      const ziel = String(event.payload.ziel ?? "");
+      const istWeb = document.documentElement.dataset.orbWeb !== undefined;
+      if ((ziel === "pc" && istWeb) || (ziel === "geraet" && !istWeb)) return;
+      const action = String(event.payload.action ?? "open");
+      if (action === "gross" || action === "klein") {
+        if (!chatOpen) showChat(true);
+        setChatGross(action === "gross");
+      } else {
+        showChat(action !== "close");
+      }
       showMenu(false);
       loop.noteActivity();
+    } else if (event.event === "orb.chat.message") {
+      // Verlauf (16.11.2026): Jede Anfrage und jede Antwort erscheint im
+      // Chat - auch gesprochene und solche vom iPad.
+      const text = String(event.payload.text ?? "").trim();
+      if (text !== "") {
+        addChatMessage(
+          text,
+          String(event.payload.rolle ?? "orb") === "user" ? "user" : "orb",
+          String(event.payload.uhrzeit ?? ""),
+        );
+      }
     } else if (event.event === "orb.quit.requested") {
       window.aiOrb.performMenuAction("quit");
     }
@@ -371,15 +429,65 @@ async function bootstrap(): Promise<void> {
   backend.onEvent(handleChatAndQuitRequests);
   window.aiOrb.onBackendEvent(handleChatAndQuitRequests);
 
-  const addChatMessage = (text: string, kind: "user" | "orb" | "pending"): HTMLDivElement | null => {
+  const addChatMessage = (
+    text: string,
+    kind: "user" | "orb" | "pending",
+    uhrzeit = "",
+  ): HTMLDivElement | null => {
     if (chatMessages === null) return null;
+    // Dieselbe Zeile kommt auf zwei Wegen an: einmal vom Eingabefeld oder
+    // vom Mikrofon dieses Geraets, einmal als Verlaufsmeldung vom Kern.
+    // Steht sie unter den letzten Zeilen schon da, wird sie nicht verdoppelt.
+    if (kind !== "pending") {
+      const zeilen = Array.from(chatMessages.children).slice(-6) as HTMLElement[];
+      const schonDa = zeilen.find(
+        (zeile) =>
+          zeile.classList.contains(`chat-message--${kind}`) && zeile.textContent === text,
+      );
+      if (schonDa !== undefined) {
+        if (uhrzeit !== "" && schonDa.dataset.zeit === undefined) schonDa.dataset.zeit = uhrzeit;
+        return schonDa as HTMLDivElement;
+      }
+    }
     const message = document.createElement("div");
     message.className = `chat-message chat-message--${kind}`;
     message.textContent = text;
-    chatMessages.appendChild(message);
+    if (uhrzeit !== "") message.dataset.zeit = uhrzeit;
+    // Eine wartende Zeile ("denkt nach") bleibt immer die unterste.
+    const wartend = kind === "pending" ? null : chatMessages.querySelector(".chat-message--pending");
+    chatMessages.insertBefore(message, wartend);
     chatMessages.scrollTop = chatMessages.scrollHeight;
     return message;
   };
+
+  // Frueheren Verlauf laden, damit der Chat nach einem Neustart nicht leer ist.
+  void backend
+    .get<{ eintraege?: Array<{ rolle?: string; text?: string; uhrzeit?: string; tag?: string }> }>(
+      "/chat/verlauf?anzahl=80",
+    )
+    .then((verlauf) => {
+      if (chatMessages === null || verlauf === null || !Array.isArray(verlauf.eintraege)) return;
+      const anfang = chatMessages.firstChild;
+      let letzterTag = "";
+      for (const eintrag of verlauf.eintraege) {
+        const text = String(eintrag.text ?? "").trim();
+        if (text === "") continue;
+        const tag = String(eintrag.tag ?? "");
+        if (tag !== "" && tag !== letzterTag) {
+          const marke = document.createElement("div");
+          marke.className = "chat-tag";
+          marke.textContent = tag;
+          chatMessages.insertBefore(marke, anfang);
+          letzterTag = tag;
+        }
+        const zeile = document.createElement("div");
+        zeile.className = `chat-message chat-message--${eintrag.rolle === "user" ? "user" : "orb"}`;
+        zeile.textContent = text;
+        if (eintrag.uhrzeit) zeile.dataset.zeit = String(eintrag.uhrzeit);
+        chatMessages.insertBefore(zeile, anfang);
+      }
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    });
 
   const orbHitRadiusPixels = (): number =>
     (1.05 * orbScale * states.appearance.scale) / worldPerPixel();
@@ -458,6 +566,10 @@ async function bootstrap(): Promise<void> {
   });
 
   document.getElementById("chat-close")?.addEventListener("click", () => showChat(false));
+  document.getElementById("chat-groesse")?.addEventListener("click", () => {
+    setChatGross(!chatGross);
+    chatInput?.focus();
+  });
   chatForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     const text = chatInput?.value.trim() ?? "";
@@ -687,7 +799,7 @@ function pegelAus(event: BackendEvent, bisher: number): number {
 
 function handleEmotionEvent(
   event: BackendEvent,
-  orb: EnergyOrb | SynaptixBrain | DreiKugeln | null
+  orb: EnergyOrb | SynaptixBrain | DreiKugeln | NebelKreis | null
 ): void {
   if (orb === null) return;
   const aliases: Record<string, OrbEmotionName> = {
@@ -708,7 +820,7 @@ function handleEmotionEvent(
 /** ProfessorSession entscheidet fachlich; der Renderer zeichnet nur. */
 function handleProfessorEvent(
   event: BackendEvent,
-  orb: EnergyOrb | SynaptixBrain | DreiKugeln | null
+  orb: EnergyOrb | SynaptixBrain | DreiKugeln | NebelKreis | null
 ): void {
   if (orb === null || event.event !== "orb.professor.changed") return;
   const active = (event.payload as { active?: unknown } | undefined)?.active;

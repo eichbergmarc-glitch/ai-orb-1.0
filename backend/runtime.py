@@ -60,6 +60,12 @@ from backend.security.security_engine import SecurityEngine
 from backend.skills.skill_manager import SkillManager
 from backend.system.desktop_control import DesktopControl
 from backend.system.logging_setup import get_logger, setup_logging
+from backend.system.performance_trace import (
+    current_turn_trace,
+    mark_stage,
+    reset_turn_trace,
+    start_turn_trace,
+)
 from backend.system.task_manager import BackgroundTaskManager
 from backend.system.window_control import WindowControl
 from backend.tools.registry import ToolRegistry
@@ -140,6 +146,16 @@ class Runtime:
             # lernt.
             preferences=self.learning,
         )
+
+        # Der Chatverlauf (16.11.2026): Jede Anfrage und jede Antwort wird
+        # festgehalten und an die Oberflaechen gemeldet - gleich, ob sie
+        # getippt, am Rechner gesprochen oder vom iPad geschickt wurde. Alle
+        # drei Wege laufen durch ``cognitive.process``; deshalb sitzt der
+        # Mitschreiber genau dort und nicht an drei Stellen.
+        from backend.system.chatverlauf import Chatverlauf
+
+        self.chatverlauf = Chatverlauf()
+        self._verlauf_einhaengen()
 
         # --- Schicht 4: Selbstverbesserung, Skills, Agenten --------------------
         self.evolution = EvolutionEngine()
@@ -503,6 +519,10 @@ class Runtime:
         # Werte von Hand zu aendern. Braucht den Ereignisbus, um die
         # Oberflaeche nach einer Aenderung neu laden zu lassen.
         from backend.tools.animation_tools import build_animation_tools
+        from backend.tools.uebersicht_tools import build_uebersicht_tools
+
+        # Uebersichten zum Ansehen (16.11.2026): Funktionen und Vorlesungen.
+        self.tools.register_many(build_uebersicht_tools(self.tools))
 
         self.tools.register_many(build_animation_tools(self.event_bus))
 
@@ -1307,6 +1327,44 @@ class Runtime:
             logger.warning("Auftrag nach %.1f s abgebrochen (Zeitlimit).", timeout)
             raise
 
+    # --- Chatverlauf ------------------------------------------------------------
+
+    def _verlauf_einhaengen(self) -> None:
+        """Laesst ``cognitive.process`` jede Anfrage und Antwort mitschreiben."""
+
+        urspruenglich = self.cognitive.process
+
+        async def mitschreibend(text: str, *args: Any, **kwargs: Any) -> Any:
+            quelle = "gesprochen" if kwargs.get("spoken") else "chat"
+            try:
+                from backend.orchestrator.orchestrator import ist_vorlesungssegment
+
+                intern = bool(ist_vorlesungssegment(str(text)))
+            except Exception:  # noqa: BLE001
+                intern = False
+            # Die Regieanweisung eines Vorlesungsabschnitts ist keine Anfrage
+            # von Marc und gehoert nicht in seinen Verlauf.
+            if not intern:
+                await self._verlauf_melden("user", str(text), quelle)
+            antwort = await urspruenglich(text, *args, **kwargs)
+            await self._verlauf_melden(
+                "orb", str(getattr(antwort, "response", "") or ""), quelle
+            )
+            return antwort
+
+        self.cognitive.process = mitschreibend  # type: ignore[method-assign]
+
+    async def _verlauf_melden(self, rolle: str, text: str, quelle: str = "") -> None:
+        """Haelt eine Zeile fest und zeigt sie in den offenen Chatfenstern."""
+
+        try:
+            verlauf = getattr(self, "chatverlauf", None)
+            zeile = verlauf.eintragen(rolle, text, quelle=quelle) if verlauf else None
+            if zeile is not None:
+                await self.event_bus.publish("orb.chat.message", zeile)
+        except Exception:  # noqa: BLE001 - der Verlauf darf nie eine Antwort kosten.
+            logger.debug("Chatverlauf: Zeile liess sich nicht melden.", exc_info=True)
+
     def publish(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
         """Veröffentlicht ein Event threadsicher auf dem Event Bus."""
 
@@ -1397,6 +1455,21 @@ class Runtime:
             ohne,
         ):
             return "ausgabe_hier"
+        # Chat auf den ganzen Bildschirm und zurueck (16.11.2026).
+        if re.fullmatch(
+            r"(?:bitte\s+)?(?:den\s+)?chat(?:fenster)?\s+(?:bitte\s+)?(?:vergr[oö](?:ss|ß)ern|maximieren|"
+            r"gross|groß|gr[oö](?:ss|ß)er|vollbild|im\s+vollbild|auf\s+vollbild|"
+            r"auf\s+(?:den\s+)?ganzen\s+bildschirm(?:\s+(?:vergr[oö](?:ss|ß)ern|erweitern))?)"
+            r"(?:\s+(?:machen|stellen|bitte))*",
+            ohne,
+        ):
+            return "chat_gross"
+        if re.fullmatch(
+            r"(?:bitte\s+)?(?:den\s+)?chat(?:fenster)?\s+(?:bitte\s+)?(?:verkleinern|klein|kleiner|"
+            r"wieder\s+klein|normal|normale\s+gr[oö](?:ss|ß)e)(?:\s+(?:machen|stellen|bitte))*",
+            ohne,
+        ):
+            return "chat_klein"
         if knapp in Runtime.CHAT_AUF:
             return "chat_auf"
         if knapp in Runtime.CHAT_ZU:
@@ -1599,7 +1672,7 @@ class Runtime:
             reihe = getattr(tts, "_engines", None) or []
             aktiv = reihe[0] if reihe else None
         return str(getattr(aktiv, "name", "") or "") in {
-            "openai_tts", "elevenlabs", "edge_neural", "remote_tts", "speechgen",
+            "openai_tts", "elevenlabs", "edge_neural", "remote_tts", "remote", "speechgen",
         }
 
     def _alte_auftraege_abbrechen(self) -> None:
@@ -1731,7 +1804,63 @@ class Runtime:
         return None
 
     async def stimme_vom_geraet(
-        self, aufnahme: Path, *, dauer: bool = False, ausgabe_pc: bool = False
+        self, aufnahme: Path, *, dauer: bool = False, ausgabe_pc: bool = False,
+        kann_offen: bool | None = None,
+    ) -> dict[str, Any]:
+        """Wie :meth:`_stimme_vom_geraet_ablauf` - mit Zeitmessung.
+
+        Seit 15.11.2026 schreibt auch eine Frage vom Handy oder iPad eine
+        TURN_LATENCY-Zeile. Vorher war dieser Weg im Protokoll blind: Wann
+        am PC das erste Wort zu hoeren war, stand nirgends. Gemessen wird
+        ab dem Eintreffen der Aufnahme (``transcript_ready``,
+        ``model_context_ready``, ``provider_first_text``,
+        ``answer_tts_requested``, ``answer_audible``).
+        """
+
+        trace, token = start_turn_trace()
+        ergebnis: dict[str, Any] | None = None
+        try:
+            ergebnis = await self._stimme_vom_geraet_ablauf(
+                aufnahme, dauer=dauer, ausgabe_pc=ausgabe_pc, kann_offen=kann_offen,
+            )
+            return ergebnis
+        finally:
+            reset_turn_trace(token)
+            try:
+                self._geraetezug_abschliessen(trace, ergebnis)
+            except Exception:  # noqa: BLE001 - die Messung darf nie stoeren.
+                logger.debug("Zeitmessung fuer das Geraet liess sich nicht abschliessen.",
+                             exc_info=True)
+
+    def _geraetezug_abschliessen(self, trace: Any, ergebnis: dict[str, Any] | None) -> None:
+        """Schreibt die Zeitmessung - bei Ausgabe am PC erst nach dem Sprechen."""
+
+        if ergebnis is None:
+            trace.finish(outcome="geraet_fehler")
+            return
+        if not str(ergebnis.get("frage") or "").strip() and not ergebnis.get("am_pc"):
+            trace.finish(outcome="geraet_ignoriert")
+            return
+        if not ergebnis.get("am_pc"):
+            # Das Handy spielt selbst ab; wann es hoerbar wird, meldet es
+            # in "Handy meldet: vorgelesen".
+            trace.finish(outcome="geraet_handy")
+            return
+        sprechen = getattr(self, "_pc_sprechaufgabe", None)
+        if sprechen is None or sprechen.done():
+            trace.finish(outcome="geraet_pc")
+            return
+
+        async def nach_dem_sprechen() -> None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(sprechen), timeout=300)
+            trace.finish(outcome="geraet_pc")
+
+        asyncio.get_running_loop().create_task(nach_dem_sprechen())
+
+    async def _stimme_vom_geraet_ablauf(
+        self, aufnahme: Path, *, dauer: bool = False, ausgabe_pc: bool = False,
+        kann_offen: bool | None = None,
     ) -> dict[str, Any]:
         """Eine Aufnahme von einem anderen Gerät: erkennen, antworten, sprechen.
 
@@ -1762,6 +1891,8 @@ class Runtime:
         # Ausgabe am PC (13.11.2026): Marc spricht ins iPad, die Antwort kommt
         # aus den PC-Lautsprechern. Das iPad-Mikrofon versteht ihn besser.
         self._geraet_ausgabe_pc = bool(ausgabe_pc)
+        if kann_offen is not None:
+            self._geraet_kann_offen = bool(kann_offen)
         if dauer:
             vorab = await self._dauerhoeren_pruefen(aufnahme)
             if vorab is not None:
@@ -1771,6 +1902,7 @@ class Runtime:
                 return vorab
             frage = self._dauer_frage
             transcript = type("T", (), {"confidence": 0.9})()
+            mark_stage("transcript_ready")
         else:
             # Zuerst die alte Antwort verstummen lassen - sonst rechnet die
             # Stimme noch, während die Erkennung schon anfängt.
@@ -1778,6 +1910,7 @@ class Runtime:
 
             transcript = await self.voice.transcriber.transcribe(aufnahme)
             frage = transcript.text.strip()
+            mark_stage("transcript_ready")
 
         if not frage:
             logger.info("Aufnahme vom Gerät enthielt keine erkennbare Sprache.")
@@ -1790,9 +1923,25 @@ class Runtime:
             bestaetigung = {
                 "chat_auf": "Chat ist offen.",
                 "chat_zu": "Chat ist zu.",
+                "chat_gross": "Der Chat füllt jetzt den Bildschirm.",
+                "chat_klein": "Der Chat ist wieder klein.",
                 "ausgabe_pc": "Gut, ich antworte ab jetzt über den PC.",
                 "ausgabe_hier": "Gut, ich antworte ab jetzt hier.",
             }.get(befehl, "Erledigt.")
+            # Chatbefehle wirken dort, wo Marc hinsieht (16.11.2026): bei
+            # Ausgabe am PC im Chat des Rechners, sonst auf dem Geraet. Die
+            # Oberflaechen lesen am Feld "ziel", ob sie gemeint sind.
+            if befehl.startswith("chat_"):
+                with contextlib.suppress(Exception):
+                    await self.event_bus.publish(
+                        "orb.chat.requested",
+                        {
+                            "action": {"chat_auf": "open", "chat_zu": "close",
+                                       "chat_gross": "gross", "chat_klein": "klein"}[befehl],
+                            "source": "geraet",
+                            "ziel": "pc" if ausgabe_pc else "geraet",
+                        },
+                    )
             if befehl == "ausgabe_pc" or (ausgabe_pc and befehl != "ausgabe_hier"):
                 self._am_pc_sagen(bestaetigung)
                 return {"frage": frage, "antwort": bestaetigung, "befehl": befehl,
@@ -1856,7 +2005,11 @@ class Runtime:
         # Sprechen, sobald der erste Satz gedacht ist (13.11.2026). Bisher
         # wartete der Weg vom Handy auf die GANZE Antwort - bei 400 Zeichen
         # 3-4 Sekunden Stille, bevor ueberhaupt die Stimme erzeugt wurde.
-        offener_auftrag = "" if ausgabe_pc else self._offenen_auftrag_anlegen()
+        # Nur eine Seite, die offene Antworten kennt, bekommt eine (14.11.2026):
+        # Eine aeltere, noch offene iPad-Seite las "-1 Stuecke" als "nichts"
+        # und blieb stumm. Sie meldet sich mit "X-Orb-Offen: 1".
+        offen_erlaubt = not ausgabe_pc and bool(getattr(self, "_geraet_kann_offen", False))
+        offener_auftrag = self._offenen_auftrag_anlegen() if offen_erlaubt else ""
         erster_satz = asyncio.Event()
         unterwegs = {"gesprochen": False}
 
@@ -1866,21 +2019,50 @@ class Runtime:
                 return False
             if ausgabe_pc:
                 self._am_pc_sagen(satz)
-            else:
+            elif offener_auftrag:
                 self._auftrag_erweitern(offener_auftrag, satz)
+            else:
+                # Aeltere Seite: Die ganze Antwort kommt am Ende als Ganzes.
+                return False
             unterwegs["gesprochen"] = True
             erster_satz.set()
             return True
 
         async def ablauf() -> dict[str, Any]:
-            handy_tools.geraet_aktiv(True)
+            handy_tools.geraet_aktiv(True, ausgabe_pc=ausgabe_pc)
+            # Sprechdynamik (16.11.2026): neue Antwort, neue Satzzaehlung.
+            with contextlib.suppress(Exception):
+                from backend.tts import sprechdynamik
+
+                sprechdynamik.neue_rede(
+                    "Vorlesung " + frage if befehl in ("start", "fortsetzen") else frage
+                )
+            # Der Orb am Bildschirm arbeitet mit (16.11.2026): Bei Ausgabe am
+            # PC zeigt er, dass er nachdenkt - vorher blieb er reglos, bis
+            # die Stimme einsetzte, und es sah aus, als sei nichts angekommen.
+            if ausgabe_pc:
+                with contextlib.suppress(Exception):
+                    await self.event_bus.publish(
+                        event_types.ORB_STATE_CHANGED, {"state": "thinking", "quelle": "geraet"}
+                    )
+            # Startet oder setzt der Satz eine Vorlesung fort, geht an die
+            # Denkschicht eine Regieanweisung. Im Verlauf soll stehen, was
+            # Marc gesagt hat.
+            if auftrag_text != frage and frage.strip().lower() != "weiter":
+                await self._verlauf_melden("user", frage, "gesprochen")
             try:
                 antwort = await self.cognitive.process(auftrag_text, spoken=True, on_speech=sprich)
             finally:
                 handy_tools.geraet_aktiv(False)
+                if ausgabe_pc and not unterwegs["gesprochen"] and not self.pc_spricht():
+                    with contextlib.suppress(Exception):
+                        await self.event_bus.publish(
+                            event_types.ORB_STATE_CHANGED, {"state": "idle", "quelle": "geraet"}
+                        )
             aktionen = handy_tools.aktionen_abholen()
             text = str(getattr(antwort, "response", "") or "").strip()
-            schon = bool(getattr(antwort, "already_spoken", False)) or unterwegs["gesprochen"]
+            schon = unterwegs["gesprochen"] or (
+                ausgabe_pc and bool(getattr(antwort, "already_spoken", False)))
 
             weiter = False
             if befehl in ("start", "fortsetzen") and vorlesung is not None:
@@ -1915,7 +2097,7 @@ class Runtime:
             return ergebnis
 
         aufgabe = asyncio.get_running_loop().create_task(ablauf())
-        if ausgabe_pc:
+        if not offener_auftrag:
             return await aufgabe
 
         # Handy/iPad: sobald der erste Satz da ist, antworten - der Rest
@@ -1993,15 +2175,29 @@ class Runtime:
 
         self._eigene_rede_merken(text)
         vorher = getattr(self, "_pc_sprechaufgabe", None)
+        # Zeitmessung (15.11.2026): Die Uebergabe an die Stimme vermerken und
+        # der Sprachschicht den Zug mitgeben, damit sie "answer_audible"
+        # beim ersten hoerbaren Ton setzt.
+        mark_stage("answer_tts_requested")
+        zug = current_turn_trace()
 
         async def sprechen() -> None:
             if vorher is not None and not vorher.done():
                 with contextlib.suppress(Exception):
                     await vorher
+            eigener_zug = False
+            if zug is not None and getattr(self.voice, "_active_turn_trace", None) is None:
+                with contextlib.suppress(Exception):
+                    self.voice._active_turn_trace = zug
+                    eigener_zug = True
             try:
                 await self.voice.say(text, emotion="freundlich")
             except Exception:  # noqa: BLE001
                 logger.exception("Antwort liess sich am PC nicht sprechen.")
+            finally:
+                if eigener_zug and getattr(self.voice, "_active_turn_trace", None) is zug:
+                    with contextlib.suppress(Exception):
+                        self.voice._active_turn_trace = None
 
         self._pc_sprechaufgabe = asyncio.get_running_loop().create_task(sprechen())
 

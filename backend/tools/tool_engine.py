@@ -717,14 +717,37 @@ class ToolEngine:
         if not self.enabled:
             return ""
 
-        namen = self._relevante_werkzeuge(text)
-        if namen is None:
-            namen = self._registry.names()
-        namen = [
+        # Kontext klein halten (15.11.2026). Gemessen: Eine Bitte ohne
+        # erkanntes Stichwort ("erzaehl mir etwas zu den Ausfaellen von
+        # Microsoft", "wechsle die Animation") bekam das GANZE Verzeichnis
+        # mit - 30 000 Zeichen je Anfrage, gegenueber 14 000 bei einer
+        # Mailfrage mit kleinem Katalog. Jetzt werden nur die passenden
+        # Werkzeuge ausfuehrlich beschrieben; alle uebrigen stehen mit dem
+        # blossen Namen da. Keine Faehigkeit geht verloren: Ein Aufruf mit
+        # falschen Argumenten bekommt die genaue Beschreibung zurueck.
+        alle = [
             name
-            for name in namen
+            for name in self._registry.names()
             if name not in _MODELL_VERBORGENE_TAGEBUCHWERKZEUGE
         ]
+        uebrige: list[str] = []
+        if (text or "").strip():
+            gewaehlt = self._relevante_werkzeuge(text)
+            if gewaehlt is None:
+                gewaehlt = list(self.KERNWERKZEUGE)
+            auswahl = set(gewaehlt)
+            namen = [name for name in alle if name in auswahl]
+            uebrige = sorted(name for name in alle if name not in auswahl)
+        else:
+            namen = alle
+        verzeichnis = self._registry.describe_for_model(namen)
+        if uebrige:
+            verzeichnis += (
+                "\n\nWeitere Werkzeuge - hier nur mit Namen, damit die Liste kurz "
+                "bleibt. Du darfst jedes davon genauso aufrufen; stimmen die "
+                "Argumente nicht, bekommst du die genaue Beschreibung zurueck:\n"
+                + ", ".join(uebrige)
+            )
         return (
             "Dir stehen Werkzeuge zur Verfügung. Benutze sie immer dann, wenn "
             "du etwas nicht selbst wissen kannst – etwa Datum und Uhrzeit, den "
@@ -738,7 +761,7 @@ class ToolEngine:
             "normaler Sprache. Erwähne die Werkzeuge dabei nicht – der "
             "Benutzer will die Antwort, nicht den Weg dorthin.\n\n"
             "Diese Werkzeuge gibt es:\n"
-            + self._registry.describe_for_model(namen)
+            + verzeichnis
             + "\n\n"
             + self.VERBINDLICHE_REGEL
         )
@@ -817,6 +840,66 @@ class ToolEngine:
                 "studium_starten", "lernstand_zeigen", "vorlesung_erstellen",
             )
 
+        # Ergaenzt 15.11.2026 - ohne diese Gruppen bekamen "wechsle die
+        # Animation" oder "erzaehl mir zu den Ausfaellen" den vollen Katalog.
+        if any(w in knapp for w in (
+            "animation", "darstellung", "kugel", "bälle", "baelle", "gehirn",
+        )):
+            dazu("animation_wechseln", "animation_anpassen")
+        if any(w in knapp for w in (
+            "wetter", "regnet", " regen", "temperatur", "schneit", "sonnig",
+        )):
+            dazu("wetter")
+        if any(w in knapp for w in (
+            "uhrzeit", "wie spät", "wie spaet", "wie viel uhr", "wieviel uhr",
+            "datum", "welcher tag", "welches datum",
+        )):
+            dazu("aktuelle_zeit")
+        if any(w in knapp for w in (
+            "rechne", "prozent", " plus ", " minus ", "geteilt durch", "wurzel",
+        )):
+            dazu("rechnen")
+        if any(w in knapp for w in (
+            " zug ", " zuges", " zugs ", " bus ", " tram", "verbindung",
+            "fahrplan", "abfahrt", "bahnhof",
+        )):
+            dazu("verbindung_suchen", "abfahrt_erinnern")
+        if any(w in knapp for w in (
+            " sms", "whatsapp", "nachricht an", "anruf", " ruf ", "telefon",
+            "handy", " app ", "kontakt",
+        )):
+            dazu("nachricht_senden", "anrufen", "app_oeffnen", "kurzbefehl_starten")
+        if any(w in knapp for w in ("erinnere mich", "erinnerung", "wecker", "weck mich")):
+            dazu("erinnerung_setzen", "erinnerungen_zeigen", "erinnerung_loeschen")
+        if "tagebuch" in knapp:
+            dazu(
+                "tagebuch_zeigen", "tagebuch_nachsehen", "tagebuch_titelblatt",
+                "tagebuch_bild_einfuegen",
+            )
+        if any(w in knapp for w in ("karteikarte", "lernkarte")):
+            dazu(
+                "karteikarte_anlegen", "karteikarten_abfragen",
+                "karteikarte_bewerten", "karteikarten_stand",
+            )
+        if any(w in knapp for w in ("vorliebe", "ich mag ")):
+            dazu("vorliebe_merken", "vorlieben_zeigen", "vorliebe_vergessen")
+        if any(w in knapp for w in ("überblick", "ueberblick", "briefing", "tagesplan")):
+            dazu("tagesueberblick", "briefing_einplanen")
+        if any(w in knapp for w in (
+            "nachrichten", "neuigkeiten", "schlagzeilen", "ausfall", "ausfäll",
+            "störung", "stoerung",
+        )):
+            dazu("internet_suchen", "webseite_lesen", "forschung_aktuell")
+
+        if any(w in knapp for w in (
+            "funktionen", "fähigkeiten", "faehigkeiten", "befehle", "was kannst du",
+        )):
+            dazu("funktionen_zeigen")
+        if any(w in knapp for w in ("standort", "wo bin ich", "orte mich", " gps", "position")):
+            dazu("standort_zeigen")
+        if "vorlesungen" in knapp or "vorlesungsübersicht" in knapp:
+            dazu("vorlesungen_zeigen")
+
         # Ein technischer Werkzeugname in der Bitte ist immer eindeutig.
         for name in vorhanden:
             if name in knapp:
@@ -826,6 +909,26 @@ class ToolEngine:
         # vollen Katalog. Eine kleine Einsparung ist weniger wichtig als eine
         # verlorene Faehigkeit.
         return sorted(gewaehlt) if gewaehlt else None
+
+    #: Werkzeuge, die bei einer Bitte ohne erkanntes Stichwort ausfuehrlich
+    #: beschrieben werden (15.11.2026). Alle anderen stehen nur mit Namen da.
+    KERNWERKZEUGE: tuple[str, ...] = (
+        "internet_suchen", "webseite_lesen", "aktuelle_zeit", "rechnen",
+        "wetter", "gedaechtnis_durchsuchen", "wissen_nachsehen",
+    )
+
+    #: Steht ganz am Ende, wenn die Bitte ein deutlicher Auftrag ist
+    #: (15.11.2026). Gemessen: Bei "lies mir meine Mails vor" antwortete das
+    #: Modell zuerst "Ich schaue kurz nach ... Einen Moment." und musste
+    #: nachgehakt werden - eine ganze Modellrunde (2-3 s) fuer nichts.
+    AUFTRAGS_REGEL = (
+        "DIESE BITTE IST EIN AUFTRAG. Braucht er ein Werkzeug, besteht deine "
+        "Antwort jetzt NUR aus dem Werkzeugaufruf - keine Ankuendigung, kein "
+        "'Einen Moment', kein 'Ich schaue nach'. Den Satz an den Benutzer "
+        "sagst du erst, wenn das Ergebnis da ist. Steht das Ergebnis schon "
+        "oben im Kontext (etwa 'Soeben ausgefuehrt', Wetter, Suchergebnisse), "
+        "antworte direkt daraus."
+    )
 
     #: Die Regel, die NACH der Werkzeugliste steht.
     #:
@@ -1299,7 +1402,20 @@ class ToolEngine:
                     output = run.result.output[: self._max_output_characters]
                     results.append(f"Ergebnis von {call.tool}:\n{output}")
                 else:
-                    results.append(f"{call.tool} ist fehlgeschlagen: {run.result.error}")
+                    meldung = f"{call.tool} ist fehlgeschlagen: {run.result.error}"
+                    # Seit 15.11.2026 stehen viele Werkzeuge nur mit Namen
+                    # im Verzeichnis. Wer eines davon falsch aufruft, bekommt
+                    # hier die genaue Form - statt eines zweiten Ratens.
+                    werkzeug = self._registry.get(call.tool)
+                    if werkzeug is not None:
+                        try:
+                            meldung += (
+                                "\nSo wird es aufgerufen:\n"
+                                + werkzeug.describe_for_model()
+                            )
+                        except Exception:  # noqa: BLE001 - nur eine Hilfe.
+                            pass
+                    results.append(meldung)
 
             # Dieselbe Nachrichtenform wie der übrige Verlauf – die
             # Provider erwarten ChatMessage-Objekte, keine Wörterbücher.

@@ -13,6 +13,7 @@ Conversation Manager verwaltet und ist providerunabhängig.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -1259,6 +1260,34 @@ class ProviderManager:
         if not order:
             raise ProviderError("Kein KI-Provider konfiguriert.")
 
+        # Wettlauf (14.11.2026): Die ersten zwei Cloud-Modelle bekommen die
+        # Frage GLEICHZEITIG; wer zuerst ein Wort liefert, spricht, der andere
+        # wird abgebrochen. Das faengt die Ausreisser ab, in denen ein Dienst
+        # mal zwei, drei Sekunden haengt. Kostet nur die Eingabe doppelt.
+        wettlauf = int(get_config().get("ai.wettlauf", 0) or 0)
+        laeufer = [n for n in order if not self._providers[n].is_local][: max(0, wettlauf)]
+        if len(laeufer) >= 2 and order[0] in laeufer:
+            sieger = await self._wettlauf_starten(
+                laeufer, messages, temperature=temperature, max_tokens=max_tokens
+            )
+            if sieger is not None:
+                name, strom, erstes, started = sieger
+                mark_stage("provider_requested")
+                mark_stage("provider_first_text")
+                yield erstes
+                try:
+                    async for piece in strom:
+                        if piece:
+                            yield piece
+                    self._health.note_success(name, time.perf_counter() - started)
+                    return
+                except Exception as error:  # noqa: BLE001
+                    wrapped = error if isinstance(error, ProviderError) else ProviderError(
+                        f"{name}: Streamingfehler - {error}")
+                    self._note_provider_error(name, wrapped)
+                    raise wrapped from error
+            order = [n for n in order if n not in laeufer]
+
         last_error: ProviderError | None = None
         for candidate in order:
             provider = self._providers[candidate]
@@ -1309,6 +1338,56 @@ class ProviderManager:
         raise ProviderError(
             f"Alle Provider blieben vor dem ersten Antworttext aus: {last_error}"
         )
+
+    async def _wettlauf_starten(
+        self,
+        namen: list[str],
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None,
+        max_tokens: int | None,
+    ):
+        """Startet mehrere Streams; gibt (name, rest, erstes_stueck, start) des schnellsten."""
+
+        started = time.perf_counter()
+
+        async def erstes(name: str):
+            provider = self._providers[name]
+            strom = provider.chat_stream(
+                self._messages_for_provider(provider, messages),
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ).__aiter__()
+            while True:
+                stueck = await strom.__anext__()
+                if stueck:
+                    return name, strom, stueck
+
+        aufgaben = {asyncio.ensure_future(erstes(n)): n for n in namen}
+        offen = set(aufgaben)
+        sieger = None
+        try:
+            while offen and sieger is None:
+                fertig, offen = await asyncio.wait(offen, return_when=asyncio.FIRST_COMPLETED)
+                for aufgabe in fertig:
+                    if aufgabe.cancelled() or aufgabe.exception() is not None:
+                        fehler = None if aufgabe.cancelled() else aufgabe.exception()
+                        logger.info("Wettlauf: '%s' ausgeschieden (%s).", aufgaben[aufgabe], fehler)
+                        if isinstance(fehler, ProviderError):
+                            self._note_provider_error(aufgaben[aufgabe], fehler)
+                        continue
+                    if sieger is None:
+                        sieger = aufgabe.result()
+                    else:
+                        with contextlib.suppress(Exception):
+                            await aufgabe.result()[1].aclose()
+        finally:
+            for aufgabe in offen:
+                aufgabe.cancel()
+        if sieger is None:
+            return None
+        logger.info("Wettlauf gewonnen von '%s' nach %.2f s.", sieger[0], time.perf_counter() - started)
+        return sieger[0], sieger[1], sieger[2], started
 
     async def complete(
         self,

@@ -62,6 +62,7 @@ from backend.studium.vorlesungs_session import VorlesungsSession
 from backend.system.logging_setup import get_logger
 from backend.system.performance_trace import TurnTrace, mark_stage, reset_turn_trace, start_turn_trace
 from backend.diktat.diktat import KALIBRIERSATZ, Diktierer
+from backend.tts import prosodie
 from backend.tts.tts_manager import TtsManager
 from backend.voice.speaker_id import Stimmerkennung, Urteil
 from backend.voice.stopwort import stopwort_finden
@@ -782,6 +783,15 @@ class VoicePipeline:
         # der erste Satz laeuft. Der jeweils naechste Satz wird bereits in
         # eine WAV-Datei umgewandelt und wartet beim Wiedergabeende bereit.
         self._satzstrom_queue: asyncio.Queue[Any] | None = None
+        #: Sprechtakt (17.11.2026): Pausen zwischen Saetzen nach Satzzeichen
+        #: und Satzlaenge statt immer gleich lang.
+        self._sprechtakt = bool(config.get("voice.output.sprechtakt", True))
+        #: Prosodie (17.11.2026): offene <slow>/<emphasis> in den naechsten
+        #: Satz tragen; Pausen zwischen Saetzen leicht zufaellig streuen.
+        self._prosodie_fortsetzung = prosodie.Fortsetzung()
+        self._pausen_streuung = prosodie.Einstellungen.aus_config(
+            config.get("voice.output.prosodie", {}) or {}
+        ).pausen_streuung
         self._satzstrom_worker: asyncio.Task[bool] | None = None
         self._satzstrom_synth_lock = asyncio.Lock()
         #: Fuer Cloud-Stimmen (OpenAI): mehrere Saetze GLEICHZEITIG erzeugen.
@@ -2968,6 +2978,18 @@ class VoicePipeline:
     ) -> None:
         """Holt eine Antwort und spricht sie."""
 
+        # Sprechdynamik (16.11.2026): Mit jeder Antwort beginnt die
+        # Satzzaehlung neu, und die Frage bestimmt mit, ob ein Raeuspern
+        # oder ein Schmunzeln passt.
+        try:
+            from backend.tts import sprechdynamik
+
+            sprechdynamik.neue_rede(
+                "Vorlesung" if vorlesungszug else str(getattr(turn, "transcript", "") or text)
+            )
+        except Exception:  # noqa: BLE001 - darf die Antwort nie aufhalten.
+            pass
+
         self._processing = True
         response_completed = False
         answer = ""
@@ -3135,6 +3157,26 @@ class VoicePipeline:
             return await self._say(satz)
         if self._satzstrom_failed:
             return False
+        # Erster Satz einer Antwort bei der Colab-Stimme (19.11.2026): Sie
+        # braucht fuer einen Satz so lange, wie er dauert. Ein langer erster
+        # Satz hielt die ganze Antwort ~4 s zurueck. Am ersten Komma geteilt,
+        # ist das erste Stueck nach 1-2 s hoerbar; den Rest erzeugt die Stimme,
+        # waehrend das erste Stueck laeuft. Die Pause nach einem Komma ist kurz.
+        if getattr(self, "_satzstrom_erster", False):
+            self._satzstrom_erster = False
+            teile = _am_ersten_komma(satz) if self._stimme_ist_remote() else None
+            if teile is not None:
+                if not await self._sprich_satz(teile[0]):
+                    return False
+                return await self._sprich_satz(teile[1])
+        # Mit Markup an die Stimme, ohne Markup in die Warteschlange: Dort
+        # dient der Text dem Echo-Abgleich, dem Sprechtakt und der Frage,
+        # ob die Rede mit "?" endete.
+        fortsetzung = getattr(self, "_prosodie_fortsetzung", None)
+        markiert = fortsetzung.weiter(satz) if fortsetzung is not None else satz
+        klartext = prosodie.entfernen(markiert)
+        if not klartext:
+            return True
 
         # Nicht auf die Wiedergabe warten: Sonst stoppt der Providerstrom an
         # jedem Punkt, und der naechste Satz wird erst NACH der vorherigen
@@ -3144,13 +3186,22 @@ class VoicePipeline:
             # Modelle), laeuft aber parallel zur Wiedergabe des Vorgaengers.
             if self._stimme_ist_cloud():
                 async with self._satzstrom_cloud_slots:
-                    return await self._tts.speak(satz, state="speaking")
+                    return await self._tts.speak(markiert, state="speaking")
             async with self._satzstrom_synth_lock:
-                return await self._tts.speak(satz, state="speaking")
+                return await self._tts.speak(markiert, state="speaking")
 
         pending = asyncio.create_task(_vorbereiten())
-        await queue.put((satz, pending))
+        await queue.put((klartext, pending))
         return True
+
+    def _stimme_ist_remote(self) -> bool:
+        """Ob gerade die eigene Colab-Stimme spricht (Engine ``remote``)."""
+
+        aktiv = getattr(self._tts, "_active", None)
+        if aktiv is None:
+            reihe = getattr(self._tts, "_engines", None) or []
+            aktiv = reihe[0] if reihe else None
+        return str(getattr(aktiv, "name", "") or "") == "remote"
 
     def _stimme_ist_cloud(self) -> bool:
         """Ob die gerade aktive Stimme in der Cloud erzeugt wird."""
@@ -3160,7 +3211,7 @@ class VoicePipeline:
             reihe = getattr(self._tts, "_engines", None) or []
             aktiv = reihe[0] if reihe else None
         name = str(getattr(aktiv, "name", "") or "")
-        return name in {"openai_tts", "elevenlabs", "edge_neural", "remote_tts", "speechgen"}
+        return name in {"openai_tts", "elevenlabs", "edge_neural", "remote_tts", "remote", "speechgen"}
 
     def _satzstrom_starten(self) -> None:
         """Startet eine geordnete, vorproduzierende Satzwiedergabe."""
@@ -3169,7 +3220,11 @@ class VoicePipeline:
             return
         queue: asyncio.Queue[Any] = asyncio.Queue()
         self._satzstrom_failed = False
+        fortsetzung = getattr(self, "_prosodie_fortsetzung", None)
+        if fortsetzung is not None:
+            fortsetzung.zuruecksetzen()
         self._satzstrom_queue = queue
+        self._satzstrom_erster = True
         self._satzstrom_worker = asyncio.create_task(self._satzstrom_abspielen(queue))
 
     async def _satzstrom_beenden(self) -> bool:
@@ -3186,6 +3241,21 @@ class VoicePipeline:
             self._satzstrom_queue = None
             self._satzstrom_worker = None
             self._satzstrom_failed = False
+
+    def _pause_zwischen(self, satz: str, naechster: str) -> float:
+        """Stille zwischen zwei Saetzen - nach Satzzeichen, Laenge und Gedankenwechsel."""
+
+        if not getattr(self, "_sprechtakt", False):
+            return self._sentence_pause
+        try:
+            from backend.voice.sprechtakt import pause_nach
+
+            pause = pause_nach(prosodie.entfernen(satz), prosodie.entfernen(naechster))
+            # Der Sprechtakt ist je Satz fest; die kleine Zufallsstreuung
+            # sorgt dafuer, dass dieselbe Antwort nicht im Metronomtakt kommt.
+            return prosodie.pause_streuen(pause, getattr(self, "_pausen_streuung", 0.0))
+        except Exception:  # noqa: BLE001 - nie die Rede aufhalten.
+            return self._sentence_pause
 
     async def _satzstrom_abspielen(self, queue: asyncio.Queue[Any]) -> bool:
         """Spielt vorproduzierte Saetze lueckenarm und in richtiger Folge."""
@@ -3255,10 +3325,14 @@ class VoicePipeline:
                         break
                     played_anything = True
 
-                    # Keine zusaetzliche sleep-Pause: Die WAV behaelt einen
-                    # kontrollierten Atemrand. Der naechste, parallel erzeugte
-                    # Satz kann unmittelbar anschliessen.
                     current = await queue.get()
+                    # Sprechtakt (17.11.2026): Vorher gar keine Pause - nur der
+                    # 70-ms-Rand der Datei, nach einer Frage genauso wie nach
+                    # einem Komma. Jetzt nach Satzzeichen und Laenge.
+                    if current is not None and getattr(self, "_sprechtakt", False):
+                        luecke = self._pause_zwischen(last_text, str(current[0])) - 0.07
+                        if luecke > 0.0:
+                            await asyncio.sleep(luecke)
             finally:
                 # Noch nicht abgespielte Synthesen abbrechen, beispielsweise
                 # nach einem gesprochenen "Stop".
@@ -3373,11 +3447,12 @@ class VoicePipeline:
         # Endet die Rede OHNE Frage, ist auch keine offen - dann faellt
         # das Zeichen zurueck.
         if gesprochen:
+            klartext = prosodie.entfernen(str(text))
             self._wartet_auf_antwort = (
-                str(text).rstrip().rstrip("'\"").endswith("?")
+                klartext.rstrip().rstrip("'\"").endswith("?")
                 or (
-                    "beginne" in str(text).lower()
-                    and "diktieren" in str(text).lower()
+                    "beginne" in klartext.lower()
+                    and "diktieren" in klartext.lower()
                 )
             )
         return gesprochen
@@ -3390,11 +3465,13 @@ class VoicePipeline:
         # regelmaessig ueber die Grenze zwischen zwei Saetzen. Ohne den
         # Vorgaenger haette der Orb sich dort selbst fuer einen Fremden
         # gehalten.
-        self._letzte_saetze.append(self._woerter(text))
+        self._letzte_saetze.append(self._woerter(prosodie.entfernen(text)))
         self._gesprochene_woerter = set().union(*self._letzte_saetze)
 
         await self._set_state(VoiceState.SPEAKING)
-        await self._event_bus.publish(event_types.TTS_STARTED, {"text": text})
+        await self._event_bus.publish(
+            event_types.TTS_STARTED, {"text": prosodie.entfernen(text)}
+        )
 
         # Während der Orb spricht, horcht der Stop-Späher auf das Stop-Wort:
         # kurze, feste Hörfenster statt der gewöhnlichen Äußerungserkennung.
@@ -3428,7 +3505,13 @@ class VoicePipeline:
 
         try:
             prepared = self._tts.prepare_text(text)
-            chunks = self._tts.split_into_chunks(prepared)
+            # Offene Tags in den naechsten Abschnitt tragen (eigene Instanz:
+            # dieser Weg zerlegt selbst und laeuft unter der Sprechsperre).
+            fortsetzung = prosodie.Fortsetzung()
+            chunks = [
+                fortsetzung.weiter(chunk)
+                for chunk in self._tts.split_into_chunks(prepared)
+            ]
 
             # Den nächsten Satz erzeugen, WÄHREND der aktuelle abgespielt
             # wird.
@@ -3511,7 +3594,9 @@ class VoicePipeline:
                     # klebten die Sätze aneinander, und die Rede wirkte
                     # gehetzt bis unverständlich.
                     if index + 1 < len(chunks):
-                        await asyncio.sleep(self._sentence_pause)
+                        await asyncio.sleep(
+                            self._pause_zwischen(chunks[index], chunks[index + 1])
+                        )
         finally:
             self._listening_for_stop = False
             self._capture.set_stop_spotting(False)
@@ -4147,3 +4232,30 @@ def _ist_geplapper(text: str) -> bool:
     # Oder: fast nur ein einziges Wort, egal in welcher Reihenfolge.
     haeufigstes = max(woerter.count(w) for w in set(woerter))
     return haeufigstes / len(woerter) >= 0.6
+
+
+def _am_ersten_komma(satz: str) -> tuple[str, str] | None:
+    """Teilt einen langen Satz am ersten Komma - nur, wenn beide Teile tragen.
+
+    Kein Teilen bei kurzen Saetzen, bei Kommas in Tags (``<pause 0,4>``) oder
+    in Zahlen (``3,5``), und nur, wenn vorn mindestens drei und hinten
+    mindestens vier Woerter stehen - sonst klingt es abgehackt.
+    """
+
+    text = str(satz or "")
+    tiefe = 0
+    for i, zeichen in enumerate(text):
+        if zeichen == "<":
+            tiefe += 1
+        elif zeichen == ">":
+            tiefe = max(0, tiefe - 1)
+        elif zeichen == "," and tiefe == 0:
+            if i + 1 < len(text) and text[i + 1].isdigit():
+                continue
+            vorn, hinten = text[: i + 1].strip(), text[i + 1 :].strip()
+            if len(prosodie.entfernen(hinten).split()) < 4:
+                return None
+            if len(prosodie.entfernen(vorn).split()) >= 3:
+                return vorn, hinten
+            # Vorn zu kurz ("Hallo Marc,"): das naechste Komma versuchen.
+    return None

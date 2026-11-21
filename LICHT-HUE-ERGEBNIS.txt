@@ -1,0 +1,22 @@
+AI-Orb - Hue-Steuertest ueber Bluetooth
+Zeitpunkt: 20.11.2026 13:18:23
+============================================================
+
+Suche die Lampe E1:55:AF:52:A9:D1 ...
+Gefunden.
+Alte Windows-Kopplung entfernt.
+Verbinde ...
+Verbunden. Pruefe die Hue-Schnittstelle ...
+Hue-Dienst vorhanden: ja
+Kopplung per Code nicht moeglich: BleakError: Could not pair with device: FAILED
+Jetzt sollte die Lampe reagieren:
+  FEHLER bei einschalten: BleakError: disconnected
+  FEHLER bei aus: BleakError: Not connected
+  FEHLER bei an: BleakError: Not connected
+  FEHLER bei aus: BleakError: Not connected
+  FEHLER bei an: BleakError: Not connected
+  FEHLER bei dimmen auf ~25%: BleakError: Not connected
+  FEHLER bei Farbe blau: BleakError: Not connected
+  FEHLER bei voll hell: BleakError: Not connected
+  FEHLER bei warmweiss: BleakError: Not connected
+Test fertig.

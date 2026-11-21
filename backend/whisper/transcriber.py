@@ -387,7 +387,16 @@ class Transcriber:
         schluessel = os.environ.get(
             str(self._cloud.get("api_key_env", "OPENAI_API_KEY")), ""
         ).strip()
-        if not schluessel:
+        # Schnellere Dienste vorweg (14.11.2026), z. B. Groq Whisper: nur
+        # wenn ihr Schluessel in der .env steht, sonst still uebersprungen.
+        vorweg = []
+        for dienst in self._cloud.get("vorweg", []) or []:
+            if not isinstance(dienst, dict):
+                continue
+            eigener = os.environ.get(str(dienst.get("api_key_env", "")), "").strip()
+            if eigener and dienst.get("model") and dienst.get("base_url"):
+                vorweg.append((str(dienst["base_url"]).rstrip("/"), eigener, str(dienst["model"])))
+        if not schluessel and not vorweg:
             return None
         sperre = float(getattr(self, "_cloud_pause_bis", 0.0))
         if sperre and time.monotonic() < sperre:
@@ -412,7 +421,9 @@ class Transcriber:
         except OSError:
             return None
 
-        for modell in modelle:
+        versuche = vorweg + [(basis, schluessel, m) for m in modelle if schluessel]
+        for nummer, (basis, schluessel, modell) in enumerate(versuche):
+            ist_vorweg = nummer < len(vorweg)
             felder = {"model": modell, "response_format": "json"}
             if self._language and self._language != "auto":
                 felder["language"] = self._language
@@ -428,6 +439,9 @@ class Transcriber:
                     timeout=httpx.Timeout(frist, connect=min(frist, 4.0)),
                 )
             except Exception as fehler:  # noqa: BLE001 - Netz weg o. ae.
+                if ist_vorweg:
+                    logger.info("Schnelle Erkennung (%s) nicht erreichbar: %s", modell, fehler)
+                    continue
                 logger.warning(
                     "Cloud-Erkennung nicht erreichbar (%s) - die lokale uebernimmt.",
                     fehler,
@@ -441,6 +455,10 @@ class Transcriber:
                     "Cloud-Erkennung mit '%s' abgelehnt (HTTP %d): %s",
                     modell, antwort.status_code, antwort.text[:160],
                 )
+                continue
+            if antwort.status_code >= 300 and ist_vorweg:
+                logger.info("Schnelle Erkennung (%s) HTTP %d - weiter mit OpenAI.",
+                            modell, antwort.status_code)
                 continue
             if antwort.status_code >= 300:
                 logger.warning(

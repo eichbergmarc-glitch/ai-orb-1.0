@@ -44,16 +44,27 @@ logger = get_logger(__name__)
 
 _aktionen: list[dict[str, str]] = []
 _geraet_aktiv = False
+_ausgabe_pc = False
 _dokumente: dict[str, Path] = {}
 
 
-def geraet_aktiv(an: bool) -> None:
-    """Die Laufzeit meldet: Die laufende Frage kommt vom Handy."""
+def geraet_aktiv(an: bool, *, ausgabe_pc: bool = False) -> None:
+    """Die Laufzeit meldet: Die laufende Frage kommt vom Handy.
 
-    global _geraet_aktiv
+    ``ausgabe_pc`` (16.11.2026): Marc spricht ins iPad, sieht und hoert die
+    Antwort aber am Rechner. Was gezeigt werden soll, gehoert dann auf den
+    Bildschirm und nicht als Knopf aufs Handy.
+    """
+
+    global _geraet_aktiv, _ausgabe_pc
     _geraet_aktiv = bool(an)
+    _ausgabe_pc = bool(an and ausgabe_pc)
     if an:
         _aktionen.clear()
+
+
+def ausgabe_am_pc() -> bool:
+    return _ausgabe_pc
 
 
 def ist_geraet_aktiv() -> bool:
@@ -451,10 +462,105 @@ class KurzbefehlStartenTool(Tool):
         return ToolResult.success(f"Kurzbefehl '{name}' ist auf dem Handy bereit.")
 
 
+# --- Standort (17.11.2026) --------------------------------------------------------
+#
+# Marc: "Synapse soll mich auf dem iPhone mit GPS orten koennen und mir auf
+# dem iPhone direkt Google Maps mit meinem exakten Standort anzeigen."
+#
+# Geortet wird AUF dem iPhone - mit dem GPS des iPhones, ueber die Ortung
+# des Browsers. Der PC kennt den Standort nicht und rechnet ihn auch nicht
+# aus. Das iPhone fragt beim ersten Mal selbst, ob die Seite den Standort
+# bekommen darf; das ist Marcs Entscheidung und nicht die von Synapse.
+#
+# Der Standort wird NICHT gespeichert: Er liegt nur im Arbeitsspeicher, nur
+# der zuletzt gemeldete, und verfaellt nach einer Stunde. Ins Protokoll
+# kommen weder Koordinaten noch Adresse - nur dass geortet wurde und wie
+# genau.
+
+_STANDORT_GUELTIG_SEKUNDEN = 3600.0
+_standort: dict[str, float] = {}
+
+_STANDORTWUNSCH = re.compile(
+    r"\bwo\s+bin\s+ich\b"
+    r"|\bort(?:e|en)?\s+mich\b|\bmich\s+orten\b"
+    r"|\b(?:mein(?:en|em)?|meine\s+aktuelle[nr]?|aktuelle[nr]?)\s+(?:standort|position|aufenthaltsort)\b"
+    r"|\bstandort\s+(?:auf\s+der\s+karte|in\s+(?:google\s+)?maps|zeigen|anzeigen)\b"
+    r"|\b(?:per|mit|[uü]ber)\s+(?:das\s+)?gps\b"
+    r"|\bzeig\w*\s+(?:mir\s+)?(?:auf\s+der\s+karte\s+)?wo\s+ich\s+(?:bin|stehe)\b",
+    re.IGNORECASE,
+)
+
+
+def standortwunsch(text: str) -> bool:
+    """Ob jemand geortet oder seinen Standort auf der Karte sehen will."""
+
+    return bool(_STANDORTWUNSCH.search(" ".join(str(text or "").split())))
+
+
+def standort_merken(breite: float, laenge: float, genauigkeit: float = 0.0) -> bool:
+    """Das iPhone meldet seine Position. Liefert False bei unsinnigen Werten."""
+
+    try:
+        breite, laenge = float(breite), float(laenge)
+        genauigkeit = max(0.0, float(genauigkeit or 0.0))
+    except (TypeError, ValueError):
+        return False
+    if not (-90.0 <= breite <= 90.0 and -180.0 <= laenge <= 180.0):
+        return False
+    _standort.clear()
+    _standort.update(breite=breite, laenge=laenge, genauigkeit=genauigkeit, zeit=time.time())
+    logger.info("Standort vom iPhone erhalten (Genauigkeit etwa %.0f m).", genauigkeit)
+    return True
+
+
+def letzter_standort() -> dict[str, float] | None:
+    """Der zuletzt gemeldete Standort, solange er frisch ist."""
+
+    if not _standort:
+        return None
+    if time.time() - _standort.get("zeit", 0.0) > _STANDORT_GUELTIG_SEKUNDEN:
+        _standort.clear()
+        return None
+    return dict(_standort)
+
+
+def karten_url(breite: float, laenge: float) -> str:
+    """Google Maps mit einer Stecknadel genau hier - oeffnet auf dem iPhone die App."""
+
+    return (
+        "https://www.google.com/maps/search/?api=1&query="
+        + urllib.parse.quote(f"{breite:.6f},{laenge:.6f}")
+    )
+
+
+class StandortZeigenTool(Tool):
+    name = "standort_zeigen"
+    description = (
+        "Ortet Marc ueber das GPS seines iPhones und oeffnet auf dem iPhone sofort "
+        "Google Maps mit seiner genauen Position. Benutze das bei 'Wo bin ich?', 'Orte mich', "
+        "'Zeig mir meinen Standort'. Geht nur, wenn Marc ueber das iPhone spricht."
+    )
+    permission = "network"
+    parameters = ()
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:  # noqa: ARG002
+        sperre = _nur_handy()
+        if sperre:
+            return ToolResult.failure(
+                "Orten geht nur, wenn du über das iPhone mit mir sprichst - geortet wird "
+                "mit dem GPS des iPhones, und dort erscheint auch die Karte."
+            )
+        # Die Kennung "ermitteln" heisst fuer das iPhone: selbst orten und
+        # sofort die Karte mit der Position oeffnen - ohne Knopf.
+        aktion_vormerken("standort", "ermitteln", "Mein Standort in Google Maps")
+        return ToolResult.success("Ich orte dich und zeige dir deinen Standort auf der Karte.")
+
+
 def build_handy_tools(kontakte: Kontaktbuch | None) -> list[Tool]:
     return [
         AnrufenTool(kontakte),
         NachrichtSendenTool(kontakte),
         AppOeffnenTool(),
         KurzbefehlStartenTool(),
+        StandortZeigenTool(),
     ]

@@ -30,7 +30,12 @@ import re
 #:
 #: Der Doppelpunkt steht bewusst nicht dabei: „Es gibt drei Gründe:" ist
 #: kein Satz, den man allein stehen lassen möchte.
-_SENTENCE_END = re.compile(r"[.!?…]+[\"'»)\]]*(\s|$)")
+_SENTENCE_END = re.compile(
+    # Ein schliessender Prosodie-Tag darf dem Satzzeichen folgen:
+    # "<slow>Das ist wichtig.</slow> Weiter" endet nach </slow>.
+    r"[.!?…]+(?:\s*</\s*(?:slow|langsam|emphasis|betont|em)\s*>)?[\"'»)\]]*(\s|$)",
+    re.IGNORECASE,
+)
 
 #: Abkürzungen, nach deren Punkt der Satz weitergeht.
 #:
@@ -301,6 +306,8 @@ def _ist_maschinensprache(text: str) -> bool:
 def _endet_auf_abkuerzung(text: str) -> bool:
     """Ob der Satz auf einer Abkürzung endet statt auf einem Satzende."""
 
+    # Prosodie-Tags zaehlen nicht: "<emphasis>Dr." endet auf "Dr.".
+    text = re.sub(r"<[^<>]*>", "", text).rstrip()
     if not text.endswith("."):
         return False
     letztes = text[:-1].rsplit(" ", 1)[-1].lower()

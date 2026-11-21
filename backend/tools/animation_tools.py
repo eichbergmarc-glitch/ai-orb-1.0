@@ -22,6 +22,8 @@ Zwei Wege, und die Trennung ist wichtig:
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 import subprocess
 from pathlib import Path
@@ -193,6 +195,8 @@ _VORGABE: dict[str, float] = {
 
 #: Gesprochene Namen -> Darstellung (13.11.2026).
 _DARSTELLUNGEN = (
+    # Zuerst: "Nebelkugel" soll den Nebel treffen, nicht die drei Kugeln (19.11.2026).
+    ("nebel", ("nebel", "nebelkreis", "nebelkugel", "wolke", "openai", "chatgpt", "himmel")),
     ("drei_kugeln", ("kugel", "baell", "bäll", "bälle", "baelle", "drei", "rgb", "farbkugel")),
     ("synaptix", ("gehirn", "hirn", "synaptix", "neuron", "netz")),
     ("energie", ("energie", "energy", "auge", "augen")),
@@ -202,9 +206,54 @@ _DARSTELLUNGEN = (
 
 def darstellung_aus(wunsch: str) -> str:
     text = str(wunsch or "").lower()
+    # Werden mehrere genannt ("ich sehe die Baelle, will aber das Gehirn"),
+    # gilt die zuletzt genannte - das ist der Wunsch.
+    beste, stelle = "", -1
     for name, woerter in _DARSTELLUNGEN:
-        if name in text or any(wort in text for wort in woerter):
-            return name
+        for wort in (name, *woerter):
+            pos = text.rfind(wort)
+            # Das Wortende zaehlt, damit "Nebelkugel" nicht an "kugel" faellt.
+            ende = pos + len(wort) if pos >= 0 else -1
+            if ende > stelle:
+                beste, stelle = name, ende
+    return beste
+
+
+def animationswunsch(text: str) -> str:
+    """Erkennt einen klaren Umschaltwunsch und liefert die Ziel-Darstellung.
+
+    "Schalte auf das Gehirn um", "Zeig die drei Kugeln", "Ich will die
+    Gehirn-Animation" -> Ziel. Fragen ("Was macht das Gehirn bei Stress?")
+    oder Ideen zur Animation -> "".
+    """
+
+    text = str(text or "")
+    # Nur ein kurzer, gesprochener Wunsch schaltet um (19.11.2026). Bei
+    # "Halte mir eine Vorlesung" kam hier der lange Auftragstext der
+    # Vorlesung an; darin standen "Darstellung", "mach" und "einfach" - und
+    # der Orb schaltete auf die klassische Animation und lud die Oberflaeche
+    # neu. Die Vorlesung verschwand dabei jedes Mal.
+    if len(text) > 160 or re.search(r"vorlesung|vortrag|lektion|unterricht", text, re.IGNORECASE):
+        return ""
+    if re.search(r"vorschl|idee|wie\s+(?:man|kann|könnte|koennte)|erklär|erklaer|warum|baue?\b",
+                 text, re.IGNORECASE):
+        return ""
+    stark = re.search(r"\bum\s*(?:schalt|stell)|\bwechs|\bschalte\b|\bstelle?\b.*\bum\b",
+                      text, re.IGNORECASE)
+    animation = re.search(r"animation|darstellung", text, re.IGNORECASE)
+    kugeln = re.search(r"kugel|bäll|baell|energie.?orb|nebel", text, re.IGNORECASE)
+    bitte = re.search(r"\b(zeig|will|möchte|moechte|nimm|aktivier|mach)", text, re.IGNORECASE)
+    if stark or (bitte and (animation or kugeln)):
+        return darstellung_aus(text)
+    # "Aendere die Animation auf das Gehirn" (15.11.2026): Ein Verb wie
+    # aendern/stellen/setzen mit "auf" UND einer bekannten Darstellung ist ein
+    # Umschaltwunsch - keine Codeaenderung. Ohne diese Zeile las der Orb den
+    # Satz als Entwicklungsauftrag und schrieb 92 s lang an seinem eigenen Code.
+    # "Aendere die Farbe der Animation auf Blau" nennt keine Darstellung und
+    # bleibt ein Entwicklungsauftrag.
+    auf_ziel = re.search(r"\b(?:änder|aender|stell|setz|schalt)\w*\b.*\bauf\b", text, re.IGNORECASE)
+    if auf_ziel and (animation or kugeln or darstellung_aus(text)):
+        return darstellung_aus(text)
     return ""
 
 
@@ -235,11 +284,14 @@ class AnimationWechselnTool(Tool):
 
     name = "animation_wechseln"
     description = (
-        "Wechselt die ganze Animation des Orb: 'drei Kugeln' (rot, gruen, blau, "
+        "Wechselt die ganze Animation des Orb: 'Nebel' (blauer Kreis mit ziehendem Nebel), 'drei Kugeln' (rot, gruen, blau, "
         "verschmelzend), 'Gehirn' (Synaptix), 'Energie' (Energie-Orb mit Augen) "
         "oder 'klassisch'. Fuer 'wechsle zur Kugel-Animation', 'zeig das Gehirn' usw."
     )
-    permission = "modify_own_code"
+    # write_files statt modify_own_code (15.11.2026): Das Werkzeug setzt nur
+    # orb.darstellung in der config.yaml und aendert keinen Code. Im
+    # geschuetzten Modus haette sonst jeder Animationswechsel nachgefragt.
+    permission = "write_files"
     parameters = (ToolParameter("darstellung", "string", "Welche Animation, in Marcs Worten."),)
 
     def __init__(self, event_bus: Any) -> None:
@@ -249,7 +301,7 @@ class AnimationWechselnTool(Tool):
         ziel = darstellung_aus(str(arguments.get("darstellung", "")))
         if not ziel:
             return ToolResult.failure(
-                "Diese Animation kenne ich nicht. Es gibt: drei Kugeln, Gehirn, Energie, klassisch."
+                "Diese Animation kenne ich nicht. Es gibt: Nebel, drei Kugeln, Gehirn, Energie, klassisch."
             )
         from backend.config import get_config
 
@@ -261,7 +313,7 @@ class AnimationWechselnTool(Tool):
         except Exception as fehler:  # noqa: BLE001
             return ToolResult.failure(f"Die Einstellung liess sich nicht schreiben: {fehler}")
         await self._bus.publish(NEU_LADEN, {"grund": "animation_wechseln"})
-        namen = {"drei_kugeln": "die drei Kugeln", "synaptix": "das Gehirn",
+        namen = {"nebel": "den Nebelkreis", "drei_kugeln": "die drei Kugeln", "synaptix": "das Gehirn",
                  "energie": "den Energie-Orb", "klassisch": "die klassische Animation"}
         return ToolResult.success(f"Erledigt, ich zeige jetzt {namen[ziel]}.")
 
