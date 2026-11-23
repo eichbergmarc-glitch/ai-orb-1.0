@@ -1,0 +1,1751 @@
+"""Werkzeugmaschine – lässt das Sprachmodell Werkzeuge benutzen.
+
+Das Verfahren ist bewusst textbasiert. Die Anbieter, mit denen AI-Orb
+arbeitet, unterscheiden sich stark darin, ob und wie sie Werkzeugaufrufe
+unterstützen – die Claude-Code-Befehlszeile liefert Text, die Messages-API
+strukturierte Blöcke, Ollama je nach Modell gar nichts. Ein eigenes
+Textprotokoll läuft überall gleich und lässt sich prüfen, ohne dass ein
+Anbieter ausgetauscht werden müsste.
+
+Der Ablauf:
+
+1. Die Frage geht mit einer Werkzeugbeschreibung an das Modell.
+2. Antwortet das Modell mit einem ``WERKZEUG``-Block, wird er ausgeführt –
+   nach Freigabe durch die Sicherheitsschicht.
+3. Das Ergebnis geht zurück ans Modell, das damit weiterarbeitet.
+4. Das wiederholt sich, bis das Modell ohne Werkzeugaufruf antwortet oder
+   die Obergrenze erreicht ist.
+
+Die Obergrenze ist keine Formalie: Ohne sie kann ein Modell in eine
+Schleife geraten, in der es dasselbe Werkzeug endlos aufruft. Zusätzlich
+wird erkannt, wenn zweimal hintereinander derselbe Aufruf mit denselben
+Angaben kommt – dann wird abgebrochen und das offen gesagt.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from collections.abc import Callable
+from typing import Any
+
+from backend.config import get_config
+from backend.security.security_engine import SecurityEngine
+from backend.system.logging_setup import get_logger
+from backend.tools.base_tool import Tool, ToolResult
+from backend.tools.registry import ToolRegistry
+
+logger = get_logger(__name__)
+
+
+def _kennung() -> str:
+    """Die Korrelations-Kennung des laufenden Zuges, falls eine anliegt."""
+
+    from backend.system.performance_trace import current_turn_trace
+
+    trace = current_turn_trace()
+    return getattr(trace, "turn_id", "-") if trace is not None else "-"
+
+#: Wie ein Werkzeugaufruf im Text aussieht.
+#: Ein Werkzeugaufruf in einem eingezäunten Block.
+#:
+#: Deutlich grosszügiger als zuvor, und das ist keine Bequemlichkeit,
+#: sondern die Behebung eines Fehlers, den man von aussen nicht sehen
+#: konnte: Der Orb benutzte seine Werkzeuge nicht.
+#:
+#: Vorher stand hier ``r"```(?:werkzeug|tool)\s*\n(.*?)\n```"``. Diese
+#: Zeile verlangt dreierlei zugleich - die Zäunung muss genau
+#: ``werkzeug`` oder ``tool`` heissen, nach ihr muss ein Zeilenumbruch
+#: stehen, und VOR der schliessenden Zäunung ebenfalls. Fehlt eines
+#: davon, findet das Muster nichts, der Aufruf wird stillschweigend
+#: verworfen, und der Orb antwortet, als habe er nie eines gewollt.
+#:
+#: Alle drei Abweichungen sind alltäglich. Modelle schreiben ``json``
+#: statt ``werkzeug``, sie hängen die schliessende Zäunung an die letzte
+#: geschweifte Klammer, sie lassen die Zäunung ganz weg. Nichts davon ist
+#: ein Fehler des Modells - es ist ein Fehler, so eng zu lesen.
+#:
+#: Die Sprachmarke ist jetzt beliebig; was ein Aufruf ist, entscheidet
+#: der INHALT (siehe ``_ist_aufruf``) und nicht die Beschriftung.
+TOOL_CALL_PATTERN = re.compile(
+    r"```[a-zA-Z_]*[ \t]*\r?\n?(.*?)```",
+    re.DOTALL,
+)
+
+#: Ein Aufruf ohne Codeblock – manche Modelle lassen ihn weg.
+BARE_CALL_PATTERN = re.compile(
+    r"WERKZEUG\s*:\s*(\{.*?\})",
+    re.DOTALL | re.IGNORECASE,
+)
+
+#: Die Schlüssel, an denen ein Aufruf zu erkennen ist.
+_AUFRUF_SCHLUESSEL = ("werkzeug", "tool")
+
+
+#: Wendungen, mit denen sich ein Modell um die Werkzeugbenutzung drueckt.
+#:
+#: Sie zu erkennen aendert nichts am Ablauf - aber sie stehen dann im
+#: Protokoll als das, was sie sind. Der Benutzer meldete "der Orb kann auf
+#: kein Werkzeug zugreifen"; im Protokoll stand nur "kein Werkzeug
+#: aufgerufen". Ob der Orb nicht wollte oder ob er behauptete, nicht zu
+#: koennen, war daraus nicht zu lesen - und das sind zwei verschiedene
+#: Fehler.
+_AUSREDEN: tuple[str, ...] = (
+    "kann nicht suchen", "keine suche", "nicht suchen",
+    "keinen zugriff", "kein zugriff", "nicht zugreifen",
+    "keine internetverbindung", "kein internet", "nicht ins internet",
+    "keine werkzeuge", "kein werkzeug zur", "steht mir nicht zur verf",
+    "habe keine moeglichkeit", "habe keine möglichkeit",
+    "in echtzeit", "wissensstand", "stichtag meines wissens",
+    # Der Bildschirm-/Seh-Fall: Der Benutzer bittet den Orb hinzusehen, und
+    # er redet sich heraus, statt 'bildschirm_ansehen' zu rufen.
+    "nicht anschauen", "nicht ansehen", "nicht ansehe", "nicht analysieren",
+    "kann kein video", "kann kein bild", "keinen bildschirm",
+    "nicht auswerten", "nicht angemeldet", "nicht aktiviert",
+    "kann den bildschirm nicht", "sehe den bildschirm nicht",
+    # Dateien/PDF: Seit es ein Schreib- und PDF-Werkzeug gibt, ist auch das
+    # eine falsche Ausrede und muss denselben Nachhakweg nehmen.
+    "kann kein pdf", "keine pdf erzeug", "kein pdf erzeug",
+    "pdf nicht erstellen", "kein werkzeug, das eine pdf",
+)
+
+
+#: Wendungen, mit denen ein Modell nur ANKUENDIGT, statt zu liefern.
+#:
+#: 06.11.2026, 21:19: "Fasse mir die Nachrichten des Tages zusammen" - die
+#: Nachrichten waren schon geholt und lagen im Kontext, und das Modell
+#: antwortete nur "Ich hole dir die aktuellen Nachrichten des Tages. Einen
+#: Moment." Danach kam nichts mehr: Der Orb wartete auf eine Fortsetzung,
+#: die es nie gibt. Eine kurze Antwort, die nur verspricht, ist wie eine
+#: Ausrede zu behandeln - einmal nachhaken.
+_ANKUENDIGUNGEN: tuple[str, ...] = (
+    "einen moment", "moment bitte", "einen augenblick", "augenblick bitte",
+    "ich hole dir", "ich hole die", "ich suche dir", "ich suche die",
+    "ich schaue nach", "ich schau nach", "ich sehe nach", "ich seh nach",
+    "ich pruefe das", "ich prüfe das", "ich kuemmere mich", "ich kümmere mich",
+    "gleich zurueck", "gleich zurück", "bin gleich", "ich melde mich",
+    "ich recherchiere", "lass mich nachsehen", "lass mich schauen",
+)
+
+
+def _kuendigt_nur_an(text: str) -> bool:
+    """Ob eine (kurze) Antwort nur etwas verspricht, statt es zu liefern."""
+
+    knapp = " ".join(str(text or "").lower().split())
+    if not knapp or len(knapp) > 220:
+        return False
+    return any(wendung in knapp for wendung in _ANKUENDIGUNGEN)
+
+
+def _klingt_nach_ausrede(text: str) -> bool:
+    """Ob die Antwort das Nichtkoennen behauptet, statt es zu tun."""
+
+    knapp = text.lower()
+    return any(wendung in knapp for wendung in _AUSREDEN)
+
+
+_ANWEISUNGSBLOCK = re.compile(
+    r"(FRISCH GESUCHT|sage in deiner antwort|stehen absichtlich|nenne die (häuser|quelle)|"
+    r"gehen deinem eigenen wissensstand vor|antworte dem benutzer|berichten zufolge)",
+    re.IGNORECASE,
+)
+
+
+def _kompakte_vorabantwort(werkzeug: str, rohtext: str) -> str:
+    """Macht vorab beschaffte Werkzeugdaten zu einer sicheren Kurzantwort.
+
+    Vor allem Suchtreffer sind interne Arbeitsdaten, keine sprechfertige
+    Antwort. Titel, URL und Snippet unveraendert vorzulesen klingt wie eine
+    endlose Halluzination und dauerte im beobachteten Fall ueber drei Minuten.
+    Diese deterministische Fassung erfindet nichts und liest keine URLs vor.
+    """
+
+    text = str(rohtext or "").strip()
+    if werkzeug != "internet_suchen" or not text:
+        return text
+    if text.lower().startswith(
+        ("keine treffer", "die suche", "die suchmaschine", "ich komme nicht")
+    ):
+        return re.sub(r"https?://\S+", "", text).strip()
+
+    punkte: list[str] = []
+    for block in re.split(r"\n\s*\n", text):
+        # 22.11.2026: Arbeitsanweisungen an das Modell sind keine Treffer.
+        if _ANWEISUNGSBLOCK.search(block):
+            continue
+        zeilen = [zeile.strip() for zeile in block.splitlines() if zeile.strip()]
+        zeilen = [
+            re.sub(r"https?://\S+", "", zeile).strip(" -")
+            for zeile in zeilen
+            if not re.match(r"^https?://", zeile, flags=re.IGNORECASE)
+        ]
+        zeilen = [zeile for zeile in zeilen if zeile]
+        if not zeilen:
+            continue
+        titel = re.sub(r"^\[([^\]]+?)\s*\([A-Z]{2}\)\]\s*", r"\1: ", zeilen[0]).rstrip(" .")
+        beschreibung = " ".join(zeilen[1:]).strip()
+        punkt = f"{titel}."
+        if beschreibung and beschreibung.lower() not in titel.lower():
+            punkt += " " + beschreibung
+        punkte.append(punkt[:260].rstrip())
+        if len(punkte) >= 3:
+            break
+
+    if not punkte:
+        return "Ich habe keine belastbaren passenden Treffer gefunden."
+    antwort = "Ich habe diese passenden Treffer gefunden: " + " ".join(punkte)
+    return antwort[:850].rstrip()
+
+
+def _ausdruecklich_verlangtes_werkzeug(
+    messages: list[Any], names: list[str]
+) -> str:
+    """Erkennt eine ausdrückliche Bitte, ein benanntes Werkzeug zu nutzen."""
+
+    for message in reversed(messages):
+        role = getattr(message, "role", None)
+        content = getattr(message, "content", None)
+        if isinstance(message, dict):
+            role = message.get("role")
+            content = message.get("content")
+        if role != "user":
+            continue
+        knapp = str(content or "").lower()
+        # Natuerliche Auftraege nennen selten den technischen Werkzeugnamen.
+        # "Erstelle eine PDF" ist trotzdem genauso eindeutig wie "benutze
+        # pdf_erstellen" und darf nicht als freiwillige Option behandelt
+        # werden.
+        if "pdf" in knapp and any(
+            marker in knapp
+            for marker in (
+                "erstell", "mach", "generier", "speicher", "exportier",
+                "anleg", "druck",
+            )
+        ):
+            return "pdf_erstellen"
+        if any(marker in knapp for marker in ("such", "recherchier", "schau nach")):
+            return "internet_suchen"
+        if not any(wort in knapp for wort in ("benutz", "nutz", "verwende", "werkzeug")):
+            return ""
+        for name in names:
+            if name.lower() in knapp:
+                return name
+        return "passendes Werkzeug" if "werkzeug" in knapp else ""
+    return ""
+
+
+def _ist_aufruf(payload: Any) -> bool:
+    """Ob ein gelesenes JSON-Gebilde wirklich ein Werkzeugaufruf ist.
+
+    Nötig, weil die Zäunung jetzt beliebig beschriftet sein darf: Ein
+    Modell, das ein Beispiel-JSON zeigt, soll damit kein Werkzeug starten.
+    Entschieden wird am Schlüssel, nicht an der Beschriftung.
+    """
+
+    return isinstance(payload, dict) and any(
+        str(payload.get(schluessel) or "").strip() for schluessel in _AUFRUF_SCHLUESSEL
+    )
+
+
+def _freie_objekte(text: str) -> list[str]:
+    """Findet JSON-Objekte im Fliesstext, ohne Zäunung und ohne Vorwort.
+
+    Ein regulärer Ausdruck kann verschachtelte Klammern nicht zuverlässig
+    fassen; deshalb wird hier gezählt. Zurückgegeben werden nur Objekte,
+    in denen "werkzeug" oder "tool" überhaupt vorkommt - alles andere
+    aufzusammeln hiesse, jede Zahlenliste in einer Antwort zu untersuchen.
+    """
+
+    gefunden: list[str] = []
+    tiefe = 0
+    start = -1
+    in_text = False
+    entwertet = False
+    for i, zeichen in enumerate(text):
+        if in_text:
+            if entwertet:
+                entwertet = False
+            elif zeichen == "\\":
+                entwertet = True
+            elif zeichen == '"':
+                in_text = False
+            continue
+        if zeichen == '"':
+            in_text = True
+        elif zeichen == "{":
+            if tiefe == 0:
+                start = i
+            tiefe += 1
+        elif zeichen == "}":
+            if tiefe > 0:
+                tiefe -= 1
+                if tiefe == 0 and start >= 0:
+                    stueck = text[start : i + 1]
+                    if any(f'"{s}"' in stueck for s in _AUFRUF_SCHLUESSEL):
+                        gefunden.append(stueck)
+                    start = -1
+
+    # Ein Objekt, das nie zuging - die abgeschnittene Antwort.
+    #
+    # Genau das stand im Protokoll des Benutzers:
+    #
+    #   {"werkzeug": "internet_suchen", "argumente": {"suchbegriff": "Iran"}
+    #
+    # Eine schliessende Klammer fehlt, und weil hier nur VOLLSTAENDIGE
+    # Objekte eingesammelt wurden, kam der Aufruf nie bis zum Leser. Der
+    # Rest wird mitgenommen und unten repariert; ist er unbrauchbar, faellt
+    # er dort wieder heraus.
+    if tiefe > 0 and start >= 0:
+        rest = text[start:]
+        if any(f'"{s}"' in rest for s in _AUFRUF_SCHLUESSEL):
+            gefunden.append(rest)
+    return gefunden
+
+
+def _json_reparieren(text: str) -> dict[str, Any] | None:
+    """Repariert die kleinen Schreibfehler, mit denen Modelle JSON verderben.
+
+    Bewusst KONSERVATIV: Es wird nur behoben, was eindeutig ist - fehlende
+    Kommas zwischen Feldern, fehlende schliessende Klammern, ein Komma zu
+    viel am Ende, Python-Schreibweisen (True/False/None). Alles, was ein
+    Raten waere, bleibt liegen; ein falsch geratener Aufruf ist schlimmer
+    als ein nicht ausgefuehrter.
+
+    Returns:
+        Das gelesene Objekt oder ``None``, wenn es sich nicht sicher
+        herstellen liess.
+    """
+
+    kandidat = text.strip()
+    if not kandidat.startswith("{"):
+        return None
+
+    versuche: list[str] = []
+
+    # 1. Python-Schreibweisen, die Modelle gern einstreuen.
+    ersetzt = re.sub(r"\bTrue\b", "true", kandidat)
+    ersetzt = re.sub(r"\bFalse\b", "false", ersetzt)
+    ersetzt = re.sub(r"\bNone\b", "null", ersetzt)
+    versuche.append(ersetzt)
+
+    # 2. Fehlendes Komma zwischen zwei Feldern. Nur dort, wo ein Feldname
+    #    folgt - sonst wuerde in Fliesstext eingegriffen.
+    mit_komma = re.sub(r'("\s*)\n?(\s*")(?=[^"]*"\s*:)', r"\1,\2", ersetzt)
+    mit_komma = re.sub(r'([}\]])(\s*")(?=[^"]*"\s*:)', r"\1,\2", mit_komma)
+    versuche.append(mit_komma)
+
+    # 3. Ein Komma zu viel vor der schliessenden Klammer.
+    ohne_letztes = re.sub(r",(\s*[}\]])", r"\1", mit_komma)
+    versuche.append(ohne_letztes)
+
+    # 4. Fehlende schliessende Klammern anhaengen (abgeschnittene Antwort).
+    for basis in (ohne_letztes, mit_komma, ersetzt):
+        offen_geschweift = basis.count("{") - basis.count("}")
+        offen_eckig = basis.count("[") - basis.count("]")
+        if offen_geschweift > 0 or offen_eckig > 0:
+            versuche.append(
+                basis + ("]" * max(0, offen_eckig)) + ("}" * max(0, offen_geschweift))
+            )
+
+    for versuch in versuche:
+        try:
+            gelesen = json.loads(versuch)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(gelesen, dict):
+            return gelesen
+    return None
+
+
+@dataclass
+class Aufruffehler:
+    """Ein Werkzeugaufruf, der das Schema nicht erfüllt.
+
+    Er wird ausdrücklich NICHT ausgeführt. Vorher wurde stillschweigend
+    repariert: Stand in ``argumente`` etwas anderes als ein Objekt - eine
+    Zeichenkette, eine Liste, ``null`` -, ersetzte der Leser das durch ein
+    leeres Objekt. Das Werkzeug lief dann ohne Argumente los, tat etwas
+    anderes als verlangt, und im Protokoll stand nichts davon.
+    """
+
+    rohtext: str
+    grund: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"rohtext": self.rohtext[:200], "grund": self.grund}
+
+
+def pruefe_aufruf(payload: dict[str, Any]) -> tuple["ToolCall | None", str]:
+    """Prüft ein gelesenes JSON-Gebilde gegen das Aufrufschema.
+
+    Das Schema ist bewusst schmal, weil es von einem Sprachmodell erfüllt
+    werden muss:
+
+    * ``werkzeug`` (oder ``tool``): nicht leere Zeichenkette.
+    * ``argumente`` (oder ``arguments``/``input``): fehlt, oder ein Objekt.
+      Eine Zeichenkette, die selbst ein JSON-Objekt enthält, wird einmal
+      nachgelesen - das ist ein häufiger und harmloser Modellfehler.
+
+    Returns:
+        Den Aufruf und eine leere Begründung, oder ``None`` und den Grund
+        im Klartext. Der Grund geht wörtlich an das Modell zurück.
+    """
+
+    rohname = payload.get("werkzeug", payload.get("tool"))
+    if not isinstance(rohname, str) or not rohname.strip():
+        return None, (
+            "'werkzeug' fehlt oder ist keine nicht-leere Zeichenkette"
+        )
+
+    hat_argumente = any(
+        schluessel in payload for schluessel in ("argumente", "arguments", "input")
+    )
+    rohargumente: Any = (
+        payload.get("argumente")
+        if "argumente" in payload
+        else payload.get("arguments")
+        if "arguments" in payload
+        else payload.get("input")
+    )
+
+    if not hat_argumente or rohargumente is None:
+        argumente: dict[str, Any] = {}
+    elif isinstance(rohargumente, dict):
+        argumente = rohargumente
+    elif isinstance(rohargumente, str):
+        try:
+            nachgelesen = json.loads(rohargumente)
+        except (json.JSONDecodeError, ValueError):
+            return None, (
+                "'argumente' ist eine Zeichenkette und kein Objekt - erwartet "
+                'wird {"name": "wert"}'
+            )
+        if not isinstance(nachgelesen, dict):
+            return None, "'argumente' muss ein Objekt sein"
+        argumente = nachgelesen
+    else:
+        return None, (
+            f"'argumente' ist vom Typ {type(rohargumente).__name__} und muss "
+            "ein Objekt sein"
+        )
+
+    if any(not isinstance(schluessel, str) for schluessel in argumente):
+        return None, "die Namen in 'argumente' muessen Zeichenketten sein"
+
+    return ToolCall(tool=rohname.strip(), arguments=argumente), ""
+
+
+@dataclass
+class ToolCall:
+    """Ein vom Modell gewünschter Werkzeugaufruf."""
+
+    tool: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+    def signature(self) -> str:
+        """Kennung zum Erkennen von Wiederholungen."""
+
+        return self.tool + "|" + json.dumps(self.arguments, sort_keys=True, default=str)
+
+
+@dataclass
+class ToolRun:
+    """Was bei einem Aufruf geschehen ist – für die Transparenzansicht."""
+
+    tool: str
+    arguments: dict[str, Any]
+    result: ToolResult
+    seconds: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "arguments": self.arguments,
+            "ok": self.result.ok,
+            "output": self.result.output[:500],
+            "error": self.result.error,
+            "seconds": round(self.seconds, 3),
+        }
+
+
+@dataclass
+class ToolLoopResult:
+    """Das Ergebnis der gesamten Werkzeugschleife."""
+
+    answer: str = ""
+    runs: list[ToolRun] = field(default_factory=list)
+    rounds: int = 0
+    stopped_because: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "answer": self.answer,
+            "runs": [run.to_dict() for run in self.runs],
+            "rounds": self.rounds,
+            "stopped_because": self.stopped_because,
+        }
+
+
+def parse_tool_calls_mit_fehlern(
+    text: str,
+) -> tuple[list[ToolCall], list[Aufruffehler]]:
+    """Liest Werkzeugaufrufe aus einer Modellantwort.
+
+    Fehlerhafte Blöcke werden übergangen statt zu einem Absturz zu führen –
+    ein Modell, das ein Komma vergisst, soll die Antwort nicht zerstören.
+    """
+
+    calls: list[ToolCall] = []
+    fehler: list[Aufruffehler] = []
+    seen: set[str] = set()
+
+    rohlinge: list[str] = []
+    for pattern in (TOOL_CALL_PATTERN, BARE_CALL_PATTERN):
+        rohlinge.extend(match.group(1).strip() for match in pattern.finditer(text))
+    # Und zuletzt der ungezäunte Fall. Er läuft über den ganzen Text, also
+    # auch über das, was schon gefunden wurde - doppelte Aufrufe fallen
+    # unten über ihre Signatur wieder heraus.
+    rohlinge.extend(_freie_objekte(text))
+
+    for raw in rohlinge:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            # Erst reparieren, dann aufgeben.
+            #
+            # Vorher wurde hier nur gemeldet und weggeworfen - und im
+            # Protokoll des Benutzers steht, was das kostet:
+            #
+            #   {"werkzeug": "rechnen" "argumente": {}}          (Komma fehlt)
+            #   {"werkzeug": "internet_suchen", "argumente": {...   (Klammer fehlt)
+            #
+            # Beide Aufrufe waren inhaltlich vollstaendig und eindeutig; nur
+            # ein Zeichen fehlte. Das Werkzeug wurde trotzdem nicht
+            # ausgefuehrt, und von aussen sah das aus, als koenne der Orb
+            # seine Werkzeuge nicht benutzen.
+            payload = _json_reparieren(raw)
+            if payload is None:
+                if any(f'"{s}"' in raw for s in _AUFRUF_SCHLUESSEL):
+                    logger.warning(
+                        "Ein Werkzeugaufruf war kein gueltiges JSON und liess "
+                        "sich auch nicht reparieren: %s", raw[:200]
+                    )
+                continue
+            logger.info(
+                "Ein fehlerhafter Werkzeugaufruf wurde repariert: %s", raw[:120]
+            )
+
+        if not _ist_aufruf(payload):
+            continue
+
+        call, grund = pruefe_aufruf(payload)
+        if call is None:
+            # Nicht heimlich zurechtbiegen. Ein Aufruf, der das Schema
+            # nicht erfuellt, wird nicht ausgefuehrt - das Modell bekommt
+            # den Grund und einen begrenzten zweiten Versuch.
+            logger.warning(
+                "Werkzeugaufruf abgelehnt (%s): %s", grund, str(payload)[:160]
+            )
+            fehler.append(Aufruffehler(rohtext=str(payload)[:200], grund=grund))
+            continue
+
+        if call.signature() in seen:
+            continue
+        seen.add(call.signature())
+        calls.append(call)
+
+    return calls, fehler
+
+
+def parse_tool_calls(text: str) -> list[ToolCall]:
+    """Nur die gueltigen Aufrufe - schmale Fassade fuer bestehende Aufrufer."""
+
+    calls, _fehler = parse_tool_calls_mit_fehlern(text)
+    return calls
+
+
+def strip_tool_calls(text: str) -> str:
+    """Entfernt Werkzeugblöcke aus einem Text.
+
+    Der Benutzer soll die Antwort lesen, nicht die Maschinerie dahinter.
+
+    Entfernt wird jetzt gezielt und nicht mehr pauschal. Vorher wurde jeder
+    Treffer der Zäunungsmuster gelöscht - das ging, solange nur
+    ``werkzeug`` und ``tool`` als Beschriftung galten. Seit die
+    Beschriftung beliebig sein darf, wäre dieselbe Zeile eine Katastrophe:
+    Sie löschte JEDEN eingezäunten Block, also auch das Stück Python, um
+    das der Benutzer gerade gebeten hat.
+
+    Deshalb wird hier geprüft, ob im Block wirklich ein Aufruf steht.
+    """
+
+    def _weg(match: "re.Match[str]") -> str:
+        inhalt = match.group(1).strip()
+        try:
+            payload = json.loads(inhalt)
+        except json.JSONDecodeError:
+            return match.group(0)
+        return "" if _ist_aufruf(payload) else match.group(0)
+
+    ohne_bloecke = TOOL_CALL_PATTERN.sub(_weg, text)
+    ohne_praefix = BARE_CALL_PATTERN.sub(_weg, ohne_bloecke)
+
+    # Und die ungezäunten Objekte.
+    rest = ohne_praefix
+    for stueck in _freie_objekte(rest):
+        try:
+            if _ist_aufruf(json.loads(stueck)):
+                rest = rest.replace(stueck, "")
+        except json.JSONDecodeError:
+            continue
+
+    return re.sub(r"\n{3,}", "\n\n", rest).strip()
+
+
+#: Die Berechtigungen, bei denen ein Klang ertönt.
+#:
+#: Die Trennlinie verläuft zwischen Reden und Handeln, nicht zwischen
+#: harmlos und gefährlich. Eine Datei zu lesen ist Teil der Antwort; ein
+#: Programm zu starten, etwas zu installieren, einen Befehl abzusetzen oder
+#: eine Datei zu schreiben verändert den Rechner. Nur Letzteres bekommt
+#: einen Klang – sonst begleitete ein Ton jede zweite Antwort und wäre
+#: nach einem Tag keine Auskunft mehr, sondern Geräusch.
+HANDELNDE_RECHTE = frozenset(
+    {
+        "launch_application",
+        "install_dependencies",
+        "system_commands",
+        "write_files",
+        "modify_own_code",
+    }
+)
+
+
+def _klang_zur_tat() -> None:
+    """Spielt den Tat-Klang – und lässt nichts daran scheitern."""
+
+    try:
+        from backend.audio.sounds import klaenge
+
+        klaenge().tat()
+    except Exception:  # noqa: BLE001 - ein Signalton darf nie ein Werkzeug aufhalten.
+        logger.debug("Der Tat-Klang ließ sich nicht abspielen.", exc_info=True)
+
+
+#: Werkzeuge, deren Ergebnis ein GELESENER Text ist und nicht eine
+#: Handlung. Nur deren Ausgabe wandert ins Gedaechtnis - ein "Datei
+#: geloescht" oder "Fenster geoeffnet" waere dort nur Ballast.
+_LESENDE_WERKZEUGE: frozenset[str] = frozenset({
+    "datei_lesen", "dokument_lesen", "pdf_lesen", "webseite_lesen",
+    "bildschirm_ansehen", "datei_zusammenfassen", "ordner_lesen",
+})
+
+# Diese Aenderungen persoenlicher Tagebuchdaten werden nie einem Sprachmodell
+# ueberlassen. Der lokale Tagebuchparser fuehrt sie direkt aus und kann dabei
+# einen mehrteiligen Diktierzustand halten. Ein Modell sah sonst nach einem
+# nicht erkannten Startbefehl den ersten Folgesatz, deutete ihn als kompletten
+# Eintrag und speicherte ihn sofort - der Rest ging verloren.
+_MODELL_VERBORGENE_TAGEBUCHWERKZEUGE: frozenset[str] = frozenset({
+    "tagebuch_schreiben",
+    "tagebuch_aendern",
+    "tagebuch_streichen",
+})
+
+
+class ToolEngine:
+    """Führt die Werkzeugschleife aus."""
+
+    def __init__(
+        self,
+        *,
+        registry: ToolRegistry,
+        security: SecurityEngine,
+        provider_manager: Any,
+        event_bus: Any | None = None,
+    ) -> None:
+        """
+        Args:
+            registry: Die verfügbaren Werkzeuge.
+            security: Für die Freigabe vor jeder Ausführung.
+            provider_manager: Liefert die Modellantworten.
+        """
+
+        config = get_config()
+
+        self._registry = registry
+        self._security = security
+        self._providers = provider_manager
+        self._event_bus = event_bus
+
+        self._enabled = bool(config.get("tools.enabled", True))
+        self._max_rounds = int(config.get("tools.max_rounds", 4))
+        #: Wie oft ein ungueltiger Werkzeugaufruf zur Verbesserung
+        #: zurueckgegeben wird, bevor der Zug abgebrochen wird.
+        self._reparatur_versuche = max(
+            0, int(config.get("tools.reparatur_versuche", 1))
+        )
+        self._max_output_characters = int(config.get("tools.max_output_characters", 4000))
+
+        self._total_calls = 0
+        self._failed_calls = 0
+
+        #: Wohin gelesene Inhalte zum Behalten gehen.
+        #:
+        #: Gesetzt wird das von der Laufzeit (siehe runtime). Ohne diesen
+        #: Anschluss war die Klage des Benutzers woertlich zutreffend: "Er
+        #: speichert eingelesene Dokumente nicht in seinem Gedaechtnis ab."
+        #: Was 'datei_lesen' oder 'webseite_lesen' holte, ging in den
+        #: Kontext DIESER einen Antwort und war danach weg.
+        self.gelesenes_behalten: Callable[[str, str], None] | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """Ob Werkzeuge benutzt werden dürfen."""
+
+        return self._enabled and bool(self._registry.all())
+
+    @property
+    def registry(self) -> Any:
+        """Das Werkzeugregister - schmale Fassade fuer Aufrufer von aussen.
+
+        Die Faehigkeitsentscheidung will wissen, ob im Satz ein wirklich
+        angemeldeter Werkzeugname vorkommt. Dafuer den privaten Namen von
+        aussen zu lesen waere eine Verabredung hinter dem Ruecken des
+        Moduls; diese Zeile macht sie sichtbar.
+        """
+
+        return self._registry
+
+    # --- Anweisung an das Modell ---------------------------------------------------
+
+    def system_instructions(self, text: str = "") -> str:
+        """Erklärt dem Modell, wie es Werkzeuge aufruft."""
+
+        if not self.enabled:
+            return ""
+
+        # Kontext klein halten (15.11.2026). Gemessen: Eine Bitte ohne
+        # erkanntes Stichwort ("erzaehl mir etwas zu den Ausfaellen von
+        # Microsoft", "wechsle die Animation") bekam das GANZE Verzeichnis
+        # mit - 30 000 Zeichen je Anfrage, gegenueber 14 000 bei einer
+        # Mailfrage mit kleinem Katalog. Jetzt werden nur die passenden
+        # Werkzeuge ausfuehrlich beschrieben; alle uebrigen stehen mit dem
+        # blossen Namen da. Keine Faehigkeit geht verloren: Ein Aufruf mit
+        # falschen Argumenten bekommt die genaue Beschreibung zurueck.
+        alle = [
+            name
+            for name in self._registry.names()
+            if name not in _MODELL_VERBORGENE_TAGEBUCHWERKZEUGE
+        ]
+        uebrige: list[str] = []
+        if (text or "").strip():
+            gewaehlt = self._relevante_werkzeuge(text)
+            if gewaehlt is None:
+                gewaehlt = list(self.KERNWERKZEUGE)
+            auswahl = set(gewaehlt)
+            namen = [name for name in alle if name in auswahl]
+            uebrige = sorted(name for name in alle if name not in auswahl)
+        else:
+            namen = alle
+        verzeichnis = self._registry.describe_for_model(namen)
+        if uebrige:
+            verzeichnis += (
+                "\n\nWeitere Werkzeuge - hier nur mit Namen, damit die Liste kurz "
+                "bleibt. Du darfst jedes davon genauso aufrufen; stimmen die "
+                "Argumente nicht, bekommst du die genaue Beschreibung zurueck:\n"
+                + ", ".join(uebrige)
+            )
+        return (
+            "Dir stehen Werkzeuge zur Verfügung. Benutze sie immer dann, wenn "
+            "du etwas nicht selbst wissen kannst – etwa Datum und Uhrzeit, den "
+            "Inhalt einer Datei oder ein Rechenergebnis. Rate nicht.\n\n"
+            "So rufst du ein Werkzeug auf – nichts anderes in diese Antwort "
+            "schreiben:\n\n"
+            "```werkzeug\n"
+            '{"werkzeug": "name", "argumente": {"feld": "wert"}}\n'
+            "```\n\n"
+            "Du bekommst das Ergebnis und antwortest dann dem Benutzer in "
+            "normaler Sprache. Erwähne die Werkzeuge dabei nicht – der "
+            "Benutzer will die Antwort, nicht den Weg dorthin.\n\n"
+            "Diese Werkzeuge gibt es:\n"
+            + verzeichnis
+            + "\n\n"
+            + self.VERBINDLICHE_REGEL
+        )
+
+    def _relevante_werkzeuge(self, text: str) -> list[str] | None:
+        """Begrenzt den Werkzeugkatalog auf die aktuelle Handlungsart.
+
+        Ohne Text bleibt die bisherige vollstaendige Liste erhalten. Im
+        Gespraech reichen dagegen meist zwei bis sechs Werkzeuge. Das spart
+        mehrere tausend Zeichen pro Anfrage und stellt zugleich sicher, dass
+        die entscheidenden PDF-/Bildwerkzeuge nicht am Kontextende abgeschnitten
+        werden.
+        """
+
+        knapp = " " + " ".join((text or "").lower().split()) + " "
+        if not knapp.strip():
+            return None
+
+        vorhanden = set(self._registry.names())
+        gewaehlt: set[str] = set()
+
+        def dazu(*namen: str) -> None:
+            gewaehlt.update(name for name in namen if name in vorhanden)
+
+        if any(w in knapp for w in ("such", "recherch", "internet", "aktuell", "news")):
+            dazu("internet_suchen", "webseite_lesen", "webseite_erkunden")
+        if "pdf" in knapp:
+            dazu(
+                "pdf_erstellen", "infografik_erstellen", "diagramm_zeichnen",
+                "bild_suchen", "bild_erzeugen", "dateien_suchen",
+            )
+        if any(w in knapp for w in ("grafik", "diagramm", "bild", "foto", "photo", "zeig")):
+            dazu(
+                "infografik_erstellen", "diagramm_zeichnen", "bild_suchen",
+                "bild_erzeugen", "bild_zeigen", "pdf_erstellen",
+            )
+        if any(w in knapp for w in ("bildschirm", "screenshot", "printscreen", "monitor")):
+            dazu("bildschirm_ansehen", "bildschirm_lesen", "screenshot_erstellen")
+        if any(w in knapp for w in ("datei", "dokument", "ordner", "verzeichnis")):
+            dazu(
+                "dateien_suchen", "datei_lesen", "datei_schreiben",
+                "datei_verwalten", "wissen_aus_datei",
+            )
+        # 23.11.2026: Buecher und Dokumente schreiben (OpenOffice), zitieren, Abbildungen.
+        if any(w in knapp for w in (
+            "buch", "kapitel", "notiz", "notier", "halt fest", "zitier", "zitat", "quelle",
+            "literatur", "dokument", "openoffice", "libreoffice", "inhaltsverzeichnis",
+            "manuskript", "aufsatz", "ausarbeit", "gliederung", "abbildung",
+        )):
+            dazu("buch_anlegen", "gliederung_setzen", "buch_uebersicht", "kapitel_schreiben", "kapitel_lesen",
+                 "buch_notiz", "quelle_hinzufuegen", "literatur_suchen", "buch_bild",
+                 "buch_exportieren", "webseite_lesen", "internet_suchen", "bild_erzeugen",
+                 "diagramm_zeichnen", "infografik_erstellen", "bild_suchen")
+        # 22.11.2026: Sunrise TV im Browser, Filmgeschmack.
+        if any(w in knapp for w in (
+            "sunrise", "fernseh", "fernsehen", " tv", "film", "serie", "srf", "sender",
+            "schauen", "replay", "programm", "läuft", "laeuft", "aufnahme", "aufnehmen",
+            "sendung",
+        )):
+            dazu("sunrise_tv", "film_vorschlaege", "tv_programm", "tv_vorschlaege",
+                 "tv_aufnahme", "erinnerung_setzen")
+        # 22.11.2026: Wissensbibliothek erweitern (Datensaetze, Webseiten, Dateien).
+        if any(w in knapp for w in (
+            "datensatz", "datensätze", "datensaetze", "dataset", "wissensdatenbank",
+            "wissensbibliothek", "lerne ", "lernen", "in dein wissen", "wissen erweitern",
+            "aufnehmen", "hugging", "gelernt", "weiterbild", "bild dich",
+        )):
+            dazu("wissen_erweitern", "wissen_bestand", "selbst_lernen", "webseite_lesen")
+        # 22.11.2026: Open Knowledge Maps - Wissenskarte zur Fachliteratur.
+        if any(w in knapp for w in (
+            "wissenskarte", "knowledge map", "openknowledge", "open knowledge",
+            "forschungsstand", "fachliteratur", "literatur", "studien", "wissenschaft",
+        )):
+            dazu("wissenskarte_oeffnen", "internet_suchen", "webseite_lesen")
+        if any(w in knapp for w in ("browser", "webseite", "klick", "formular", "oeffne", "öffne")):
+            dazu("browser_bedienen", "webseite_lesen", "webseite_erkunden", "programm_starten")
+        if any(w in knapp for w in ("mail", "e-mail", "gmail")):
+            dazu(
+                "mails_suchen", "mails_lesen", "mail_entwerfen", "mail_senden",
+                "entwurf_verwerfen", "gmail_anmelden", "browser_bedienen",
+            )
+        if any(w in knapp for w in ("termin", "kalender", "erinner")):
+            dazu(
+                "termine_ansehen", "termin_erstellen", "termin_aendern",
+                "termin_loeschen", "gmail_anmelden",
+            )
+        if any(w in knapp for w in (
+            "musik", "song", "lied", "playlist", "tidal", "spiel ", "spiele ",
+            "abspielen", "hören", "hoeren", "pause", "nächste", "naechste",
+            "lauter", "leiser", "album", "künstler", "kuenstler",
+            "geliked", "gelikt", "liebling", "favorit",
+        )):
+            dazu(
+                "musik_abspielen", "musik_suchen", "musik_steuern",
+                "playlists_ansehen", "playlist_erstellen", "playlist_ergaenzen",
+                "tidal_app", "lieblingssongs", "tidal_anmelden",
+            )
+        if any(w in knapp for w in ("code", "quelltext", "fehler", "konfiguration", "config")):
+            dazu(
+                "eigenen_code_lesen", "eigenen_code_aendern", "dateien_suchen",
+                "datei_lesen", "systembefehl_ausfuehren", "selbsttest_ausfuehren",
+            )
+        if any(w in knapp for w in ("cmd", "powershell", "befehl", "programm", "starte", "install")):
+            dazu("terminal_oeffnen", "systembefehl_ausfuehren", "programm_starten")
+        if any(w in knapp for w in ("merk", "wissen", "lern", "studium", "vorlesung")):
+            dazu(
+                "wissen_merken", "wissen_zeigen", "wissen_aneignen",
+                "studium_starten", "lernstand_zeigen", "vorlesung_erstellen",
+            )
+
+        # Ergaenzt 15.11.2026 - ohne diese Gruppen bekamen "wechsle die
+        # Animation" oder "erzaehl mir zu den Ausfaellen" den vollen Katalog.
+        if any(w in knapp for w in (
+            "animation", "darstellung", "kugel", "bälle", "baelle", "gehirn",
+        )):
+            dazu("animation_wechseln", "animation_anpassen")
+        if any(w in knapp for w in (
+            "wetter", "regnet", " regen", "temperatur", "schneit", "sonnig",
+        )):
+            dazu("wetter")
+        if any(w in knapp for w in (
+            "uhrzeit", "wie spät", "wie spaet", "wie viel uhr", "wieviel uhr",
+            "datum", "welcher tag", "welches datum",
+        )):
+            dazu("aktuelle_zeit")
+        if any(w in knapp for w in (
+            "rechne", "prozent", " plus ", " minus ", "geteilt durch", "wurzel",
+        )):
+            dazu("rechnen")
+        if any(w in knapp for w in (
+            " zug ", " zuges", " zugs ", " bus ", " tram", "verbindung",
+            "fahrplan", "abfahrt", "bahnhof",
+        )):
+            dazu("verbindung_suchen", "abfahrt_erinnern")
+        if any(w in knapp for w in (
+            " sms", "whatsapp", "nachricht an", "anruf", " ruf ", "telefon",
+            "handy", " app ", "kontakt",
+        )):
+            dazu("nachricht_senden", "anrufen", "app_oeffnen", "kurzbefehl_starten")
+        if any(w in knapp for w in ("erinnere mich", "erinnerung", "wecker", "weck mich")):
+            dazu("erinnerung_setzen", "erinnerungen_zeigen", "erinnerung_loeschen")
+        if "tagebuch" in knapp:
+            dazu(
+                "tagebuch_zeigen", "tagebuch_nachsehen", "tagebuch_titelblatt",
+                "tagebuch_bild_einfuegen",
+            )
+        if any(w in knapp for w in ("karteikarte", "lernkarte")):
+            dazu(
+                "karteikarte_anlegen", "karteikarten_abfragen",
+                "karteikarte_bewerten", "karteikarten_stand",
+            )
+        if any(w in knapp for w in ("vorliebe", "ich mag ")):
+            dazu("vorliebe_merken", "vorlieben_zeigen", "vorliebe_vergessen")
+        if any(w in knapp for w in ("überblick", "ueberblick", "briefing", "tagesplan")):
+            dazu("tagesueberblick", "briefing_einplanen")
+        if any(w in knapp for w in (
+            "nachrichten", "neuigkeiten", "schlagzeilen", "ausfall", "ausfäll",
+            "störung", "stoerung",
+        )):
+            dazu("internet_suchen", "webseite_lesen", "forschung_aktuell")
+
+        if any(w in knapp for w in (
+            "funktionen", "fähigkeiten", "faehigkeiten", "befehle", "was kannst du",
+        )):
+            dazu("funktionen_zeigen")
+        if any(w in knapp for w in ("standort", "wo bin ich", "orte mich", " gps", "position")):
+            dazu("standort_zeigen")
+        if "vorlesungen" in knapp or "vorlesungsübersicht" in knapp:
+            dazu("vorlesungen_zeigen")
+
+        # Ein technischer Werkzeugname in der Bitte ist immer eindeutig.
+        for name in vorhanden:
+            if name in knapp:
+                gewaehlt.add(name)
+
+        # Unklare Handlungsauftraege behalten aus Sicherheitsgruenden den
+        # vollen Katalog. Eine kleine Einsparung ist weniger wichtig als eine
+        # verlorene Faehigkeit.
+        return sorted(gewaehlt) if gewaehlt else None
+
+    #: Werkzeuge, die bei einer Bitte ohne erkanntes Stichwort ausfuehrlich
+    #: beschrieben werden (15.11.2026). Alle anderen stehen nur mit Namen da.
+    KERNWERKZEUGE: tuple[str, ...] = (
+        "internet_suchen", "webseite_lesen", "aktuelle_zeit", "rechnen",
+        "wetter", "gedaechtnis_durchsuchen", "wissen_nachsehen",
+    )
+
+    #: Steht ganz am Ende, wenn die Bitte ein deutlicher Auftrag ist
+    #: (15.11.2026). Gemessen: Bei "lies mir meine Mails vor" antwortete das
+    #: Modell zuerst "Ich schaue kurz nach ... Einen Moment." und musste
+    #: nachgehakt werden - eine ganze Modellrunde (2-3 s) fuer nichts.
+    AUFTRAGS_REGEL = (
+        "DIESE BITTE IST EIN AUFTRAG. Braucht er ein Werkzeug, besteht deine "
+        "Antwort jetzt NUR aus dem Werkzeugaufruf - keine Ankuendigung, kein "
+        "'Einen Moment', kein 'Ich schaue nach'. Den Satz an den Benutzer "
+        "sagst du erst, wenn das Ergebnis da ist. Steht das Ergebnis schon "
+        "oben im Kontext (etwa 'Soeben ausgefuehrt', Wetter, Suchergebnisse), "
+        "antworte direkt daraus."
+    )
+
+    #: Die Regel, die NACH der Werkzeugliste steht.
+    #:
+    #: Die Stellung ist der ganze Punkt. Vorher stand die Aufforderung
+    #: "benutze Werkzeuge" ganz oben, gefolgt von vierzehntausend Zeichen
+    #: alphabetischem Verzeichnis. Das Letzte, was das Modell vor der Frage
+    #: des Benutzers las, war die Parameterbeschreibung des neununddreissigsten
+    #: Werkzeugs - und nicht die Anweisung.
+    #:
+    #: Im Protokoll war genau das zu sehen: Auf "Suche ueberall nach
+    #: aktuellen Informationen und fasse mir die News zusammen" antwortete
+    #: der Orb 544 Zeichen aus dem Gedaechtnis, ohne einen einzigen Aufruf.
+    #:
+    #: Der zweite Punkt ist der Widerspruch zur Kuerze. Gesprochenen
+    #: Antworten wird vorgegeben, sich auf zwei bis vier Saetze zu
+    #: beschraenken. Ein Werkzeugaufruf sieht wie ein Verstoss dagegen aus -
+    #: bis jemand dazusagt, dass er keine Antwort ist, sondern der Weg zu
+    #: einer.
+    VERBINDLICHE_REGEL = (
+        "SO ENTSCHEIDEST DU - das ist verbindlich und geht allem anderen vor:\n\n"
+        "Dein Wissen hat einen Stichtag. Alles, was sich seither geaendert "
+        "haben koennte, weisst du nicht: Nachrichten, laufende Ereignisse und "
+        "Kriege, Preise, Wetter, Spielstaende, wer gerade ein Amt innehat, "
+        "was eine Firma diese Woche angekuendigt hat. Bei so etwas rufst du "
+        "ZUERST 'internet_suchen' auf und antwortest ERST DANACH. Nicht "
+        "raten, nicht aus dem Gedaechtnis zusammenfassen, nicht mit dem "
+        "Wissensstand entschuldigen.\n\n"
+        "Sagt der Benutzer 'such', 'schau nach', 'recherchiere' oder 'was "
+        "gibt es Neues', ist das eine Anweisung und keine Gespraechsfloskel. "
+        "Ihr folgst du.\n\n"
+        "Nach der Suche liest du den brauchbarsten Treffer mit "
+        "'webseite_lesen'. Eine Trefferliste ist keine Antwort.\n\n"
+        "Verlangt der Benutzer eine PDF, lieferst du nicht bloss den Text "
+        "oder eine Anleitung zum manuellen Drucken: Du erstellst den "
+        "vollstaendigen Inhalt und rufst danach 'pdf_erstellen' auf. Erst "
+        "wenn das Werkzeug den gespeicherten Pfad bestaetigt, ist der "
+        "Auftrag erledigt.\n\n"
+        "Du hast Zugang zum Netz. Sage nie, du koenntest nicht ins Internet "
+        "oder habest keinen Zugriff auf ein Werkzeug - du hast ihn. Geht "
+        "etwas schief, meldet dir das Werkzeug selbst, woran es lag.\n\n"
+        "Eine Vorgabe zur Kuerze gilt fuer die ANTWORT an den Benutzer, "
+        "nicht fuer den Weg dorthin. Ein Werkzeugaufruf ist keine Antwort, "
+        "sondern ein Zwischenschritt - er zaehlt gegen keine Laengengrenze."
+    )
+
+    # --- Ausführung ------------------------------------------------------------------
+
+    async def run(
+        self,
+        question: str,
+        *,
+        system_prompt: str = "",
+        actor: str = "tools",
+    ) -> ToolLoopResult:
+        """Beantwortet eine Frage und benutzt dabei Werkzeuge.
+
+        Args:
+            question: Die Frage des Benutzers.
+            system_prompt: Der Systemprompt der Unterhaltung.
+            actor: Wer die Werkzeuge benutzt – für das Prüfprotokoll.
+
+        Returns:
+            Antwort und Protokoll der Aufrufe.
+        """
+
+        outcome = ToolLoopResult()
+
+        if not self.enabled:
+            outcome.answer = await self._ask_model(question, system_prompt)
+            outcome.stopped_because = "Werkzeuge sind ausgeschaltet."
+            return outcome
+
+        combined_system = "\n\n".join(
+            part for part in (system_prompt, self.system_instructions()) if part
+        )
+
+        transcript = question
+        last_signature = ""
+        reparaturen = 0
+
+        for round_number in range(1, self._max_rounds + 1):
+            outcome.rounds = round_number
+
+            reply = await self._ask_model(transcript, combined_system)
+            if (
+                outcome.runs
+                and reply.startswith("Das Sprachmodell hat nicht geantwortet:")
+            ):
+                # Das Werkzeug hat bereits ein belastbares Ergebnis geliefert;
+                # ein Ausfall der anschliessenden sprachlichen Umformulierung
+                # darf dieses Ergebnis nicht vernichten oder den Orb scheinbar
+                # haengen lassen. Besonders lokale Reasoning-Modelle koennen
+                # ihr Antwortlimit komplett im Denkkanal verbrauchen.
+                erfolgreiche = [run.result.output for run in outcome.runs if run.result.ok]
+                if erfolgreiche:
+                    outcome.answer = "\n\n".join(erfolgreiche)
+                    outcome.stopped_because = (
+                        "Werkzeugergebnis direkt ausgegeben; Abschlussformulierung fehlgeschlagen."
+                    )
+                    return outcome
+            calls, aufruffehler = parse_tool_calls_mit_fehlern(reply)
+
+            # Dieselbe Regel wie in continue_with_tools: Ein Aufruf, der das
+            # Schema verletzt, wird nicht ausgefuehrt - das Modell bekommt
+            # den Grund und begrenzt viele Versuche. Ohne das haette der
+            # Messlauf einen ungueltigen Aufruf als "hat kein Werkzeug
+            # benutzt" gezaehlt, und das sind zwei verschiedene Befunde.
+            if aufruffehler and not calls:
+                if reparaturen < self._reparatur_versuche:
+                    reparaturen += 1
+                    hinweis = "; ".join(f.grund for f in aufruffehler[:3])
+                    logger.info(
+                        "Werkzeugaufruf ungueltig (%s) - Reparaturversuch %d von %d.",
+                        hinweis,
+                        reparaturen,
+                        self._reparatur_versuche,
+                    )
+                    transcript = (
+                        f"{transcript}\n\nDein Werkzeugaufruf war nicht gueltig "
+                        f"und wurde NICHT ausgefuehrt. Grund: {hinweis}. "
+                        "Schicke genau einen Aufruf in dieser Form und sonst "
+                        'nichts:\n{"werkzeug": "name", "argumente": {"feld": "wert"}}'
+                    )
+                    continue
+                outcome.answer = (
+                    "Ich wollte ein Werkzeug benutzen, habe den Aufruf aber "
+                    "falsch geschrieben und ihn deshalb nicht ausgefuehrt."
+                )
+                outcome.stopped_because = (
+                    "Werkzeugaufruf blieb nach den erlaubten Versuchen ungueltig."
+                )
+                return outcome
+
+            if not calls:
+                outcome.answer = strip_tool_calls(reply)
+                outcome.stopped_because = "Das Modell hat ohne Werkzeug geantwortet."
+                return outcome
+
+            results: list[str] = []
+            for call in calls:
+                if call.signature() == last_signature:
+                    outcome.stopped_because = (
+                        "Das Modell hat denselben Aufruf wiederholt – abgebrochen."
+                    )
+                    outcome.answer = strip_tool_calls(reply) or (
+                        "Ich komme hier nicht weiter, ohne mich im Kreis zu drehen."
+                    )
+                    return outcome
+                last_signature = call.signature()
+
+                run = await self._execute(call, actor)
+                outcome.runs.append(run)
+
+                if run.result.ok:
+                    output = run.result.output[: self._max_output_characters]
+                    results.append(f"Ergebnis von {call.tool}:\n{output}")
+                else:
+                    results.append(f"{call.tool} ist fehlgeschlagen: {run.result.error}")
+
+            transcript = (
+                f"{transcript}\n\n"
+                + "\n\n".join(results)
+                + "\n\nBeantworte damit jetzt die ursprüngliche Frage in normaler "
+                "Sprache. Rufe nur dann noch ein Werkzeug auf, wenn dir wirklich "
+                "etwas fehlt."
+            )
+
+        # Obergrenze erreicht: eine letzte Antwort ohne Werkzeuge erzwingen.
+        outcome.stopped_because = (
+            f"Nach {self._max_rounds} Runden abgebrochen, damit es nicht endlos wird."
+        )
+        final = await self._ask_model(
+            transcript + "\n\nAntworte jetzt abschließend, ohne weiteres Werkzeug.",
+            system_prompt,
+        )
+        outcome.answer = strip_tool_calls(final)
+        return outcome
+
+    async def direkt_ausfuehren(
+        self, name: str, arguments: dict[str, Any], *, actor: str = "vorab"
+    ) -> ToolRun:
+        """Führt ein Werkzeug aus, ohne das Modell zu fragen.
+
+        Gedacht für den Fall, in dem die Entscheidung schon feststeht und
+        nur noch die Ausführung fehlt - etwa die Suche bei einer Frage
+        nach etwas Aktuellem. Prüfung, Freigabe und Prüfprotokoll laufen
+        genau wie sonst; es entfällt allein das Überreden.
+        """
+
+        return await self._execute(ToolCall(tool=name, arguments=arguments), actor)
+
+    async def continue_with_tools(
+        self,
+        messages: list[Any],
+        first_reply: str,
+        *,
+        actor: str = "gespraech",
+        preexecuted: dict[str, str] | None = None,
+    ) -> tuple[str, list[ToolRun]]:
+        """Führt Werkzeugaufrufe aus einer bereits erhaltenen Antwort aus.
+
+        Der Unterschied zu :meth:`run`: Hier bleibt der ganze
+        Gesprächsverlauf erhalten. Der Orchestrator hat das Modell bereits
+        mit Verlauf und Gedächtnis gefragt; enthält die Antwort
+        Werkzeugaufrufe, werden sie hier ausgeführt und das Modell bekommt
+        die Ergebnisse als Fortsetzung desselben Gesprächs – nicht als
+        frische Einzelfrage, die den Zusammenhang verlöre.
+
+        Args:
+            messages: Die Nachrichten, mit denen das Modell gefragt wurde.
+            first_reply: Die erste Antwort des Modells.
+            actor: Wer die Werkzeuge benutzt – für das Prüfprotokoll.
+
+        Returns:
+            Die endgültige Antwort (ohne Werkzeug-Blöcke) und die Liste
+            der ausgeführten Aufrufe.
+        """
+
+        text = first_reply
+        runs: list[ToolRun] = []
+        last_signature = ""
+        history = list(messages)
+        nachgehakt = False
+        bereits = dict(preexecuted or {})
+        reparaturen = 0
+
+        for _round in range(self._max_rounds):
+            calls, aufruffehler = (
+                parse_tool_calls_mit_fehlern(text) if self.enabled else ([], [])
+            )
+
+            # Ein ungueltiger Aufruf wird nicht ausgefuehrt - aber auch
+            # nicht verschwiegen. Das Modell bekommt den Grund woertlich
+            # zurueck und genau so viele Versuche, wie in der Konfiguration
+            # stehen. Danach ist Schluss; eine Reparaturschleife ohne Ende
+            # waere schlimmer als der Fehler.
+            if aufruffehler and not calls:
+                if reparaturen < self._reparatur_versuche:
+                    reparaturen += 1
+                    hinweis = "; ".join(
+                        f"{fehler.grund}" for fehler in aufruffehler[:3]
+                    )
+                    logger.info(
+                        "Werkzeugaufruf ungueltig (%s) - Reparaturversuch %d von %d.",
+                        hinweis,
+                        reparaturen,
+                        self._reparatur_versuche,
+                    )
+                    from backend.orchestrator.providers.base_provider import (
+                        ChatMessage,
+                    )
+
+                    history.append(ChatMessage(role="assistant", content=text))
+                    history.append(
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                "Dein Werkzeugaufruf war nicht gueltig und wurde "
+                                f"NICHT ausgefuehrt. Grund: {hinweis}. "
+                                "Schicke genau einen Aufruf in dieser Form und "
+                                "sonst nichts:\n"
+                                '{"werkzeug": "name", "argumente": {"feld": "wert"}}'
+                            ),
+                        )
+                    )
+                    try:
+                        antwort = await self._providers.chat(history)
+                    except Exception:  # noqa: BLE001 - lieber ehrlich abbrechen.
+                        logger.exception(
+                            "Das Modell hat auf die Reparaturbitte nicht geantwortet."
+                        )
+                        return strip_tool_calls(text).strip(), runs
+                    text = getattr(antwort, "text", "") or ""
+                    continue
+                logger.warning(
+                    "Werkzeugaufruf blieb nach %d Reparaturversuch(en) ungueltig.",
+                    reparaturen,
+                )
+                return (
+                    "Ich wollte ein Werkzeug benutzen, habe den Aufruf aber "
+                    "zweimal falsch geschrieben und ihn deshalb nicht "
+                    "ausgefuehrt. Sag es bitte noch einmal, dann versuche ich "
+                    "es anders.",
+                    runs,
+                )
+            if calls and bereits:
+                doppelte = [call for call in calls if call.tool in bereits]
+                calls = [call for call in calls if call.tool not in bereits]
+                if doppelte:
+                    logger.info(
+                        "Bereits vorab ausgefuehrte Werkzeuge nicht wiederholt: %s",
+                        ", ".join(sorted({call.tool for call in doppelte})),
+                    )
+                    # Besteht die Antwort nur aus dem wiederholten Aufruf,
+                    # ist das vorab beschaffte Ergebnis selbst bereits die
+                    # passende Antwort. Es erneut durch dasselbe Werkzeug und
+                    # danach noch einmal durchs Modell zu schicken, verdoppelt
+                    # nur die Wartezeit und kann den Befund sogar veraendern.
+                    if not calls:
+                        normaler_text = strip_tool_calls(text).strip()
+                        if (
+                            len(normaler_text) >= 40
+                            and not _klingt_nach_ausrede(normaler_text)
+                        ):
+                            return normaler_text, runs
+                        vorliegend = {
+                            call.tool: bereits[call.tool]
+                            for call in doppelte
+                            if bereits.get(call.tool, "").strip()
+                        }
+                        # 22.11.2026: Nicht mehr die Rohdaten vorlesen. Bei der
+                        # Mehrquellensuche begannen sie mit der Arbeitsanweisung
+                        # ans Modell ("Sie stehen absichtlich nach Herkunft
+                        # getrennt ...") - Marc hoerte das als komischen
+                        # Anfang der News. Stattdessen bekommt das Modell die
+                        # vorhandenen Ergebnisse ausdruecklich vorgelegt und
+                        # formuliert daraus die Antwort. Kein neuer Werkzeuglauf.
+                        if vorliegend:
+                            try:
+                                from backend.orchestrator.providers.base_provider import (
+                                    ChatMessage,
+                                )
+
+                                daten = "\n\n".join(
+                                    f"ERGEBNIS VON {name.upper()}:\n{roh[:7000]}"
+                                    for name, roh in vorliegend.items()
+                                )
+                                history.append(ChatMessage(role="assistant", content=text))
+                                history.append(
+                                    ChatMessage(
+                                        role="user",
+                                        content=(
+                                            "Die Werkzeugergebnisse liegen bereits vor - rufe "
+                                            "KEIN Werkzeug mehr auf. Antworte dem Benutzer jetzt "
+                                            "direkt in normaler gesprochener Sprache aus diesen "
+                                            "Ergebnissen. Lies keine Arbeitsanweisungen, Quellen"
+                                            "marken in eckigen Klammern oder Internetadressen vor."
+                                            "\n\n" + daten
+                                        ),
+                                    )
+                                )
+                                nachgefragt = await self._providers.chat(history)
+                                endtext = strip_tool_calls(
+                                    getattr(nachgefragt, "text", "") or ""
+                                ).strip()
+                                if len(endtext) >= 20 and not _klingt_nach_ausrede(endtext):
+                                    logger.info(
+                                        "Antwort aus vorliegenden Werkzeugdaten neu formuliert (%d Zeichen).",
+                                        len(endtext),
+                                    )
+                                    return endtext, runs
+                            except Exception:  # noqa: BLE001 - dann der sichere Notweg
+                                logger.exception(
+                                    "Neuformulierung aus vorliegenden Werkzeugdaten fehlgeschlagen."
+                                )
+                        antworten = [
+                            _kompakte_vorabantwort(werkzeug, roh)
+                            for werkzeug, roh in vorliegend.items()
+                        ]
+                        if antworten:
+                            return "\n\n".join(dict.fromkeys(antworten)), runs
+            if not calls:
+                # Auch das Ausbleiben gehoert ins Protokoll.
+                #
+                # Ohne diese Zeile sieht "das Modell wollte kein Werkzeug"
+                # genauso aus wie "wir haben seinen Aufruf nicht gelesen" -
+                # naemlich wie gar nichts. Die beiden auseinanderzuhalten
+                # war der halbe Weg zur Behebung, und beim naechsten Mal
+                # soll er nicht wieder bei null anfangen.
+                if not runs:
+                    # Mit Anfang der Antwort, nicht nur mit ihrer Laenge.
+                    #
+                    # Die blosse Zahl beantwortet die entscheidende Frage
+                    # nicht: Hat das Modell die Frage aus dem Gedaechtnis
+                    # beantwortet - oder hat es gesagt, es KOENNE nicht
+                    # suchen? Das sind zwei verschiedene Fehler mit zwei
+                    # verschiedenen Ursachen, und ohne den Wortlaut sind
+                    # sie nicht zu unterscheiden.
+                    logger.info(
+                        "Das Modell hat kein Werkzeug aufgerufen (%d Zeichen): %s",
+                        len(text),
+                        text[:220].replace("\n", " | "),
+                    )
+                    # Das Werkzeug lief bereits erfolgreich VOR dem Modell.
+                    # Behauptet das Modell danach trotzdem, es habe keinen
+                    # Internet-/Werkzeugzugriff, ist Nachhaken sinnlos: Die
+                    # gesuchten Daten liegen schon hier. Im Live-Test kostete
+                    # das Nachhaken weitere elf Sekunden und produzierte nur
+                    # eine noch laengere falsche Ausrede. Dann antwortet der
+                    # Orb direkt und nachweisbar aus dem echten Ergebnis.
+                    if _klingt_nach_ausrede(text) and bereits:
+                        antworten = [
+                            _kompakte_vorabantwort(werkzeug, rohtext)
+                            for werkzeug, rohtext in bereits.items()
+                            if str(rohtext or "").strip()
+                        ]
+                        if antworten:
+                            logger.warning(
+                                "Modellausrede durch bereits erfolgreich "
+                                "beschaffte Werkzeugdaten ersetzt."
+                            )
+                            return "\n\n".join(dict.fromkeys(antworten)), runs
+                    # Zweites, haeufigeres Signal: Das Modell NENNT ein
+                    # Werkzeug beim Namen ("ich koennte 'bildschirm_ansehen'
+                    # nutzen"), ruft es aber nicht auf. Genau das stand im
+                    # Protokoll des Benutzers - der Orb "kennt" seine Werkzeuge,
+                    # redet darueber, und benutzt sie doch nicht. Wer ein
+                    # Werkzeug beim Namen nennt, haette es rufen sollen.
+                    nennt_werkzeug = any(
+                        name and name in text for name in self._registry.names()
+                    )
+                    verlangt = _ausdruecklich_verlangtes_werkzeug(
+                        history, self._registry.names()
+                    )
+                    kuendigt_an = _kuendigt_nur_an(text)
+                    if (
+                        _klingt_nach_ausrede(text) or nennt_werkzeug or verlangt
+                        or kuendigt_an
+                    ) and not nachgehakt:
+                        # EINMAL nachhaken, statt die Ausrede weiterzureichen.
+                        #
+                        # Das war die wiederkehrende Klage "die Werkzeuge gehen
+                        # nicht": Sie gingen (Suche und Browser liefen im selben
+                        # Protokoll) - das Modell griff nur nicht danach, sondern
+                        # sagte, es koenne nicht, oder es sprach ueber das
+                        # Werkzeug, ohne es zu rufen. Genau hier wird es einmal
+                        # bestimmt aufgefordert, das passende Werkzeug wirklich
+                        # zu rufen. Nur einmal (``nachgehakt``), damit daraus
+                        # keine Schleife wird.
+                        nachgehakt = True
+                        logger.warning(
+                            "Das Modell hat ein Werkzeug nicht benutzt, obwohl "
+                            "es angebracht war (Ausrede oder nur benannt). Ich "
+                            "hake einmal nach."
+                        )
+                        from backend.orchestrator.providers.base_provider import (
+                            ChatMessage,
+                        )
+
+                        if kuendigt_an:
+                            logger.warning(
+                                "Das Modell hat nur angekuendigt (%r) - ich hake "
+                                "einmal nach, damit es liefert.", text[:80],
+                            )
+                            history = history + [
+                                ChatMessage(role="assistant", content=text),
+                                ChatMessage(
+                                    role="user",
+                                    content=(
+                                        "Bitte nicht ankuendigen, sondern jetzt "
+                                        "liefern. Stehen die noetigen Angaben "
+                                        "(Suchergebnisse, Nachrichten) schon oben "
+                                        "im Kontext, antworte direkt daraus. Fehlen "
+                                        "sie, rufe JETZT das passende Werkzeug im "
+                                        "vorgesehenen Format auf. Kein 'Einen "
+                                        "Moment', keine Einleitung."
+                                    ),
+                                ),
+                            ]
+                            try:
+                                response = await self._providers.chat(history)
+                                text = getattr(response, "text", str(response))
+                                continue
+                            except Exception:  # noqa: BLE001
+                                logger.exception("Das Nachhaken beim Modell ist fehlgeschlagen.")
+                        history = history + [
+                            ChatMessage(role="assistant", content=text),
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    "Doch - du HAST Werkzeuge, sie stehen oben im "
+                                    "Systemprompt (unter anderem bildschirm_ansehen, "
+                                    "bildschirm_lesen, internet_suchen, "
+                                    "webseite_lesen, pdf_erstellen, "
+                                    "browser_bedienen). Braucht die "
+                                    "Aufgabe eines davon, dann RUFE es im "
+                                    "vorgesehenen Format auf, statt zu sagen, du "
+                                    "koennest nicht. Willst du sehen, was gerade auf "
+                                    "dem Bildschirm oder in einem Video zu sehen ist, "
+                                    "nimm bildschirm_ansehen (es macht ein Standbild "
+                                    "und wertet es aus). Nur wenn wirklich kein "
+                                    "Werkzeug passt, antworte ohne eines. "
+                                    + (
+                                        f"Der Benutzer hat ausdrücklich '{verlangt}' "
+                                        "verlangt; ignoriere das nicht."
+                                        if verlangt else ""
+                                    )
+                                ),
+                            ),
+                        ]
+                        try:
+                            response = await self._providers.chat(history)
+                            text = getattr(response, "text", str(response))
+                            continue
+                        except Exception:  # noqa: BLE001 - Nachhaken darf nicht reissen.
+                            logger.exception("Das Nachhaken beim Modell ist fehlgeschlagen.")
+                    if _klingt_nach_ausrede(text):
+                        logger.warning(
+                            "Die Antwort behauptet weiterhin, kein Werkzeug "
+                            "benutzen zu koennen - die Werkzeuge sind aber "
+                            "angemeldet und stehen im Systemprompt. Das ist ein "
+                            "Fehler des Modells, nicht der Anbindung."
+                        )
+                return strip_tool_calls(text), runs
+
+            results: list[str] = []
+            for call in calls:
+                if call.signature() == last_signature:
+                    # Derselbe Aufruf zweimal hintereinander führt nirgendwohin.
+                    answer = strip_tool_calls(text) or (
+                        "Ich komme hier nicht weiter, ohne mich im Kreis zu drehen."
+                    )
+                    return answer, runs
+                last_signature = call.signature()
+
+                run = await self._execute(call, actor)
+                runs.append(run)
+
+                if run.result.ok:
+                    output = run.result.output[: self._max_output_characters]
+                    results.append(f"Ergebnis von {call.tool}:\n{output}")
+                else:
+                    meldung = f"{call.tool} ist fehlgeschlagen: {run.result.error}"
+                    # Seit 15.11.2026 stehen viele Werkzeuge nur mit Namen
+                    # im Verzeichnis. Wer eines davon falsch aufruft, bekommt
+                    # hier die genaue Form - statt eines zweiten Ratens.
+                    werkzeug = self._registry.get(call.tool)
+                    if werkzeug is not None:
+                        try:
+                            meldung += (
+                                "\nSo wird es aufgerufen:\n"
+                                + werkzeug.describe_for_model()
+                            )
+                        except Exception:  # noqa: BLE001 - nur eine Hilfe.
+                            pass
+                    results.append(meldung)
+
+            # Dieselbe Nachrichtenform wie der übrige Verlauf – die
+            # Provider erwarten ChatMessage-Objekte, keine Wörterbücher.
+            from backend.orchestrator.providers.base_provider import ChatMessage
+
+            history = history + [
+                ChatMessage(role="assistant", content=text),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "\n\n".join(results)
+                        + "\n\nBeantworte damit jetzt die ursprüngliche Frage in "
+                        "normaler Sprache, ohne die Werkzeuge zu erwähnen. Rufe "
+                        "nur dann noch ein Werkzeug auf, wenn dir wirklich etwas "
+                        "fehlt."
+                    ),
+                ),
+            ]
+
+            try:
+                response = await self._providers.chat(history)
+            except Exception as error:  # noqa: BLE001 - lieber Teilergebnis als Absturz.
+                logger.exception("Das Sprachmodell hat in der Werkzeugschleife nicht geantwortet.")
+                erfolgreiche = [run.result.output for run in runs if run.result.ok]
+                if erfolgreiche:
+                    return "\n\n".join(erfolgreiche), runs
+                return (
+                    "Ich habe die Ergebnisse beschafft, aber die Antwort darauf "
+                    f"ist fehlgeschlagen: {error}"
+                ), runs
+            text = getattr(response, "text", str(response))
+
+        return strip_tool_calls(text), runs
+
+    async def _execute(self, call: ToolCall, actor: str) -> ToolRun:
+        """Führt einen einzelnen Aufruf aus – nach Prüfung und Freigabe."""
+
+        started = time.perf_counter()
+        self._total_calls += 1
+
+        if (
+            call.tool in _MODELL_VERBORGENE_TAGEBUCHWERKZEUGE
+            and actor in {"tools", "gespraech"}
+        ):
+            self._failed_calls += 1
+            return ToolRun(
+                call.tool,
+                call.arguments,
+                ToolResult.failure(
+                    "Tagebuchdaten werden nur ueber den lokalen, gefuehrten "
+                    "Tagebuchdialog geaendert."
+                ),
+                time.perf_counter() - started,
+            )
+
+        tool = self._registry.get(call.tool)
+        if tool is None:
+            self._failed_calls += 1
+            return ToolRun(
+                call.tool,
+                call.arguments,
+                ToolResult.failure(
+                    f"Das Werkzeug '{call.tool}' gibt es nicht. Verfügbar sind: "
+                    + ", ".join(self._registry.names())
+                ),
+                time.perf_counter() - started,
+            )
+
+        valid, problem, cleaned = tool.validate(call.arguments)
+        if not valid:
+            self._failed_calls += 1
+            return ToolRun(
+                tool.name,
+                call.arguments,
+                ToolResult.failure(problem),
+                time.perf_counter() - started,
+            )
+
+        decision = await self._security.require(
+            actor,
+            tool.permission,
+            self._describe_intent(tool, cleaned),
+            context={"tool": tool.name, "arguments": cleaned},
+        )
+
+        if not decision.allowed:
+            self._failed_calls += 1
+            return ToolRun(
+                tool.name,
+                cleaned,
+                ToolResult.failure(f"Nicht ausgeführt: {decision.reason}"),
+                time.perf_counter() - started,
+            )
+
+        # Was den Rechner verändert, soll man hören.
+        #
+        # Nicht jedes Werkzeug: Die Uhrzeit abzulesen oder zu rechnen sind
+        # Teile des Gesprächs, und ein Klang dafür wäre bald nur noch
+        # Lärm. Ein Programm zu starten oder eine Seite zu öffnen ist etwas
+        # anderes – da geschieht etwas auf dem Bildschirm, und wer gerade
+        # wegsieht, soll trotzdem mitbekommen, dass es der Orb war.
+        if tool.permission in HANDELNDE_RECHTE:
+            _klang_zur_tat()
+
+        # Keine Argumente in Ereigniskennungen: Darin könnten Dateinamen,
+        # Suchtexte oder andere private Inhalte stehen. Eine lokale laufende
+        # Nummer genügt, um Start und Ende zuzuordnen.
+        task_id = f"tool-{self._total_calls}"
+        if self._event_bus is not None:
+            await self._event_bus.publish(
+                "task.started", {"id": task_id, "label": tool.name, "progress": 0.0}
+            )
+        try:
+            result = await tool.execute(cleaned)
+        except Exception as error:  # noqa: BLE001 - ein Werkzeug darf nichts abbrechen.
+            logger.exception("Das Werkzeug '%s' ist abgestürzt.", tool.name)
+            result = ToolResult.failure(f"Das Werkzeug ist abgestürzt: {error}")
+
+        if not result.ok:
+            self._failed_calls += 1
+
+        if self._event_bus is not None:
+            await self._event_bus.publish(
+                "task.finished",
+                {
+                    "id": task_id,
+                    "label": tool.name,
+                    "progress": 1.0,
+                    "ok": result.ok,
+                },
+            )
+
+        # Jeder Werkzeugeinsatz ins Protokoll, und zwar sichtbar.
+        #
+        # Bisher stand davon nichts drin - nur ein DEBUG-Eintrag, wenn ein
+        # Werkzeugblock kein gueltiges JSON war. Damit war die wichtigste
+        # Frage bei jeder Stoerung nicht zu beantworten: Hat der Orb das
+        # Werkzeug ueberhaupt benutzt?
+        #
+        # Genau daran ist die Suche nach "der Orb kann nicht mehr aufs
+        # Internet" haengengeblieben. Im Protokoll stand, welche Strategie
+        # gewaehlt wurde und dass eine Antwort kam - ob dazwischen gesucht
+        # wurde, ob die Suche scheiterte oder ob sie nie versucht wurde,
+        # war nicht zu sehen. Drei sehr verschiedene Fehler, ein einziges
+        # Bild.
+        dauer = time.perf_counter() - started
+        if result.ok and tool.name in _LESENDE_WERKZEUGE and self.gelesenes_behalten:
+            # Was gelesen wurde, soll der Orb morgen noch wissen.
+            with contextlib.suppress(Exception):
+                self.gelesenes_behalten(
+                    str(result.output or ""),
+                    self._quelle_nennen(tool.name, cleaned),
+                )
+        if result.ok:
+            logger.info(
+                "[" + _kennung() + "] Werkzeug '%s' ausgefuehrt (%.1f s): %s",
+                tool.name,
+                dauer,
+                str(result.output)[:160].replace("\n", " | "),
+            )
+        else:
+            logger.warning(
+                "[" + _kennung() + "] Werkzeug '%s' fehlgeschlagen (%.1f s): %s",
+                tool.name,
+                dauer,
+                result.error or "ohne Angabe",
+            )
+
+        self._security.record_action(
+            actor,
+            tool.permission,
+            self._describe_intent(tool, cleaned),
+            succeeded=result.ok,
+            context={"tool": tool.name},
+        )
+
+        return ToolRun(tool.name, cleaned, result, time.perf_counter() - started)
+
+    @staticmethod
+    def _quelle_nennen(werkzeug: str, argumente: dict[str, Any]) -> str:
+        """Woher der gelesene Text stammt - fuer den Nachweis im Gedaechtnis.
+
+        Ohne Quelle ist ein Auszug im Gedaechtnis wertlos: Man weiss dann,
+        DASS etwas dastand, aber nicht, wo man es nachlesen kann. Und
+        Seiten aendern sich - der Verweis ist oft mehr wert als der Text.
+        """
+
+        for schluessel in ("url", "pfad", "datei", "adresse", "dateiname"):
+            wert = argumente.get(schluessel)
+            if wert:
+                return str(wert)
+        return werkzeug
+
+    @staticmethod
+    def _describe_intent(tool: Tool, arguments: dict[str, Any]) -> str:
+        """Beschreibt im Klartext, was geschehen soll.
+
+        Diese Zeile bekommt der Benutzer im Zustimmungsdialog zu sehen. Sie
+        muss ohne Fachwissen verständlich sein.
+        """
+
+        if not arguments:
+            return tool.description
+
+        details = ", ".join(f"{key}: {value}" for key, value in arguments.items())
+        return f"{tool.description} ({details})"
+
+    async def _ask_model(self, prompt: str, system_prompt: str) -> str:
+        """Stellt eine Frage an das Sprachmodell."""
+
+        try:
+            response = await self._providers.complete(prompt, system_prompt=system_prompt)
+        except Exception as error:  # noqa: BLE001
+            logger.exception("Das Sprachmodell hat nicht geantwortet.")
+            return f"Das Sprachmodell hat nicht geantwortet: {error}"
+
+        if isinstance(response, str):
+            return response
+        for attribute in ("text", "content", "answer"):
+            value = getattr(response, attribute, None)
+            if isinstance(value, str):
+                return value
+        if isinstance(response, dict):
+            for key in ("text", "content", "answer"):
+                value = response.get(key)
+                if isinstance(value, str):
+                    return value
+        return str(response)
+
+    # --- Auskunft ---------------------------------------------------------------------
+
+    def status(self) -> dict[str, Any]:
+        """Statusangaben für die Transparenzansicht."""
+
+        return {
+            "enabled": self.enabled,
+            "configured": self._enabled,
+            "tools": self._registry.names(),
+            "max_rounds": self._max_rounds,
+            "total_calls": self._total_calls,
+            "failed_calls": self._failed_calls,
+        }

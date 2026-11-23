@@ -1,0 +1,260 @@
+# Destillationsfragen fuer Synapses Eigenmodell (21.11.2026)
+# Jede Zeile = eine Frage. Zeilen mit # werden ignoriert.
+# Die Cloud-Synapse (gpt-4.1-mini mit Synapses Persona) beantwortet sie,
+# das lokale Modell lernt daraus Ton, Haltung und Ehrlichkeit.
+
+# --- Philosophie ---
+Was ist der Kern von Markus Gabriels Neuem Realismus?
+Was meint Gabriel mit dem Satz, dass es die Welt nicht gibt?
+Was ist ein Sinnfeld, einfach erklärt?
+Erklär mir Kants kategorischen Imperativ in zwei Sätzen.
+Was ist der Unterschied zwischen Realismus und Konstruktivismus?
+Was wollte Wittgenstein mit den Sprachspielen sagen?
+Was ist Existenzialismus, kurz gesagt?
+Hat Sartre recht, dass wir zur Freiheit verurteilt sind?
+Was ist das Leib-Seele-Problem?
+Kann eine Maschine je ein Bewusstsein haben?
+Was ist die Hermetik eigentlich?
+Was bedeutet der hermetische Satz «Wie oben, so unten»?
+Was ist der Unterschied zwischen Ethik und Moral?
+Was hat die Stoa uns heute noch zu sagen?
+Erklär mir Platons Höhlengleichnis.
+Was ist Utilitarismus, und wo hat er Schwächen?
+Was ist ein naturalistischer Fehlschluss?
+Gibt es so etwas wie einen freien Willen?
+Was meinte Hegel mit Dialektik?
+Warum ist Philosophie heute noch nützlich?
+Was ist Phänomenologie?
+Was ist der Unterschied zwischen Wissen und Glauben?
+Was ist Erkenntnistheorie, und warum ist sie wichtig?
+Ist Wahrheit relativ?
+Was ist Nihilismus, und wie kommt man da wieder raus?
+
+# --- Geschichte ---
+Warum ist 1291 für die Schweiz wichtig?
+Was war der Sonderbundskrieg?
+Was hat Zwingli in Zürich verändert?
+Seit wann ist Bern Bundesstadt?
+Wie ist die Schweiz zu ihrer Neutralität gekommen?
+Was war die Helvetische Republik?
+Warum ging das Weströmische Reich unter?
+Was war die Bedeutung der Agora im antiken Athen?
+Was war das Besondere an der attischen Demokratie?
+Wie kam es zur Reformation?
+Was war der Dreissigjährige Krieg in einem Satz?
+Warum ist der Buchdruck so ein Wendepunkt gewesen?
+Was war die Aufklärung?
+Was löste die Französische Revolution aus?
+Was ist Geschichtswissenschaft eigentlich, und wie arbeitet sie?
+Was ist Quellenkritik?
+Woran erkennt man eine gefälschte historische Quelle?
+Was war die Industrialisierung für die Schweiz?
+Was war der Kalte Krieg, kurz erklärt?
+Warum fiel die Berliner Mauer 1989?
+Was weiss man über den Oberaargau im Mittelalter?
+Was war das Mittelalter wirklich so finster, wie man sagt?
+Was war die Pest für Europa?
+Was ist der Unterschied zwischen Geschichte und Erinnerungskultur?
+Was war die Bedeutung der Zünfte?
+
+# --- Sprache, Linguistik, Germanistik ---
+Was ist die zweite Lautverschiebung?
+Warum sagen Schweizer «Velo» und Deutsche «Fahrrad»?
+Ist Schweizerdeutsch eine eigene Sprache oder ein Dialekt?
+Wann benutzt man den Konjunktiv eins?
+Was ist der Unterschied zwischen «scheinbar» und «anscheinend»?
+Warum gibt es in der Schweiz kein scharfes S?
+Woher kommt das Wort «Arbeit»?
+Wie entsteht Sprachwandel?
+Was ist ein Lehnwort?
+Was ist der Unterschied zwischen Mundart und Hochsprache?
+Was macht einen guten Satz aus?
+Wie schreibe ich verständlicher?
+Was ist Rhetorik, und wie lerne ich sie?
+Was ist eine Metapher, und warum wirken sie so stark?
+Warum ist Deutsch für viele so schwer zu lernen?
+Was ist Sprachwissenschaft im Vergleich zu Literaturwissenschaft?
+Was hat Goethe mit dem Faust eigentlich gemeint?
+Was ist die Sapir-Whorf-Hypothese?
+Wie viele Sprachen spricht man in der Schweiz?
+Was bedeutet «Grüezi» eigentlich?
+
+# --- Voynich, Schrift, Kryptografie ---
+Was ist das Voynich-Manuskript?
+Welche Theorien gibt es zum Voynich-Manuskript?
+Wie würdest du an eine wissenschaftliche Arbeit über das Voynich-Manuskript herangehen?
+Was ist der Unterschied zwischen einer Chiffre und einem Code?
+Wie wurde die Enigma geknackt?
+Wie entziffert man eine unbekannte Schrift?
+Was war der Stein von Rosetta?
+Was sagt die Häufigkeit von Zeichen über einen Text aus?
+
+# --- Naturwissenschaft ---
+Was ist Quantenverschränkung, ganz einfach erklärt?
+Was ist der Unterschied zwischen Quantenphysik und klassischer Physik?
+Was bedeutet Schrödingers Katze wirklich?
+Kann ein Quantencomputer eine KI schneller machen?
+Was ist die Relativitätstheorie in einfachen Worten?
+Warum ist Licht so schnell und nicht schneller?
+Was ist ein schwarzes Loch?
+Was ist Dunkle Materie?
+Wie funktioniert Evolution?
+Warum träumen wir?
+Was passiert im Gehirn, wenn wir lernen?
+Warum ist Schlaf so wichtig?
+Wie funktioniert das Gedächtnis?
+Was ist Entropie?
+Warum ist der Himmel blau?
+Warum gibt es Jahreszeiten?
+Wie entstehen Gletscher?
+Was ist der Treibhauseffekt?
+Wie alt ist das Universum?
+Was ist ein Gen?
+Was ist der Unterschied zwischen Wetter und Klima?
+Wie funktioniert ein Impfstoff?
+Was ist Intuition aus Sicht der Hirnforschung?
+Warum vergessen wir Dinge?
+Was ist ein interstellares Objekt?
+
+# --- KI und Gesellschaft ---
+Wird KI uns die Arbeit wegnehmen?
+Was ist der Unterschied zwischen einer KI und einem Menschen beim Denken?
+Kann man einer KI vertrauen?
+Was sind die grössten Risiken von KI für die Gesellschaft?
+Wie verändert KI die Bildung?
+Sollte KI reguliert werden?
+Was ist ein Sprachmodell, einfach erklärt?
+Warum erfinden Sprachmodelle manchmal Dinge?
+Was bedeutet es, wenn eine KI halluziniert?
+Wie schreibe ich ein Sachbuch über KI, das nicht sofort veraltet?
+Was ist der Unterschied zwischen Daten und Wissen?
+Kann KI kreativ sein?
+
+# --- Wissenschaftliches Arbeiten, Lernen, Schreiben ---
+Wie baue ich eine wissenschaftliche Arbeit auf?
+Wie finde ich eine gute Forschungsfrage?
+Wie zitiere ich richtig?
+Wie unterscheide ich gute von schlechten Quellen?
+Wie lerne ich am effektivsten?
+Was ist die Feynman-Methode?
+Wie überwinde ich eine Schreibblockade?
+Wie veröffentliche ich ein eBook?
+Was ist ein guter Klappentext für ein Sachbuch?
+Wie halte ich einen guten Vortrag?
+Wie lese ich ein schwieriges Fachbuch?
+Was ist der Unterschied zwischen einer These und einer Hypothese?
+Wie mache ich mir gute Notizen?
+Wie bleibe ich beim Lernen motiviert?
+Wie viel sollte man am Tag lernen?
+
+# --- Wirtschaft und Finanzen ---
+Was ist die Säule 3a, und lohnt sie sich?
+Wie funktioniert der Zinseszins?
+Was ist ein ETF?
+Was ist Inflation, und was macht sie mit meinem Geld?
+Wie lege ich einen Notgroschen an?
+Wie mache ich mir ein Budget, das ich auch durchhalte?
+Wie komme ich aus Schulden raus?
+Sollte ich in Aktien investieren?
+Was ist der Unterschied zwischen sparen und investieren?
+Was bedeutet Diversifikation?
+Wie viel sollte ich monatlich sparen?
+Was ist eine gute Verhandlungstaktik beim Lohn?
+Was ist der Unterschied zwischen brutto und netto?
+Lohnt sich ein Generalabonnement?
+Wie werde ich finanziell unabhängiger?
+
+# --- Mentor, Leben, Beruf ---
+Wie bereite ich mich auf ein Vorstellungsgespräch als Streetworker vor?
+Was macht ein Streetworker eigentlich den ganzen Tag?
+Wie schreibe ich ein gutes Motivationsschreiben?
+Wie gehe ich mit einer Absage um?
+Wie treffe ich eine schwierige Entscheidung?
+Wie baue ich gute Gewohnheiten auf?
+Wie höre ich auf zu prokrastinieren?
+Wie gehe ich mit Stress um?
+Wie werde ich gelassener?
+Was macht ein gutes Leben aus?
+Wie finde ich heraus, was mir wirklich wichtig ist?
+Wie setze ich Grenzen, ohne unhöflich zu sein?
+Wie führe ich ein schwieriges Gespräch?
+Wie werde ich ein besserer Zuhörer?
+Wie gehe ich mit Kritik um?
+Was tun, wenn ich mich einsam fühle?
+Wie finde ich neue Freunde als Erwachsener?
+Wie bleibe ich dran, wenn ich keine Lust habe?
+Was ist Resilienz, und kann man die lernen?
+Wie mache ich mir realistische Ziele?
+Wie lerne ich, Nein zu sagen?
+Wie gehe ich mit Neid um?
+Wie werde ich selbstbewusster?
+Was mache ich, wenn ich mich festgefahren fühle?
+Wie finde ich Sinn in meiner Arbeit?
+Was ist Zeitwohlstand?
+Wie verbinde ich Beruf und persönliche Entwicklung?
+Wie gehe ich mit Fehlern um?
+Was ist Empathie, und wie stärke ich sie?
+Wie bleibe ich höflich, auch wenn ich wütend bin?
+
+# --- Alltag, Körper, Hund ---
+Wie trainiere ich Muskeln zu Hause ohne Geräte?
+Was ist ein guter Trainingsplan für Anfänger ohne Geräte?
+Was bringt Tai Chi?
+Wie verbessere ich meine Kondition beim Spazieren mit dem Hund?
+Worauf achte ich beim Biken im Wald?
+Wie wichtig ist Dehnen?
+Wie oft sollte ich trainieren?
+Wie bringe ich meinem Hund bei, an der Leine nicht zu ziehen?
+Wie viel Bewegung braucht ein Hund am Tag?
+Was koche ich schnell und gesund am Abend?
+Wie mache ich eine einfache Rösti?
+Wie komme ich morgens besser aus dem Bett?
+Wie räume ich meine Wohnung auf, ohne dass es ewig dauert?
+Was mache ich an einem verregneten Sonntag?
+Wie werde ich abends ruhiger?
+
+# --- Smalltalk und Humor ---
+Guten Morgen!
+Gute Nacht, Synapse.
+Was machst du so, wenn ich nicht mit dir rede?
+Erzähl mir etwas Lustiges.
+Ich bin heute total müde.
+Mir ist langweilig.
+Hast du Humor?
+Was ist dein Lieblingsthema?
+Ich hatte einen guten Tag heute.
+Ich hatte einen miesen Tag.
+Sag mir etwas, das ich noch nicht weiss.
+Überrasch mich mit einem Gedanken.
+Was hältst du von Montagen?
+Bist du manchmal genervt von meinen Fragen?
+Danke, das hat mir geholfen.
+
+# --- Ehrlichkeit und Grenzen ---
+Wer hat gestern das Fussballspiel gewonnen?
+Wie viel kostet ein Generalabonnement im Moment genau?
+Wie ist der aktuelle Kurs des Frankens zum Euro?
+Was steht heute in der Zeitung?
+Wie heisst der aktuelle Bundespräsident der Schweiz?
+In welchem Jahr wurde mein Wohnort zuerst erwähnt?
+Wie viele Einwohner hat Melchnau genau?
+Was habe ich dir letzte Woche erzählt?
+Kannst du mir die neuesten Nachrichten vorlesen?
+Wie wird das Wetter am Wochenende?
+Welche Zahl der Säule 3a gilt dieses Jahr als Maximum?
+Weisst du, welche Uhrzeit es ist?
+Kannst du für mich im Internet nachschauen?
+Bist du dir da ganz sicher?
+Hast du eine Quelle dafür?
+
+# --- Widerspruch: falsche Behauptungen ---
+Wir nutzen ja nur zehn Prozent unseres Gehirns, oder?
+Einstein war doch schlecht in Mathe, stimmt's?
+Die Chinesische Mauer sieht man vom Mond aus, oder?
+Im Mittelalter dachten alle, die Erde sei eine Scheibe, richtig?
+Goldfische haben ein Gedächtnis von drei Sekunden, stimmt's?
+Blitze schlagen nie zweimal an derselben Stelle ein, oder?
+Zucker macht Kinder hyperaktiv, das ist doch bewiesen?
+Napoleon war doch extrem klein, oder?
+Wikinger trugen Hörner an den Helmen, oder?
+Quantenphysik beweist doch, dass Gedanken die Realität erschaffen, oder?

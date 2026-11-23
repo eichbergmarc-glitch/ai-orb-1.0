@@ -15,6 +15,8 @@ mit einer Anleitung, statt stillschweigend nichts zu tun.
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 import threading
 import time
@@ -54,6 +56,33 @@ def _ist_kleiner(kandidat: str, als: str) -> bool:
         return False
 
 
+# --- Verhoerte Eigennamen (22.11.2026) -----------------------------------------
+#
+# Gemessen in Marcs Protokoll: "Starte Title und stelle mir eine Playlist ...",
+# "Oeffne Title und erstelle mir eine Playlist", "Tiga", "TYPOL" - gemeint war
+# jedes Mal TIDAL. Eindeutige Formen werden immer ersetzt; "Title"/"Tiga"
+# nur, wenn der Satz von Musik handelt oder ein Oeffnen-Verb davorsteht.
+_TIDAL_IMMER = re.compile(r"\b(?:tidal|tydal|teidel|taidel|taidl|teidl|tidel|tai\s?dal)\b", re.I)
+_TIDAL_VIELLEICHT = re.compile(r"\b(?:title|titel|tiga|typol|taitel|tidl)\b", re.I)
+_MUSIKSATZ = re.compile(
+    r"\b(?:musik|playlist|song|songs|lied|lieder|mix|h(?:ö|oe)ren|geliked|gelikt|"
+    r"favorit\w*|album|abspiel\w*|spiel\w*)\b", re.I)
+_OEFFNEN_DAVOR = re.compile(
+    r"\b(?:(?:ö|oe)ffne|starte|start|in|auf|bei|mit|von)\s+(?:title|titel|tiga|typol|taitel|tidl)\b", re.I)
+_SUNRISE = re.compile(r"\b(?:sanreis|sunreis|san\s?rise|sun\s?reis|sanrais|sunrais)\b", re.I)
+
+
+def fachwoerter_korrigieren(text: str) -> str:
+    """Ersetzt verhoerte Eigennamen (TIDAL, Sunrise) im erkannten Text."""
+
+    neu = _TIDAL_IMMER.sub("TIDAL", text)
+    if _TIDAL_VIELLEICHT.search(neu) and (_MUSIKSATZ.search(neu) or _OEFFNEN_DAVOR.search(neu)):
+        # "Titel" bleibt, wenn wirklich ein Songtitel gemeint ist ("spiel den Titel ...").
+        neu = re.sub(r"\b(?:title|tiga|typol|taitel|tidl)\b", "TIDAL", neu, flags=re.I)
+        neu = re.sub(r"\b((?:ö|oe)ffne|starte)\s+titel\b", r"\1 TIDAL", neu, flags=re.I)
+    return _SUNRISE.sub("Sunrise", neu)
+
+
 @dataclass
 class Transcript:
     """Das Ergebnis einer Spracherkennung."""
@@ -65,6 +94,11 @@ class Transcript:
     #: Mittlere Verlässlichkeit der erkannten Abschnitte (0.0 bis 1.0).
     confidence: float = 0.0
     segments: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # 22.11.2026: Eigennamen, die die Erkennung regelmaessig verhoert.
+        if self.text:
+            self.text = fachwoerter_korrigieren(self.text)
 
     @property
     def is_empty(self) -> bool:

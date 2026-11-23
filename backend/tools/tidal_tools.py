@@ -51,6 +51,26 @@ def _suchbegriff(song: str) -> str:
     return re.sub(r"\s+(?:von|by)\s+|\s+[-–]\s+", " ", song).strip()
 
 
+#: Seiten der TIDAL-App, die ohne Entwickler-Anmeldung erreichbar sind:
+#: Die App oeffnet tidal://<pfad> wie den gleichnamigen Pfad des Webplayers.
+APP_SEITEN: dict[str, str] = {
+    "lieblingssongs": "my-collection/tracks",
+    "playlists": "my-collection/playlists",
+    "alben": "my-collection/albums",
+    "kuenstler": "my-collection/artists",
+    "mixes": "my-collection/mixes",
+    "startseite": "home",
+}
+APP_SEITEN_NAMEN: dict[str, str] = {
+    "lieblingssongs": "deine gelikten Songs",
+    "playlists": "deine Playlists",
+    "alben": "deine Alben",
+    "kuenstler": "deine Kuenstler",
+    "mixes": "deine Mixes",
+    "startseite": "die TIDAL-Startseite",
+}
+
+
 class _TidalWerkzeug(Tool):
     permission = _PERMISSION
 
@@ -61,8 +81,19 @@ class _TidalWerkzeug(Tool):
     def _client(self) -> TidalClient:
         return self._dienst.client
 
-    @staticmethod
-    def _fehler(fehler: Exception) -> ToolResult:
+    def _fehler(self, fehler: Exception, *, app_seite: str = "") -> ToolResult:
+        # 22.11.2026: Marc nutzt TIDAL als App und will keine Entwickler-
+        # Anmeldung. Fehlt sie, oeffnet das Werkzeug die passende Seite
+        # direkt in der TIDAL-App (dort ist Marc angemeldet).
+        if app_seite and "nicht angemeldet" in str(fehler):
+            wo = self._dienst.app_seite_oeffnen(app_seite)
+            ort = "in der TIDAL-App" if wo == "app" else "im TIDAL-Webplayer"
+            return ToolResult.success(
+                f"Ich habe {APP_SEITEN_NAMEN.get(app_seite, 'die Seite')} {ort} geoeffnet "
+                "und starte die Wiedergabe. (Eigene Playlists "
+                "anlegen kann ich ohne TIDAL-Entwicklerzugang nicht - das geht in der App.)",
+                wo=wo,
+            )
         return ToolResult.failure(str(fehler))
 
 
@@ -143,7 +174,7 @@ class MusikAbspielenTool(_TidalWerkzeug):
 
             treffer = await asyncio.to_thread(self._client.suchen, _suchbegriff(suche), anzahl=1)
         except (TidalFehler, TidalAuthFehler) as fehler:
-            return self._fehler(fehler)
+            return self._fehler(fehler, app_seite="playlists" if art == "playlist" else "")
         if not treffer:
             return ToolResult.failure(f"Zu '{suche}' habe ich bei TIDAL nichts gefunden.")
         titel = treffer[0]
@@ -185,7 +216,7 @@ class PlaylistsAnsehenTool(_TidalWerkzeug):
         try:
             playlists = await asyncio.to_thread(self._client.meine_playlists)
         except (TidalFehler, TidalAuthFehler) as fehler:
-            return self._fehler(fehler)
+            return self._fehler(fehler, app_seite="playlists")
         if not playlists:
             return ToolResult.success("In deiner TIDAL-Sammlung sind noch keine Playlists.")
         zeilen = [
@@ -252,7 +283,7 @@ class PlaylistErstellenTool(_PlaylistFuellen):
             if gefunden:
                 await asyncio.to_thread(self._client.titel_hinzufuegen, playlist.id, [t.id for t in gefunden])
         except (TidalFehler, TidalAuthFehler) as fehler:
-            return self._fehler(fehler)
+            return self._fehler(fehler, app_seite="playlists")
 
         if arguments.get("abspielen"):
             self._dienst.oeffnen(playlist.app_link, playlist.link)
@@ -286,7 +317,7 @@ class PlaylistErgaenzenTool(_PlaylistFuellen):
             if gefunden:
                 await asyncio.to_thread(self._client.titel_hinzufuegen, playlist.id, [t.id for t in gefunden])
         except (TidalFehler, TidalAuthFehler) as fehler:
-            return self._fehler(fehler)
+            return self._fehler(fehler, app_seite="playlists")
         kopf = f"Zu „{playlist.name}“ habe ich {len(gefunden)} Titel hinzugefügt."
         return ToolResult.success(self._bericht(kopf, gefunden, fehlend), playlist=playlist.id)
 
@@ -300,6 +331,13 @@ class TidalDienst:
         self.danach_abspielen = danach_abspielen
         self.warte_sekunden = warte_sekunden
         self._oeffner = oeffner or in_app_oeffnen
+
+    def app_seite_oeffnen(self, seite: str, *, abspielen: bool | None = None) -> str:
+        if abspielen is None:
+            abspielen = seite in ("lieblingssongs", "mixes")
+        pfad = APP_SEITEN.get(seite, seite)
+        return self._oeffner(f"tidal://{pfad}", f"https://listen.tidal.com/{pfad}",
+                             danach_abspielen=abspielen, warte_sekunden=self.warte_sekunden)
 
     def oeffnen(self, app_link: str, web_link: str) -> str:
         return self._oeffner(
@@ -336,9 +374,91 @@ class TidalDienst:
         return {"ok": True}
 
 
+class LieblingssongsTool(_TidalWerkzeug):
+    """22.11.2026: "stell mir eine Playlist aus den Sachen zusammen, die ich geliked habe"."""
+
+    name = "lieblingssongs"
+    description = (
+        "Holt die Songs, die Marc in TIDAL geliked (mit Herz markiert) hat. "
+        "aktion 'zeigen' nennt sie; aktion 'playlist' legt daraus eine neue "
+        "Playlist an (Name frei waehlbar) und kann sie gleich abspielen. "
+        "Benutze das bei 'meine Lieblingssongs', 'was ich geliked habe', "
+        "'meine Favoriten'."
+    )
+    parameters = (
+        ToolParameter("aktion", "string", "'zeigen' oder 'playlist'.",
+                      required=False, default="playlist", choices=("zeigen", "playlist")),
+        ToolParameter("name", "string", "Name der neuen Playlist.",
+                      required=False, default="Meine Lieblingssongs"),
+        ToolParameter("anzahl", "integer", "Hoechstens so viele Songs (Standard 100).",
+                      required=False, default=100),
+        ToolParameter("abspielen", "boolean", "Danach gleich abspielen.",
+                      required=False, default=True),
+    )
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        try:
+            anzahl = max(1, min(_MAX_SONGS, int(arguments.get("anzahl") or 100)))
+        except (TypeError, ValueError):
+            anzahl = 100
+        try:
+            titel = await asyncio.to_thread(self._client.lieblingstitel, anzahl=anzahl)
+            if not titel:
+                return ToolResult.failure("In deiner TIDAL-Sammlung sind keine gelikten Songs.")
+            if str(arguments.get("aktion") or "playlist") == "zeigen":
+                liste = "\n".join(f"- {t.zum_vorlesen()}" for t in titel[:30])
+                return ToolResult.success(f"Deine gelikten Songs ({len(titel)}):\n{liste}")
+            name = str(arguments.get("name") or "Meine Lieblingssongs").strip()
+            playlist = await asyncio.to_thread(
+                self._client.playlist_anlegen, name, beschreibung="Von Synapse aus deinen Likes"
+            )
+            await asyncio.to_thread(self._client.titel_hinzufuegen, playlist.id, [t.id for t in titel])
+        except (TidalFehler, TidalAuthFehler) as fehler:
+            return self._fehler(fehler, app_seite="lieblingssongs")
+        if arguments.get("abspielen", True) not in (False, "false", "False", 0):
+            self._dienst.oeffnen(playlist.app_link, playlist.link)
+        return ToolResult.success(
+            f"Die Playlist „{playlist.name}“ ist angelegt, mit {len(titel)} deiner gelikten Songs.",
+            playlist=playlist.id, link=playlist.link,
+        )
+
+
+class TidalAppTool(_TidalWerkzeug):
+    """22.11.2026: Marc nutzt TIDAL als App - Seiten direkt dort oeffnen."""
+
+    name = "tidal_app"
+    description = (
+        "Oeffnet in der TIDAL-App eine Seite deiner Sammlung: 'lieblingssongs' "
+        "(gelikte Songs), 'playlists', 'alben', 'kuenstler', 'mixes' (deine "
+        "Mixes) oder 'startseite'. Benutze das bei 'oeffne TIDAL', 'spiel "
+        "meine Lieblingssongs/Mixes', 'zeig meine Playlists'. Einzelne Songs "
+        "spielst du mit musik_abspielen, steuern mit musik_steuern."
+    )
+    parameters = (
+        ToolParameter("seite", "string", "Welche Seite.", required=False, default="startseite",
+                      choices=tuple(APP_SEITEN)),
+        ToolParameter("abspielen", "boolean", "Gleich abspielen (Standard: ja bei Lieblingssongs und Mixes).",
+                      required=False),
+    )
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        seite = str(arguments.get("seite") or "startseite")
+        if seite not in APP_SEITEN:
+            seite = "startseite"
+        wunsch = arguments.get("abspielen")
+        abspielen = None if wunsch in (None, "") else wunsch in (True, "true", "True", 1)
+        wo = self._dienst.app_seite_oeffnen(seite, abspielen=abspielen)
+        ort = "in der TIDAL-App" if wo == "app" else "im TIDAL-Webplayer"
+        spielt = abspielen if abspielen is not None else seite in ("lieblingssongs", "mixes")
+        zusatz = " und starte die Wiedergabe - beim ersten Mal startet die App dafuer kurz neu" if spielt else ""
+        return ToolResult.success(f"Ich habe {APP_SEITEN_NAMEN[seite]} {ort} geoeffnet{zusatz}.", wo=wo)
+
+
 def build_tidal_tools(dienst: TidalDienst) -> list[Tool]:
     return [
+        TidalAppTool(dienst),
         TidalAnmeldenTool(dienst),
+        LieblingssongsTool(dienst),
         MusikSuchenTool(dienst),
         MusikAbspielenTool(dienst),
         MusikSteuernTool(dienst),

@@ -86,6 +86,12 @@ PRESETS: dict[str, dict[str, Any]] = {
         "requires_key": True,
         "local": False,
     },
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+        "requires_key": True,
+        "local": False,
+    },
     "lmstudio": {
         # LM Studio lauscht standardmäßig hier und verlangt keinen Schlüssel.
         "base_url": "http://127.0.0.1:1234/v1",
@@ -173,6 +179,15 @@ class OpenAICompatibleProvider(BaseProvider):
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
+        # 21.11.2026: User-Agent noetig. Groqs Cloudflare sperrt Anfragen
+        # ohne Browser-Signatur mit "Error 1010" (403, browser_signature_banned);
+        # httpx sendet sonst "python-httpx/..." und wird gebannt. Ein neutraler
+        # Browser-String kommt durch; OpenAI/OpenRouter ignorieren ihn.
+        headers["User-Agent"] = str(
+            self._settings.get("user_agent")
+            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        )
         key = self.api_key
         if key:
             headers["Authorization"] = f"Bearer {key}"

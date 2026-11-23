@@ -2331,6 +2331,71 @@ class Orchestrator:
                     ) if part
                 )
 
+        # Buch oeffnen (23.11.2026): "Oeffne mir das Buch ... ich will es sehen" -
+        # das Modell antwortete viermal aus dem Gedaechtnis oder mit "das
+        # automatische Oeffnen klappt gerade nicht", ohne ein Werkzeug zu rufen.
+        # Ein solcher Wunsch wird deshalb direkt ausgefuehrt.
+        # Literaturrecherche (23.11.2026): "Mach mir Literaturrecherchen zu
+        # unserem Buch" landete in der allgemeinen Websuche mit dem ganzen Satz
+        # als Suchbegriff ("mache literaturrecherchen unserem zukunft ..."), und
+        # das Modell behauptete danach, recherchiert zu haben. Jetzt laeuft die
+        # Buchrecherche direkt (im Hintergrund), und die Websuche bleibt aus.
+        literaturwunsch = bool(re.search(
+            r"\b(literatur\w*|fachliteratur|quellen\w*|studien|recherch\w*)\b", text, re.IGNORECASE
+        ) and re.search(r"\b(buch\w*|kapitel\w*|manuskript|unterkapitel)\b", text, re.IGNORECASE))
+        if tools_available and literaturwunsch and self._tool_engine is not None:
+            try:
+                from backend.knowledge import buchprojekt as _bp
+
+                buecher = _bp.alle_buecher()
+                if buecher:
+                    gemeint = next((b["titel"] for b in buecher if b["titel"].lower() in text.lower()), "")
+                    kap = re.search(r"\bkapitel\s*(\d{1,2})\b", text, re.IGNORECASE)
+                    lauf = await self._tool_engine.direkt_ausfuehren(
+                        "literatur_recherche",
+                        {"buch": gemeint, "kapitel": kap.group(1) if kap else ""})
+                    meldung = lauf.result.output if lauf.result.ok else (
+                        "Die Recherche liess sich nicht starten: " + str(lauf.result.error))
+                    vorab_ergebnisse["literatur_recherche"] = meldung
+                    context_block = "\n\n".join(
+                        part for part in (context_block, "Soeben gestartet (nicht noch einmal aufrufen): " + meldung)
+                        if part
+                    )
+                else:
+                    literaturwunsch = False
+            except Exception:  # noqa: BLE001
+                logger.exception("Die Literaturrecherche liess sich nicht starten.")
+                literaturwunsch = False
+
+        buchwunsch = (not literaturwunsch) and re.search(
+            r"\b(öffne|oeffne|zeig|zeige|erstell|erstelle|exportier|exportiere|sehen|anschauen)\w*\b"
+            r".{0,80}\b(buch|buches|dokument|manuskript)\b"
+            r"|\b(buch|dokument|manuskript)\b.{0,60}\b(öffne|oeffne|zeig|sehen|anschauen|erstell)\w*",
+            text, re.IGNORECASE,
+        )
+        if tools_available and buchwunsch and self._tool_engine is not None:
+            try:
+                from backend.knowledge import buchprojekt as _bp
+
+                buecher = _bp.alle_buecher()
+                if buecher:
+                    gemeint = next((b["titel"] for b in buecher if b["titel"].lower() in text.lower()), "")
+                    lauf = await self._tool_engine.direkt_ausfuehren(
+                        "buch_exportieren", {"buch": gemeint, "oeffnen": True})
+                    meldung = lauf.result.output if lauf.result.ok else (
+                        "Das Dokument liess sich nicht erstellen: " + str(lauf.result.error))
+                    vorab_ergebnisse["buch_exportieren"] = meldung
+                    context_block = "\n\n".join(
+                        part for part in (
+                            context_block,
+                            "Soeben ausgefuehrt (nicht noch einmal aufrufen): " + meldung
+                            + "\nSag Marc kurz, dass das Dokument geoeffnet ist und wo es liegt "
+                            "- nur wenn es geklappt hat; sonst nenne den Fehler ehrlich.",
+                        ) if part
+                    )
+            except Exception:  # noqa: BLE001 - darf nie die Antwort verhindern.
+                logger.exception("Das Buch liess sich nicht vorab oeffnen.")
+
         # Wetter (13.11.2026): Dafuer gibt es das Werkzeug "wetter". Die
         # Vorabsuche brauchte 6,3 s und fand die "heute-show".
         wetterfrage = bool(re.search(r"\bwetter\w*|\bregnet|\btemperatur", text, re.IGNORECASE))
@@ -2363,6 +2428,7 @@ class Orchestrator:
             and not fahrplan_kontext
             and not wetterfrage
             and not ist_browser_befehl(text)
+            and not literaturwunsch
         ):
             frisch = await self._vorab_suchen(text)
             if frisch:
@@ -2480,6 +2546,7 @@ class Orchestrator:
             tools_available
             and not vorlesungssegment
             and not will_bildschirm(text)
+            and not literaturwunsch
             and self._ist_fachfrage(text, extra_context)
         ):
             eigenes = await self._vorab_eigene_quellen(text)

@@ -582,6 +582,7 @@ def build_standard_tools(
         ReadWebpageTool,
         WebSearchTool,
         WebseiteErkundenTool,
+        WissenskarteTool,
     )
 
     tools: list[Tool] = [
@@ -596,6 +597,10 @@ def build_standard_tools(
         ReadWebpageTool(),
         WebseiteErkundenTool(),
         OpenInBrowserTool(desktop),
+        WissenskarteTool(desktop),   # 22.11.2026: Open Knowledge Maps
+        *__import__("backend.tools.wissen_tools", fromlist=["x"]).build_wissen_tools(),
+        *__import__("backend.tools.sunrise_tools", fromlist=["x"]).build_sunrise_tools(desktop),
+        *__import__("backend.tools.buch_tools", fromlist=["x"]).build_buch_tools(),   # 23.11.2026: Buecher schreiben
         # `wissen_aneignen` stand frueher hier und legte nur die
         # Trefferzeile der Suchmaschine ab. Es liegt jetzt in
         # backend/tools/learning_tools.py und speichert die Substanz.

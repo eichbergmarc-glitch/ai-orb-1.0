@@ -1817,6 +1817,19 @@ class Runtime:
         ``answer_tts_requested``, ``answer_audible``).
         """
 
+        # 22.11.2026: Das Handy hat Vorrang vor einer Vorlesung am PC.
+        # Gemessen: Marc war unterwegs, am PC lief die Geschichtsvorlesung
+        # allein weiter (Abschnitt 13) - samt Stop-Spaeher, der jede Sekunde
+        # die Spracherkennung rief (Groq 429) - und seine Handyfragen gingen
+        # darin unter. Fragt er vom Handy, haelt die PC-Vorlesung an.
+        if not ausgabe_pc:
+            vorlesung = getattr(self.voice, "_vorlesung", None)
+            if vorlesung is not None and getattr(vorlesung, "aktiv", False):
+                with contextlib.suppress(Exception):
+                    self.voice.interrupt()
+                with contextlib.suppress(Exception):
+                    self.vorlesung_pause_vom_geraet()
+                logger.info("Frage vom Handy: die Vorlesung am PC wurde angehalten.")
         trace, token = start_turn_trace()
         ergebnis: dict[str, Any] | None = None
         try:

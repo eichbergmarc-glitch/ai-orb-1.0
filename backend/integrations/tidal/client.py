@@ -239,6 +239,26 @@ class TidalClient:
         bekannt = {t.id for t in titel}
         return titel + [Titel(id=i) for i in ids if i not in bekannt]
 
+    def lieblingstitel(self, *, anzahl: int = 100) -> list[Titel]:
+        """Die Songs, die der Benutzer in TIDAL mit dem Herz markiert hat (22.11.2026)."""
+
+        ids: list[str] = []
+        pfad = "/userCollectionTracks/me/relationships/items"
+        params: dict[str, Any] | None = {}
+        for _ in range(10):  # TIDAL liefert seitenweise; hoechstens zehn Seiten
+            antwort = self._anfrage("GET", pfad, params=params, benutzer=True)
+            ids += [str(d.get("id")) for d in (antwort.get("data") or [])
+                    if d.get("type") == "tracks" and d.get("id")]
+            weiter = ((antwort.get("links") or {}).get("meta") or {}).get("nextCursor")
+            if not weiter or len(ids) >= anzahl:
+                break
+            params = {"page[cursor]": weiter}
+        ids = ids[:anzahl]
+        titel: list[Titel] = []
+        for start in range(0, len(ids), 20):
+            titel += self.titel_holen(ids[start : start + 20])
+        return titel
+
     # --- Playlists -------------------------------------------------------------
 
     def playlist_anlegen(self, name: str, *, beschreibung: str = "", oeffentlich: bool = False) -> Playlist:

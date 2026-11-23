@@ -128,16 +128,51 @@ _ANKUENDIGUNGEN: tuple[str, ...] = (
     "ich pruefe das", "ich prüfe das", "ich kuemmere mich", "ich kümmere mich",
     "gleich zurueck", "gleich zurück", "bin gleich", "ich melde mich",
     "ich recherchiere", "lass mich nachsehen", "lass mich schauen",
+    # 23.11.2026: "Ich werde jetzt den Ordner anlegen und das Buch erneut
+    # speichern. Einen Moment bitte." / "Ich lege das Buch jetzt an" - drei
+    # Mal hintereinander, ohne dass ein Werkzeug lief.
+    "ich werde jetzt", "ich werde es jetzt", "ich werde das jetzt",
+    "ich lege das", "ich lege es", "ich lege den", "ich lege die",
+    "ich erstelle", "ich speichere", "ich exportiere", "ich trage", "ich übernehme",
+    "ich uebernehme", "ich füge", "ich fuege", "ich öffne es", "ich oeffne es",
+    "ich öffne das", "ich oeffne das", "mach ich sofort", "mache ich sofort",
 )
+
+#: Gesprochenes Markup (<emphasis>, <breath> ...) zaehlt nicht zur Laenge.
+_MARKUP = re.compile(r"<[^>]{1,40}>")
 
 
 def _kuendigt_nur_an(text: str) -> bool:
     """Ob eine (kurze) Antwort nur etwas verspricht, statt es zu liefern."""
 
-    knapp = " ".join(str(text or "").lower().split())
-    if not knapp or len(knapp) > 220:
+    # 23.11.2026: Die Laenge wird OHNE Sprech-Markup gemessen und darf bis
+    # 400 Zeichen gehen. Vorher fielen Ankuendigungen mit <emphasis>/<breath>
+    # ueber die 220-Zeichen-Grenze und rutschten durch ("Ich kuemmere mich
+    # sofort darum ... Einen Moment bitte", 226 Zeichen).
+    knapp = " ".join(_MARKUP.sub(" ", str(text or "")).lower().split())
+    if not knapp or len(knapp) > 400:
         return False
     return any(wendung in knapp for wendung in _ANKUENDIGUNGEN)
+
+
+#: "Ich habe die Punkte ins Inhaltsverzeichnis aufgenommen" - ohne dass in
+#: diesem Zug ein Werkzeug lief. Am 23.11.2026 sechs Mal behauptet, nichts
+#: davon war gespeichert. Gilt nur fuer Erledigungen mit Wirkung nach aussen.
+_ERLEDIGT = re.compile(
+    r"\b(ich )?(habe|hab)\b[^.!?]{0,80}?\b(gespeichert|angelegt|erstellt|eingefügt|eingefuegt|"
+    r"aufgenommen|eingetragen|übernommen|uebernommen|hinzugefügt|hinzugefuegt|exportiert|"
+    r"geöffnet|geoeffnet|abgelegt|notiert|festgehalten|geschrieben|verschickt|gesendet)\b",
+    re.I,
+)
+
+
+def _behauptet_erledigt(text: str) -> bool:
+    knapp = " ".join(_MARKUP.sub(" ", str(text or "")).split())
+    for treffer in _ERLEDIGT.finditer(knapp):
+        # "habe ich noch NICHT erstellt" ist ehrlich, keine falsche Behauptung.
+        if not re.search(r"\b(nicht|kein|keine|noch nie)\b", treffer.group(0), re.I):
+            return True
+    return False
 
 
 def _klingt_nach_ausrede(text: str) -> bool:
@@ -145,6 +180,13 @@ def _klingt_nach_ausrede(text: str) -> bool:
 
     knapp = text.lower()
     return any(wendung in knapp for wendung in _AUSREDEN)
+
+
+_ANWEISUNGSBLOCK = re.compile(
+    r"(FRISCH GESUCHT|sage in deiner antwort|stehen absichtlich|nenne die (häuser|quelle)|"
+    r"gehen deinem eigenen wissensstand vor|antworte dem benutzer|berichten zufolge)",
+    re.IGNORECASE,
+)
 
 
 def _kompakte_vorabantwort(werkzeug: str, rohtext: str) -> str:
@@ -166,6 +208,9 @@ def _kompakte_vorabantwort(werkzeug: str, rohtext: str) -> str:
 
     punkte: list[str] = []
     for block in re.split(r"\n\s*\n", text):
+        # 22.11.2026: Arbeitsanweisungen an das Modell sind keine Treffer.
+        if _ANWEISUNGSBLOCK.search(block):
+            continue
         zeilen = [zeile.strip() for zeile in block.splitlines() if zeile.strip()]
         zeilen = [
             re.sub(r"https?://\S+", "", zeile).strip(" -")
@@ -175,7 +220,7 @@ def _kompakte_vorabantwort(werkzeug: str, rohtext: str) -> str:
         zeilen = [zeile for zeile in zeilen if zeile]
         if not zeilen:
             continue
-        titel = zeilen[0].rstrip(" .")
+        titel = re.sub(r"^\[([^\]]+?)\s*\([A-Z]{2}\)\]\s*", r"\1: ", zeilen[0]).rstrip(" .")
         beschreibung = " ".join(zeilen[1:]).strip()
         punkt = f"{titel}."
         if beschreibung and beschreibung.lower() not in titel.lower():
@@ -805,6 +850,37 @@ class ToolEngine:
                 "dateien_suchen", "datei_lesen", "datei_schreiben",
                 "datei_verwalten", "wissen_aus_datei",
             )
+        # 23.11.2026: Buecher und Dokumente schreiben (OpenOffice), zitieren, Abbildungen.
+        if any(w in knapp for w in (
+            "buch", "kapitel", "notiz", "notier", "halt fest", "zitier", "zitat", "quelle",
+            "literatur", "dokument", "openoffice", "libreoffice", "inhaltsverzeichnis",
+            "manuskript", "aufsatz", "ausarbeit", "gliederung", "abbildung",
+        )):
+            dazu("buch_anlegen", "gliederung_setzen", "buch_uebersicht", "kapitel_schreiben", "kapitel_lesen",
+                 "buch_notiz", "quelle_hinzufuegen", "literatur_suchen", "literatur_recherche", "buch_bild",
+                 "buch_exportieren", "webseite_lesen", "internet_suchen", "bild_erzeugen",
+                 "diagramm_zeichnen", "infografik_erstellen", "bild_suchen")
+        # 22.11.2026: Sunrise TV im Browser, Filmgeschmack.
+        if any(w in knapp for w in (
+            "sunrise", "fernseh", "fernsehen", " tv", "film", "serie", "srf", "sender",
+            "schauen", "replay", "programm", "läuft", "laeuft", "aufnahme", "aufnehmen",
+            "sendung",
+        )):
+            dazu("sunrise_tv", "film_vorschlaege", "tv_programm", "tv_vorschlaege",
+                 "tv_aufnahme", "erinnerung_setzen")
+        # 22.11.2026: Wissensbibliothek erweitern (Datensaetze, Webseiten, Dateien).
+        if any(w in knapp for w in (
+            "datensatz", "datensätze", "datensaetze", "dataset", "wissensdatenbank",
+            "wissensbibliothek", "lerne ", "lernen", "in dein wissen", "wissen erweitern",
+            "aufnehmen", "hugging", "gelernt", "weiterbild", "bild dich",
+        )):
+            dazu("wissen_erweitern", "wissen_bestand", "selbst_lernen", "webseite_lesen")
+        # 22.11.2026: Open Knowledge Maps - Wissenskarte zur Fachliteratur.
+        if any(w in knapp for w in (
+            "wissenskarte", "knowledge map", "openknowledge", "open knowledge",
+            "forschungsstand", "fachliteratur", "literatur", "studien", "wissenschaft",
+        )):
+            dazu("wissenskarte_oeffnen", "internet_suchen", "webseite_lesen")
         if any(w in knapp for w in ("browser", "webseite", "klick", "formular", "oeffne", "öffne")):
             dazu("browser_bedienen", "webseite_lesen", "webseite_erkunden", "programm_starten")
         if any(w in knapp for w in ("mail", "e-mail", "gmail")):
@@ -821,11 +897,12 @@ class ToolEngine:
             "musik", "song", "lied", "playlist", "tidal", "spiel ", "spiele ",
             "abspielen", "hören", "hoeren", "pause", "nächste", "naechste",
             "lauter", "leiser", "album", "künstler", "kuenstler",
+            "geliked", "gelikt", "liebling", "favorit",
         )):
             dazu(
                 "musik_abspielen", "musik_suchen", "musik_steuern",
                 "playlists_ansehen", "playlist_erstellen", "playlist_ergaenzen",
-                "tidal_anmelden",
+                "tidal_app", "lieblingssongs", "tidal_anmelden",
             )
         if any(w in knapp for w in ("code", "quelltext", "fehler", "konfiguration", "config")):
             dazu(
@@ -1234,10 +1311,59 @@ class ToolEngine:
                             and not _klingt_nach_ausrede(normaler_text)
                         ):
                             return normaler_text, runs
-                        antworten = [
-                            _kompakte_vorabantwort(call.tool, bereits[call.tool])
+                        vorliegend = {
+                            call.tool: bereits[call.tool]
                             for call in doppelte
                             if bereits.get(call.tool, "").strip()
+                        }
+                        # 22.11.2026: Nicht mehr die Rohdaten vorlesen. Bei der
+                        # Mehrquellensuche begannen sie mit der Arbeitsanweisung
+                        # ans Modell ("Sie stehen absichtlich nach Herkunft
+                        # getrennt ...") - Marc hoerte das als komischen
+                        # Anfang der News. Stattdessen bekommt das Modell die
+                        # vorhandenen Ergebnisse ausdruecklich vorgelegt und
+                        # formuliert daraus die Antwort. Kein neuer Werkzeuglauf.
+                        if vorliegend:
+                            try:
+                                from backend.orchestrator.providers.base_provider import (
+                                    ChatMessage,
+                                )
+
+                                daten = "\n\n".join(
+                                    f"ERGEBNIS VON {name.upper()}:\n{roh[:7000]}"
+                                    for name, roh in vorliegend.items()
+                                )
+                                history.append(ChatMessage(role="assistant", content=text))
+                                history.append(
+                                    ChatMessage(
+                                        role="user",
+                                        content=(
+                                            "Die Werkzeugergebnisse liegen bereits vor - rufe "
+                                            "KEIN Werkzeug mehr auf. Antworte dem Benutzer jetzt "
+                                            "direkt in normaler gesprochener Sprache aus diesen "
+                                            "Ergebnissen. Lies keine Arbeitsanweisungen, Quellen"
+                                            "marken in eckigen Klammern oder Internetadressen vor."
+                                            "\n\n" + daten
+                                        ),
+                                    )
+                                )
+                                nachgefragt = await self._providers.chat(history)
+                                endtext = strip_tool_calls(
+                                    getattr(nachgefragt, "text", "") or ""
+                                ).strip()
+                                if len(endtext) >= 20 and not _klingt_nach_ausrede(endtext):
+                                    logger.info(
+                                        "Antwort aus vorliegenden Werkzeugdaten neu formuliert (%d Zeichen).",
+                                        len(endtext),
+                                    )
+                                    return endtext, runs
+                            except Exception:  # noqa: BLE001 - dann der sichere Notweg
+                                logger.exception(
+                                    "Neuformulierung aus vorliegenden Werkzeugdaten fehlgeschlagen."
+                                )
+                        antworten = [
+                            _kompakte_vorabantwort(werkzeug, roh)
+                            for werkzeug, roh in vorliegend.items()
                         ]
                         if antworten:
                             return "\n\n".join(dict.fromkeys(antworten)), runs
@@ -1295,9 +1421,10 @@ class ToolEngine:
                         history, self._registry.names()
                     )
                     kuendigt_an = _kuendigt_nur_an(text)
+                    behauptet = _behauptet_erledigt(text)
                     if (
                         _klingt_nach_ausrede(text) or nennt_werkzeug or verlangt
-                        or kuendigt_an
+                        or kuendigt_an or behauptet
                     ) and not nachgehakt:
                         # EINMAL nachhaken, statt die Ausrede weiterzureichen.
                         #
@@ -1319,6 +1446,31 @@ class ToolEngine:
                             ChatMessage,
                         )
 
+                        if behauptet and not kuendigt_an:
+                            logger.warning(
+                                "Das Modell behauptet eine Erledigung ohne Werkzeug (%r) - "
+                                "ich hake einmal nach.", text[:80],
+                            )
+                            history = history + [
+                                ChatMessage(role="assistant", content=text),
+                                ChatMessage(
+                                    role="user",
+                                    content=(
+                                        "Pruefung: In diesem Schritt wurde KEIN Werkzeug "
+                                        "ausgefuehrt - gespeichert, angelegt oder eingetragen "
+                                        "ist also nichts. Wenn Marc das will, rufe JETZT das "
+                                        "passende Werkzeug im vorgesehenen Format auf. Sonst "
+                                        "antworte ehrlich, ohne zu behaupten, du haettest es "
+                                        "schon getan."
+                                    ),
+                                ),
+                            ]
+                            try:
+                                response = await self._providers.chat(history)
+                                text = getattr(response, "text", str(response))
+                                continue
+                            except Exception:  # noqa: BLE001
+                                logger.exception("Das Nachhaken beim Modell ist fehlgeschlagen.")
                         if kuendigt_an:
                             logger.warning(
                                 "Das Modell hat nur angekuendigt (%r) - ich hake "

@@ -123,11 +123,13 @@ ai:
   - nous
   - lmstudio
   dialog_fallback_order:
+  - groq
   - openai
   - openai_2
   - openrouter
   - openrouter_2
   - nous
+  - synapse_lokal
   - lmstudio_fast
   - lmstudio
   capable_fallback_order:
@@ -136,6 +138,7 @@ ai:
   - openrouter
   - openrouter_2
   - nous
+  - synapse_lokal
   - lmstudio
   fast_dialog_max_tokens: 160
   # Gesamtfrist fuer einen Dialogzug in Sekunden. Ohne sie ist die
@@ -225,10 +228,56 @@ ai:
     context_window: 8192
   local_routing:
     enabled: true
-    main_provider: lmstudio
-    fast_provider: lmstudio_fast   # kurze Alltagsantworten: LM Studio mit kurzem Prompt
+    main_provider: synapse_lokal   # 22.11.2026: eigenes Modell statt LM Studio
+    fast_provider: synapse_lokal   # 22.11.2026: eigenes Modell, kurzer Prompt
     sequential_only: true
   additional:
+    # 22.11.2026: Synapses EIGENES Modell (Colab-Feintuning v2, Qwen3-4B, Ollama 'synapse').
+    # Lokales Offline-Gehirn: springt ein, wenn die Cloud ausfaellt. Kurzer Prompt
+    # (die Persona ist eintrainiert) und Textobergrenze, damit es auf der Iris Xe
+    # schnell bleibt - gemessen: ~0,7 s bis zum ersten Wort, 9-10 Token/s.
+    synapse_lokal:
+      enabled: true
+      engine: ollama
+      instance_name: synapse_lokal
+      model: synapse:latest
+      base_url: http://127.0.0.1:11434
+      compact_system_prompt: 'Du bist Synapse, Marcs persönlicher Assistent, Mentor und Professor – ohne akademisches Gehabe. Du bist immer Synapse; gib dich nie als ein anderes Modell oder einen Anbieter aus. Du sprichst Deutsch, und deine Antworten werden vorgelesen: Schreib, wie man redet. Kurze, ungleich lange Sätze, keine Aufzählungen, Überschriften, Klammern oder Emojis. Fang direkt mit der Antwort an – kein «Gerne», kein «Gute Frage». Sei warm, direkt und gelegentlich trocken humorvoll; widersprich begründet, wenn du anderer Meinung bist. Trenne Wissen von Vermutung. Erfinde nie eine Quelle, eine Zahl oder ein Datum – «Das weiss ich nicht» ist besser als Herumreden. Behaupte nie, ein Werkzeug benutzt oder etwas erledigt zu haben, und kündige nichts nur an. Du selbst kommst nicht ins Internet: Aktuelle Nachrichten, Wetter oder Mails kennst du nur, wenn sie dir vorliegen.'
+      recent_messages: 6
+      max_input_characters: 3000
+      # 22.11.2026: Wissensbibliothek (Wikipedia + laufend Gelerntes) nachschlagen;
+      # Werkzeugliste/Sprech-Markup weglassen -> ~1100 statt ~12000 Zeichen.
+      wissensbibliothek: true
+      wissen_hoechstens: 1400
+      zusatzkontext_hoechstens: 1000
+      context_window: 4096
+      keep_alive: 30m
+      timeout: 90
+      first_token_timeout: 30
+      first_token_timeout_cold: 60
+      temperature: 0.6
+    # 21.11.2026: Groq zuerst im Wettlauf. Groq liefert das erste Wort in
+    # Sekundenbruchteilen (eigene Hardware), gpt-4.1-mini laeuft parallel als
+    # Qualitaetsanker - wer zuerst spricht, gewinnt. Faellt Groq aus, bleibt
+    # alles wie zuvor.
+    groq:
+      enabled: true
+      # 21.11.2026: ueber die bereits registrierte openrouter-Engine
+      # (OpenAI-kompatibel), base_url auf Groq umgebogen. Braucht KEINE
+      # Code-Aenderung - nur config, die zuverlaessig ankommt. 'engine: groq'
+      # scheiterte: die laufende Fassung kennt den Engine-Typ 'groq' nicht.
+      engine: openrouter
+      preset: openrouter
+      instance_name: groq
+      base_url: https://api.groq.com/openai/v1
+      api_key_env: GROQ_API_KEY
+      api_style: chat_completions
+      model: llama-3.1-8b-instant
+      timeout: 20
+      first_token_timeout: 5
+      stream: true
+      minimum_predict_tokens: 200
+      temperature: 0.4
     openai_2:
       enabled: true
       engine: openai
@@ -464,7 +513,7 @@ conversation:
   system_prompt: 'Du bist Synapse - ein eigenstaendiger, lokaler Assistent auf dem Rechner des Benutzers.
     Das ist deine Identitaet. Fragt jemand, wer oder was du bist, bist du Synapse. Der technisch verwendete
     KI-Dienst ist Teil deiner Laufzeit und nicht deine Identitaet. Gib dich nie als Anbieter oder Modell aus.
-    Nenne dich immer Synapse.
+    Nenne dich immer Synapse. Wenn du diese ausfuehrliche Anweisung liest, antwortest du gerade ONLINE ueber ein Cloud-Modell (mit Internetsuche und Werkzeugen); nur wenn das Internet ausfaellt, uebernimmt dein eigenes, lokal trainiertes Modell mit der lokalen Wissensbibliothek. Fragt Marc danach, sag das genau so und behaupte nie das Gegenteil.
 
     Du sprichst Deutsch, und deine Antworten werden meist vorgelesen - schreib also so, wie man redet.
     Kuendige nie nur an ("Einen Moment", "Ich hole dir ..."). Liegen Suchergebnisse oder Nachrichten im Kontext, antworte sofort daraus; sonst rufe das passende Werkzeug auf.
@@ -1264,3 +1313,14 @@ alltag:
   heimatort: Melchnau
   haltestelle: Melchnau, Giuch
   pendelziel: ''
+
+# 23.11.2026: Selbstlernen - Themen, die Synapse einmal pro Woche aus der aktuellen Wikipedia auffrischt.
+wissen:
+  interessen:
+  - Voynich-Manuskript
+  - Neuer Realismus Markus Gabriel
+  - Quantenphysik
+  - Hermetik
+  - Künstliche Intelligenz Gesellschaft
+  - Soziale Arbeit Gassenarbeit Schweiz
+  - Tai Chi

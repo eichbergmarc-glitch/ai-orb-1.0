@@ -1658,6 +1658,27 @@ class VoicePipeline:
                         or "hallo" in klein
                         or "halo" in klein
                         or "hey" in klein
+                        # 23.11.2026: "Synapse, fasse mir die Nachrichten des
+                        # heutigen Tages zusammen" hoerte die kleine Erkennung
+                        # als "Alles in Abends fass er mit die Nachrichten ..."
+                        # - kein Anklang, Auftrag verworfen, Marc wartete fast
+                        # eine Minute und musste wiederholen. Ein laengerer
+                        # Satz mit Auftragswort geht deshalb auch ohne
+                        # Weckwort-Anklang zur grossen Erkennung (Cloud, 0.5 s).
+                        or (
+                            duration >= 2.0
+                            and len(klein.split()) >= 4
+                            and any(
+                                wort in klein
+                                for wort in (
+                                    "nachricht", "fass", "spiel", "öffne", "oeffne",
+                                    "erzähl", "erzaehl", "zeig", "mach ", "stell",
+                                    "sag mir", "wie ", "was ", "wer ", "wann ", "wo ",
+                                    "bitte", "kannst du", "abends", "alles in",
+                                    "napse", "abse", "sinn", "synn",
+                                )
+                            )
+                        )
                     )
                     # Sichtbar machen, was die kleine Erkennung gehoert hat.
                     # Bisher endete dieser Weg ohne jede Zeile: Wurde ein
@@ -3157,14 +3178,16 @@ class VoicePipeline:
             return await self._say(satz)
         if self._satzstrom_failed:
             return False
-        # Erster Satz einer Antwort bei der Colab-Stimme (19.11.2026): Sie
-        # braucht fuer einen Satz so lange, wie er dauert. Ein langer erster
-        # Satz hielt die ganze Antwort ~4 s zurueck. Am ersten Komma geteilt,
-        # ist das erste Stueck nach 1-2 s hoerbar; den Rest erzeugt die Stimme,
-        # waehrend das erste Stueck laeuft. Die Pause nach einem Komma ist kurz.
+        # Erster Satz einer Antwort (19.11.2026, erweitert 21.11.2026): Ein
+        # langer erster Satz haelt die ganze Antwort zurueck, bis er fertig
+        # synthetisiert ist. Am ersten Komma geteilt, ist das erste Stueck
+        # frueher hoerbar; den Rest erzeugt die Stimme, waehrend das erste
+        # Stueck laeuft (parallele Vorproduktion). Die Pause nach einem Komma
+        # ist kurz. 21.11.: Gilt jetzt fuer jede Cloud-Stimme (openai_tts),
+        # nicht mehr nur die Colab-Stimme - Marc wollte den ersten Ton frueher.
         if getattr(self, "_satzstrom_erster", False):
             self._satzstrom_erster = False
-            teile = _am_ersten_komma(satz) if self._stimme_ist_remote() else None
+            teile = _am_ersten_komma(satz) if self._stimme_ist_cloud() else None
             if teile is not None:
                 if not await self._sprich_satz(teile[0]):
                     return False
@@ -3806,7 +3829,10 @@ class VoicePipeline:
         if gehoert is None:
             gehoert = self._spaeher_gehoert = []
         knapp = " ".join(str(text or "").split())[:40]
-        if knapp and len(gehoert) < 12:
+        # 22.11.2026: Ein Fenster mit "stop" im Text wird IMMER notiert,
+        # auch nach den ersten zwoelf - sonst bleibt unsichtbar, ob Marcs
+        # Ruf ueberhaupt ankam.
+        if knapp and (len(gehoert) < 12 or "stop" in knapp.lower()):
             gehoert.append(knapp)
 
     def _spaeher_bilanz(self) -> None:
@@ -3879,7 +3905,7 @@ class VoicePipeline:
         # "auf" reicht nicht - sonst waere jede Wendung entwertet.
         teile = treffer.split()
         if all(self._naehe_zum_eigenen(teil) >= AEHNLICH_GENUG for teil in teile):
-            logger.debug(
+            logger.info(
                 "Stop-Verdacht %r verworfen - er steht im eigenen Satz.",
                 treffer,
             )

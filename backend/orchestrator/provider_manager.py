@@ -1006,6 +1006,14 @@ class ProviderManager:
         ploetzlich tausende alte Prompt-Tokens auf der CPU vorrechnen muss.
         """
 
+        # 23.11.2026: Selbstlernen - Wissensfragen ohne Treffer in der Bibliothek
+        # kommen auf die Lernliste (Pruefung im Hintergrund, kostet hier nichts).
+        try:
+            from backend.knowledge.selbstlernen import luecke_melden
+
+            luecke_melden(next((m.content for m in reversed(messages) if m.role == "user"), ""))
+        except Exception:  # noqa: BLE001
+            pass
         settings = provider.settings
         recent = max(0, int(settings.get("recent_messages", 0) or 0))
         character_limit = max(
@@ -1027,6 +1035,22 @@ class ProviderManager:
                 for i, m in enumerate(messages)
                 if m.role == "system" and m.content and not (i == 0)
             ]
+            if settings.get("wissensbibliothek"):
+                # 22.11.2026: Lokales Gehirn (synapse_lokal). Statt Werkzeugliste und
+                # Sprech-Markup (~5000 Zeichen, auf der CPU Sekunden) bekommt es die
+                # passenden Stellen aus der Wissensbibliothek und knappes Gedaechtnis.
+                try:
+                    from backend.knowledge.wissensbibliothek import lokaler_kontext
+
+                    frage = next((m.content for m in reversed(messages) if m.role == "user"), "")
+                    weitere = lokaler_kontext(
+                        weitere,
+                        frage,
+                        zusatz_hoechstens=int(settings.get("zusatzkontext_hoechstens", 1000) or 1000),
+                        wissen_hoechstens=int(settings.get("wissen_hoechstens", 1400) or 1400),
+                    )
+                except Exception:  # noqa: BLE001 - nie die Antwort verhindern
+                    logger.debug("Wissensbibliothek nicht verfuegbar.", exc_info=True)
             compact.append(
                 ChatMessage(role="system", content="\n\n".join([compact_system, *weitere]))
             )

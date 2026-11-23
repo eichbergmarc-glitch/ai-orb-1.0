@@ -1373,6 +1373,20 @@ class WebSearchTool(Tool):
             f"{item['titel']}\n    {item['url']}\n    {item['beschreibung']}".rstrip()
             for item in results
         ]
+        # 22.11.2026: Laufend lernen - Treffer mit Quelle und Datum in die
+        # Wissensbibliothek, damit Synapse sie spaeter auch offline kennt.
+        try:
+            from backend.knowledge.wissensbibliothek import bibliothek
+
+            for item in results[:6]:
+                bibliothek().merke(
+                    str(item.get("titel", "")),
+                    str(item.get("beschreibung", "")),
+                    quelle=str(item.get("url", "")),
+                    art="internetsuche",
+                )
+        except Exception:  # noqa: BLE001 - Lernen darf die Suche nie stoeren
+            logger.debug("Treffer nicht in die Wissensbibliothek uebernommen.", exc_info=True)
         return ToolResult.success("\n\n".join(lines), count=len(results), treffer=results)
 
 
@@ -1957,3 +1971,104 @@ def quellen_gegenueberstellen(gesammelt: dict[str, list[dict[str, str]]]) -> str
             len(gekuerzt), len(teile),
         )
     return ganzes
+
+
+class WissenskarteTool(Tool):
+    """Oeffnet eine Wissenskarte von Open Knowledge Maps (22.11.2026).
+
+    Open Knowledge Maps (gemeinnuetzig, openknowledgemaps.org) gruppiert die
+    wichtigsten wissenschaftlichen Arbeiten zu einem Thema in einer
+    anklickbaren Karte - Quelle BASE (alle Faecher) oder PubMed (Medizin).
+    Die Seite baut eine Karte nur ueber ein abgeschicktes Formular, nicht ueber
+    einen Link. Darum legt das Werkzeug eine kleine lokale Seite an, die das
+    Formular sofort abschickt, und oeffnet sie im Standardbrowser.
+    """
+
+    name = "wissenskarte_oeffnen"
+    description = (
+        "Oeffnet im Browser eine Wissenskarte (Open Knowledge Maps) zu einem "
+        "Forschungsthema: die wichtigsten wissenschaftlichen Arbeiten, nach "
+        "Unterthemen gruppiert. Benutze das, wenn Marc den Forschungsstand, "
+        "Fachliteratur, Studien oder eine Literaturuebersicht zu einem Thema "
+        "SEHEN oder erkunden will, oder ausdruecklich Open Knowledge Maps "
+        "nennt. Gib ein KURZES Thema mit 1 bis 3 Fachbegriffen an (z. B. "
+        "'Neuer Realismus', nicht 'Neuer Realismus Markus Gabriel Argumente'); "
+        "alle Woerter muessen vorkommen, lange Suchen ergeben leere Karten. "
+        "Medizinische Themen: quelle 'pubmed', sonst 'base'. Die Karte baut "
+        "sich in 10 bis 30 Sekunden auf. Selbst lesen kannst du sie nicht - "
+        "fuer Inhalte nutze die Literatursuche."
+    )
+    permission = "launch_application"
+    parameters = (
+        ToolParameter("thema", "string", "Kurzes Forschungsthema, 1 bis 3 Fachbegriffe."),
+        ToolParameter(
+            "quelle", "string", "'base' (alle Faecher, Standard) oder 'pubmed' (Medizin).",
+            required=False, default="base",
+        ),
+        ToolParameter(
+            "neueste_zuerst", "boolean", "true = die neuesten Arbeiten statt der relevantesten.",
+            required=False, default=False,
+        ),
+    )
+
+    # Fachartikel, Buecher, Buchkapitel, Abschlussarbeiten, Uebersichtsartikel.
+    DOKUMENTTYPEN = ("121", "11", "111", "18", "15")
+
+    def __init__(self, desktop: Any | None = None) -> None:
+        super().__init__()
+        self._desktop = desktop
+
+    @classmethod
+    def seite(cls, thema: str, quelle: str, neueste_zuerst: bool) -> str:
+        import datetime
+
+        felder = [
+            ("optradio", quelle),
+            ("time_range", "any-time"),
+            ("sorting", "most-recent" if neueste_zuerst else "most-relevant"),
+            *(("document_types[]", typ) for typ in cls.DOKUMENTTYPEN),
+            ("min_descsize", "300"),
+            ("from", "1665-01-01"),
+            ("to", datetime.date.today().isoformat()),
+            ("q", thema),
+        ]
+        if quelle == "pubmed":
+            felder = [("optradio", "pubmed"), ("q", thema)]
+        versteckt = "\n".join(
+            f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">' for k, v in felder
+        )
+        ziel = f"https://openknowledgemaps.org/search?service={quelle}"
+        return (
+            "<!DOCTYPE html><html lang=\"de\"><head><meta charset=\"utf-8\">"
+            f"<title>Wissenskarte: {html.escape(thema)}</title></head>"
+            "<body style=\"font-family:sans-serif;padding:2em\">"
+            f"<p>Synapse baut die Wissenskarte zu <b>{html.escape(thema)}</b> bei Open Knowledge Maps ...</p>"
+            f'<form id="karte" method="post" action="{html.escape(ziel)}">{versteckt}'
+            '<noscript><button type="submit">Karte öffnen</button></noscript></form>'
+            "<script>document.getElementById('karte').submit();</script></body></html>"
+        )
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        thema = re.sub(r"\s+", " ", str(arguments.get("thema", ""))).strip()
+        if not thema:
+            return ToolResult.failure("Es fehlt das Thema der Wissenskarte.")
+        quelle = str(arguments.get("quelle", "base") or "base").strip().lower()
+        quelle = "pubmed" if quelle == "pubmed" else "base"
+        neueste = str(arguments.get("neueste_zuerst", False)).strip().lower() in ("true", "1", "ja", "yes")
+        try:
+            from backend.utils.paths import get_data_dir
+            import webbrowser
+
+            datei = get_data_dir() / "wissenskarte.html"
+            datei.write_text(self.seite(thema, quelle, neueste), encoding="utf-8")
+            if not webbrowser.open(datei.resolve().as_uri(), new=2):
+                return ToolResult.failure("Es wurde kein Browser gefunden.")
+        except Exception as error:  # noqa: BLE001
+            logger.exception("Wissenskarte liess sich nicht oeffnen.")
+            return ToolResult.failure(f"Die Wissenskarte liess sich nicht oeffnen: {error}")
+        quelle_name = "PubMed" if quelle == "pubmed" else "BASE"
+        return ToolResult.success(
+            f"Die Wissenskarte zu '{thema}' (Quelle {quelle_name}) wird im Browser aufgebaut; "
+            "das dauert 10 bis 30 Sekunden. Sag Marc das kurz.",
+            thema=thema, quelle=quelle,
+        )

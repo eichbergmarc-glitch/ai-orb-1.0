@@ -191,6 +191,10 @@ class MemoryEngine:
 
         return self._search.search(query, limit=limit, kind=kind, project_id=project_id)
 
+    #: Wie alt eine gespeicherte Nachricht hoechstens sein darf, um noch als
+    #: Kontext mitzugehen (Sekunden). 22.11.2026.
+    NACHRICHTEN_HOECHSTALTER: float = 2 * 24 * 3600
+
     def context_for(
         self, query: str, *, project_id: str | None = None, limit: int = 5
     ) -> dict[str, Any]:
@@ -201,11 +205,47 @@ class MemoryEngine:
         die wichtigsten Benutzerangaben.
         """
 
-        matches = self.recall(query, limit=limit, project_id=project_id)
+        # 22.11.2026: Alte Nachrichten nicht als "heute" ausgeben. Der
+        # Nachrichtenlauf legt taeglich Meldungen ab; ohne Datumsgrenze holte
+        # "Nachrichten des Tages" Meldungen vom 7.11. hervor, und das Modell
+        # trug sie als aktuell vor. Meldungen bleiben im Gedaechtnis, kommen
+        # aber nur noch bis NACHRICHTEN_HOECHSTALTER in den Kontext - mit Datum.
+        import time as _zeit
+
+        jetzt = _zeit.time()
+        kandidaten = self.recall(query, limit=limit * 3, project_id=project_id)
+        matches = []
+        def _ist_newsantwort(record: Any) -> bool:
+            # Gespeicherte fruehere Antworten auf "Nachrichten des Tages" sind
+            # genauso schnell veraltet wie die Meldungen selbst.
+            text = str(record.content or "")
+            if not text.startswith("Gefragt:"):
+                return False
+            frage = text.split("Geantwortet:", 1)[0].lower()
+            return any(w in frage for w in ("nachricht", "news", "neues", "schlagzeil", "des tages", "heute passiert"))
+
+        for result in kandidaten:
+            if _ist_newsantwort(result.record):
+                continue   # alte News-Antworten nie wieder auftischen - die Suche liefert Frisches
+            if result.record.kind == "nachricht":
+                erstellt = float(getattr(result.record, "created_at", 0) or 0)
+                if not erstellt or jetzt - erstellt > self.NACHRICHTEN_HOECHSTALTER:
+                    continue
+            matches.append(result)
+            if len(matches) >= limit:
+                break
+
+        def _inhalt(record: Any) -> str:
+            if record.kind == "nachricht":
+                erstellt = float(getattr(record, "created_at", 0) or 0)
+                datum = _zeit.strftime("%d.%m.%Y", _zeit.localtime(erstellt)) if erstellt else ""
+                return f"(Meldung vom {datum}) {record.content}" if datum else record.content
+            return record.content
+
         return {
             "memories": [
                 {
-                    "content": result.record.content,
+                    "content": _inhalt(result.record),
                     "kind": result.record.kind,
                     "certainty": result.record.metadata.get("certainty", "fakt"),
                     "relevance": round(result.score, 3),

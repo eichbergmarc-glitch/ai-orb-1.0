@@ -275,13 +275,18 @@ def test_ein_langes_fenster_ist_die_eigene_rede():
     # Wer einen sprechenden Orb unterbricht, ruft EIN Wort dazwischen. Was
     # das Mikrofon sonst aufnimmt, ist der Orb. Je mehr Woerter im Fenster
     # stehen, desto sicherer ist es seine Rede.
-    lang = "und deshalb war die Julikrise auch für Russland ein stopp Problem"
+    # Seit 22.11.2026 zaehlt ein eindeutiges "stopp" auch dort - das
+    # Echo verwirft die Pipeline per Gegenprobe. Unscharfes bleibt aus.
+    lang = "und deshalb war die Julikrise auch für Russland ein stopt Problem"
     assert stopwort_finden(lang) is None
 
 
 def test_ein_abbruchwort_ganz_hinten_zaehlt_nicht():
     # Ein Zwischenruf beginnt das Fenster, er beschliesst es nicht.
-    assert stopwort_finden("das war die Antwort dazu stopp") is None
+    assert stopwort_finden("das war die Antwort dazu halt") is None
+    assert stopwort_finden("das war die Antwort dazu stop") is None
+    # 22.11.2026: das eindeutige "stopp" greift auch hinten (Marcs Ruf im Echo)
+    assert stopwort_finden("ich verwende aktuell OpenAI stopp") == "stopp"
     assert stopwort_finden("stopp das war die Antwort") == "stopp"
 
 

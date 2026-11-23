@@ -158,6 +158,17 @@ class ProviderRegistry:
                 billing="Nach Verbrauch ueber console.x.ai",
             ),
             ProviderInfo(
+                name="groq",
+                provider_class=OpenAICompatibleProvider,
+                description=(
+                    "Groq ueber die OpenAI-kompatible API. Sehr schnelle "
+                    "Zeit bis zum ersten Wort; verlangt GROQ_API_KEY."
+                ),
+                requires_internet=True,
+                requires_api_key=True,
+                billing="Grosszuegiges Gratiskontingent ueber console.groq.com",
+            ),
+            ProviderInfo(
                 name="ollama_cloud",
                 provider_class=OpenAICompatibleProvider,
                 description=(

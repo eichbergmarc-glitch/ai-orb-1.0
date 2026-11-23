@@ -212,6 +212,13 @@ class Nachrichtenlauf:
 
             if eintrag is not None:
                 gespeichert += 1
+            # 22.11.2026: auch in die Wissensbibliothek - offline abrufbar mit Datum.
+            try:
+                from backend.knowledge.wissensbibliothek import bibliothek
+
+                bibliothek().merke(titel, beschreibung, quelle=adresse, art="nachricht")
+            except Exception:  # noqa: BLE001
+                logger.debug("Meldung nicht in die Wissensbibliothek uebernommen.", exc_info=True)
 
         return gespeichert
 

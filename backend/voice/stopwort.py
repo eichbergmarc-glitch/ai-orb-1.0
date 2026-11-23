@@ -157,6 +157,16 @@ _GANZ_VORN_BIS = 1
 #: Echte deutsche Wörter, die einen Buchstaben neben einer Stopp-Form
 #: liegen. Ohne diese Liste bräche der Orb bei "der Stopfen" ab - und ein
 #: Wort, das es wirklich gibt, ist kein Verhörer, sondern ein anderes Wort.
+#: Eindeutige Rufformen, die an JEDER Stelle des Fensters zaehlen
+#: (22.11.2026). Gemessen in Marcs Protokoll: Waehrend der Orb spricht,
+#: besteht ein Hoerfenster von 1,5 s fast nur aus seinem Echo ("Ich
+#: verwende aktuell OpenAI ..."). Marcs "Stopp" landete darin hinten oder in
+#: der Mitte - und die Stellenregel warf es weg. Der Orb sagt diese Formen
+#: selbst praktisch nie; sagt er sie doch, verwirft die Echo-Gegenprobe der
+#: Pipeline (_naehe_zum_eigenen) den Treffer. Bewusst NICHT dabei: "stop"
+#: (englisch, "bus stop"), "halt" (Fuellwort) und alle Verhoerer.
+_UEBERALL: frozenset[str] = frozenset(("stopp", "stoppe", "schtopp"))
+
 _KEIN_STOPP: frozenset[str] = frozenset((
     "stopfen", "stopfe", "stopft", "stopfst", "stopfer", "gestopft",
     "stoppel", "stoppeln", "stoppelig", "stopper", "stoppuhr",
@@ -251,5 +261,9 @@ def stopwort_finden(text: str, zusaetzlich: frozenset[str] | None = None) -> str
         if _UNSCHARF_VON <= len(wort) <= _UNSCHARF_BIS and any(
             _abstand_eins(wort, form) for form in _UNSCHARF_GEGEN
         ):
+            return wort
+    # Zweiter Durchgang: eindeutige Rufformen auch weiter hinten.
+    for wort in _woerter(knapp):
+        if wort in _UEBERALL:
             return wort
     return None
